@@ -144,29 +144,49 @@ async def check_ip_intel(ip: str) -> dict:
         if now - cached.get("_cached_at", 0) < 21600:
             return cached
 
-    url = f"http://ip-api.com/json/{clean_ip}?fields=status,country,city,isp,org,as,proxy,hosting"
+    timeout = aiohttp.ClientTimeout(total=3.0)
+
+    # 1) HTTPS-провайдер (ipwho.is): IP не уходит в третью сторону открытым текстом
     try:
-        timeout = aiohttp.ClientTimeout(total=2.0)
+        url = f"https://ipwho.is/{clean_ip}?security=1"
         async with aiohttp.ClientSession(timeout=timeout) as session:
             async with session.get(url) as resp:
                 if resp.status == 200:
-                    data = await resp.json()
-                    if data.get("status") == "success":
-                        is_vpn = bool(data.get("proxy")) or bool(data.get("hosting"))
-                        isp = data.get("isp") or data.get("org") or "Неизвестно"
-                        country = data.get("country", "")
-                        city = data.get("city", "")
+                    data = await resp.json(content_type=None)
+                    if data.get("success"):
+                        security = data.get("security") or {}
+                        connection = data.get("connection") or {}
                         res = {
-                            "is_vpn": is_vpn,
-                            "country": country,
-                            "city": city,
-                            "isp": isp,
+                            "is_vpn": bool(security.get("proxy") or security.get("vpn") or security.get("hosting")),
+                            "country": data.get("country") or "",
+                            "city": data.get("city") or "",
+                            "isp": connection.get("isp") or connection.get("org") or "Неизвестно",
                             "_cached_at": now,
                         }
                         _IP_CACHE[clean_ip] = res
                         return res
     except Exception as e:
-        logger.debug(f"IP intel check error for {clean_ip}: {e}")
+        logger.debug(f"ipwho.is error for {clean_ip}: {e}")
+
+    # 2) Фолбэк: ip-api.com (HTTP — только если HTTPS-провайдер недоступен)
+    try:
+        url = f"http://ip-api.com/json/{clean_ip}?fields=status,country,city,isp,org,proxy,hosting"
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.get(url) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    if data.get("status") == "success":
+                        res = {
+                            "is_vpn": bool(data.get("proxy")) or bool(data.get("hosting")),
+                            "country": data.get("country", ""),
+                            "city": data.get("city", ""),
+                            "isp": data.get("isp") or data.get("org") or "Неизвестно",
+                            "_cached_at": now,
+                        }
+                        _IP_CACHE[clean_ip] = res
+                        return res
+    except Exception as e:
+        logger.debug(f"ip-api.com error for {clean_ip}: {e}")
 
     return {"is_vpn": False, "country": "Не определено", "city": "", "isp": "Не определено"}
 
