@@ -1850,6 +1850,8 @@ class SecurityCog(commands.Cog, name="Безопасность"):
         if bridge_cog and hasattr(bridge_cog, "broadcast_packet"):
             alts_str = ",".join(candidate_names)
             logger.info("Запрос проверки LiteBans по точному IP для %s (аккаунты: %s, IP: %s)", player, alts_str, clean_ip)
+            if hasattr(bridge_cog, "register_alt_check"):
+                bridge_cog.register_alt_check(player, ttl=30.0, manual=False)
             await bridge_cog.broadcast_packet({
                 "type": "check_alts_bans",
                 "player": player,
@@ -1863,6 +1865,16 @@ class SecurityCog(commands.Cog, name="Безопасность"):
         ip = data.get("ip", "127.0.0.1")
         banned = data.get("banned", [])
         clean = data.get("clean", [])
+
+        # Anti-spoof: обрабатываем только ответы на собственные автоматические запросы.
+        # Ручные проверки (!whois / !alts) и посторонние пакеты не должны вызывать автобаны.
+        bridge_cog = get_bridge_cog(self.bot)
+        if bridge_cog is not None and hasattr(bridge_cog, "consume_alt_check"):
+            if not bridge_cog.consume_alt_check(login_player):
+                logger.warning(
+                    "Отброшен незапрошенный/ручной alts_bans_result для %s (anti-spoof)", login_player
+                )
+                return
 
         if not banned and not clean:
             return
@@ -2315,6 +2327,8 @@ class SecurityCog(commands.Cog, name="Безопасность"):
             def check_packet_whois(p_type, p_data):
                 return p_type == "alts_bans_result" and p_data.get("player") == p_name
             try:
+                if hasattr(bridge_cog, "register_alt_check"):
+                    bridge_cog.register_alt_check(p_name, ttl=10.0, manual=True)
                 await bridge_cog.broadcast_packet({
                     "type": "check_alts_bans",
                     "player": p_name,
@@ -2329,8 +2343,8 @@ class SecurityCog(commands.Cog, name="Безопасность"):
 
         linked_user_str = "Не привязан к Discord"
         if linked:
-            d_id = linked.get("discord_id")
-            member = ctx.guild.get_member(d_id) if ctx.guild else None
+            d_id = linked.get("discord_user_id") or linked.get("discord_id")
+            member = ctx.guild.get_member(d_id) if (ctx.guild and d_id) else None
             linked_user_str = f"{member.mention} `(ID: {d_id})`" if member else f"`ID: {d_id}`"
 
         online_set = {p.lower() for p in getattr(bridge_cog, "mc_players", [])} if bridge_cog else set()

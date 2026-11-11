@@ -175,6 +175,10 @@ class BridgeCog(commands.Cog, name="Мост Minecraft"):
         # Временные 2FA сессии входов: player.lower() -> {code, ip, discord_id, expires_at, message}
         self.pending_2fa: Dict[str, dict] = {}
 
+        # Anti-spoof: ожидаемые ответы alts_bans_result (player.lower() -> expires_at)
+        self._alt_check_requests: Dict[str, float] = {}
+        self._alt_check_manual: Dict[str, float] = {}
+
         # Кэш лидерборда и профилей игроков для надежности и нулевых задержек
         self.last_top_data: Optional[dict] = None
         self.cached_player_stats: Dict[str, Tuple[float, dict]] = {}
@@ -196,6 +200,40 @@ class BridgeCog(commands.Cog, name="Мост Minecraft"):
     def is_connected(self) -> bool:
         """Возвращает True, если сервер Minecraft подключен к мосту"""
         return len(self.active_sockets) > 0
+
+    def register_alt_check(self, player: str, ttl: float = 30.0, manual: bool = False) -> None:
+        """Регистрирует ожидаемый ответ alts_bans_result (защита от подделки и устаревших пакетов).
+
+        Ключ — ник в нижнем регистре: ответ должен прийти именно на наш запрос.
+        manual=True помечает ручные проверки модераторов (!whois / !alts), на них
+        автосанкции не применяются.
+        """
+        key = str(player or "").strip().lower()
+        if not key:
+            return
+        now = time.time()
+        # Чистим просроченные записи, чтобы словарь не рос на долгоживущем процессе
+        stale = [k for k, exp in self._alt_check_requests.items() if exp < now][:100]
+        for k in stale:
+            self._alt_check_requests.pop(k, None)
+            self._alt_check_manual.pop(k, None)
+        expires = now + max(1.0, float(ttl))
+        self._alt_check_requests[key] = expires
+        if manual:
+            self._alt_check_manual[key] = expires
+
+    def consume_alt_check(self, player: str) -> bool:
+        """True, если ответ относится к нашему автоматическому запросу (можно применять санкции)."""
+        key = str(player or "").strip().lower()
+        if not key:
+            return False
+        now = time.time()
+        expires = self._alt_check_requests.pop(key, 0.0)
+        if expires < now:
+            return False
+        if self._alt_check_manual.pop(key, 0.0) > now:
+            return False
+        return True
 
     async def query_minecraft(self, packet: dict, timeout: float = 3.0) -> Optional[dict]:
         if not self.active_sockets:
@@ -2024,6 +2062,7 @@ class BridgeCog(commands.Cog, name="Мост Minecraft"):
                 def check_packet_ip(p_type, p_data):
                     return p_type == "alts_bans_result" and p_data.get("player") == clean_target
                 try:
+                    self.register_alt_check(clean_target, ttl=10.0, manual=True)
                     await self.broadcast_packet({
                         "type": "check_alts_bans",
                         "player": clean_target,
@@ -2093,6 +2132,7 @@ class BridgeCog(commands.Cog, name="Мост Minecraft"):
             def check_packet_player(p_type, p_data):
                 return p_type == "alts_bans_result" and p_data.get("player") == clean_target
             try:
+                self.register_alt_check(clean_target, ttl=10.0, manual=True)
                 await self.broadcast_packet({
                     "type": "check_alts_bans",
                     "player": clean_target,

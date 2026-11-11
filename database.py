@@ -287,7 +287,8 @@ class DatabaseManager:
                     conn.execute("ALTER TABLE linked_accounts ADD COLUMN trust_duration_hours INTEGER NOT NULL DEFAULT 48")
                 if "login_alerts_enabled" not in la_cols:
                     conn.execute("ALTER TABLE linked_accounts ADD COLUMN login_alerts_enabled INTEGER NOT NULL DEFAULT 1")
-                conn.execute("UPDATE linked_accounts SET login_alerts_enabled = 1 WHERE login_alerts_enabled IS NULL OR login_alerts_enabled = 0")
+                # Только NULL (старые строки после ALTER). Явно выключенные алерты (=0) не трогаем.
+                conn.execute("UPDATE linked_accounts SET login_alerts_enabled = 1 WHERE login_alerts_enabled IS NULL")
             conn.commit()
         except Exception as mig_err:
             logging.getLogger('VanillaBot.DB').debug('Auto-migration linked_accounts note: %s', mig_err)
