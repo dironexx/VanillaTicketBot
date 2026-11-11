@@ -1,3 +1,4 @@
+import logging
 import os
 from typing import Optional
 from pathlib import Path
@@ -68,6 +69,37 @@ def _resolve_server_ip() -> str:
     return "vanillaland.ru-mc.ru"
 
 
+def _env_int(name: str, default: int = 0) -> int:
+    """int из env без падения на мусорном значении (например BRIDGE_PORT=abc)."""
+    raw = (os.getenv(name) or "").strip()
+    if not raw:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        try:
+            return int(float(raw))
+        except ValueError:
+            logging.getLogger("VanillaBot.Config").warning(
+                "Некорректное значение %s=%r, использую %s", name, raw, default
+            )
+            return default
+
+
+def _env_float(name: str, default: float = 0.0) -> float:
+    """float из env с поддержкой запятой (48,5) и без падения на мусоре."""
+    raw = (os.getenv(name) or "").strip()
+    if not raw:
+        return default
+    try:
+        return float(raw.replace(",", "."))
+    except ValueError:
+        logging.getLogger("VanillaBot.Config").warning(
+            "Некорректное значение %s=%r, использую %s", name, raw, default
+        )
+        return default
+
+
 class Config:
     DISCORD_TOKEN: str = _resolve_token()
     DISCORD_PROXY: Optional[str] = (
@@ -76,14 +108,14 @@ class Config:
         or os.getenv("HTTP_PROXY")
         or ""
     ).strip() or None
-    GUILD_ID: int = int(os.getenv("GUILD_ID", "0").strip() or 0)
-    PANEL_CHANNEL_ID: int = int(os.getenv("PANEL_CHANNEL_ID", "0").strip() or 0)
-    TICKETS_CATEGORY_ID: int = int(os.getenv("TICKETS_CATEGORY_ID", "0").strip() or 0)
+    GUILD_ID: int = _env_int("GUILD_ID", 0)
+    PANEL_CHANNEL_ID: int = _env_int("PANEL_CHANNEL_ID", 0)
+    TICKETS_CATEGORY_ID: int = _env_int("TICKETS_CATEGORY_ID", 0)
 
     # Каналы для логов и оповещений
-    LOG_CHANNEL_ID: int = int(os.getenv("LOG_CHANNEL_ID", "0").strip() or 0)
-    ADMIN_LOG_CHANNEL_ID: int = int(os.getenv("ADMIN_LOG_CHANNEL_ID", "0").strip() or 0)
-    ALTS_ALERT_CHANNEL_ID: int = int(os.getenv("ALTS_ALERT_CHANNEL_ID", "0").strip() or 0)
+    LOG_CHANNEL_ID: int = _env_int("LOG_CHANNEL_ID", 0)
+    ADMIN_LOG_CHANNEL_ID: int = _env_int("ADMIN_LOG_CHANNEL_ID", 0)
+    ALTS_ALERT_CHANNEL_ID: int = _env_int("ALTS_ALERT_CHANNEL_ID", 0)
 
     # Роли персонала (доступ к модерации и тикетам)
     MOD_ROLE_IDS: list[int] = [
@@ -94,33 +126,18 @@ class Config:
         ).split(",")
         if r.strip().isdigit()
     ]
-    SPEC_ROLE_ID: int = int(os.getenv("SPEC_ROLE_ID", "0").strip() or 0)
+    SPEC_ROLE_ID: int = _env_int("SPEC_ROLE_ID", 0)
 
     # Роль для пинга в тикетах (вместо СММ)
-    TICKET_PING_ROLE_ID: int = int(
-        os.getenv("TICKET_PING_ROLE_ID", "1563526341742297158").strip()
-        or 1563526341742297158
-    )
+    TICKET_PING_ROLE_ID: int = _env_int("TICKET_PING_ROLE_ID", 1563526341742297158)
 
     # Роли верификации
-    UNVERIFIED_ROLE_ID: int = int(
-        os.getenv("UNVERIFIED_ROLE_ID", "1557849914233589913").strip()
-        or 1557849914233589913
-    )
-    VERIFIED_ROLE_ID: int = int(
-        os.getenv("VERIFIED_ROLE_ID", "1472644628451950703").strip()
-        or 1472644628451950703
-    )
-    VERIFICATION_CHANNEL_ID: int = int(
-        os.getenv("VERIFICATION_CHANNEL_ID", "1555500688715423835").strip()
-        or 1555500688715423835
-    )
+    UNVERIFIED_ROLE_ID: int = _env_int("UNVERIFIED_ROLE_ID", 1557849914233589913)
+    VERIFIED_ROLE_ID: int = _env_int("VERIFIED_ROLE_ID", 1472644628451950703)
+    VERIFICATION_CHANNEL_ID: int = _env_int("VERIFICATION_CHANNEL_ID", 1555500688715423835)
 
     # Роль мута
-    MUTE_ROLE_ID: int = int(
-        os.getenv("MUTE_ROLE_ID", "1472669326237761586").strip()
-        or 1472669326237761586
-    )
+    MUTE_ROLE_ID: int = _env_int("MUTE_ROLE_ID", 1472669326237761586)
 
     # Серверная информация и официальные ссылки
     SERVER_IP: str = _resolve_server_ip()
@@ -138,24 +155,20 @@ class Config:
 
     DB_PATH: str = os.getenv("DB_PATH", "tickets.db").strip()
     TRANSCRIPTS_DIR: str = os.getenv("TRANSCRIPTS_DIR", "transcripts").strip()
-    AUTO_CLOSE_HOURS: int = int(os.getenv("AUTO_CLOSE_HOURS", "24").strip() or 24)
+    AUTO_CLOSE_HOURS: int = _env_int("AUTO_CLOSE_HOURS", 24)
     COMMAND_PREFIXES: list[str] = ["!", "/"]
 
     # --- МОСТ С СЕРВЕРОМ MINECRAFT ---
-    BRIDGE_CHANNEL_ID: int = int(os.getenv("BRIDGE_CHANNEL_ID", "1556015782566297830").strip() or 1556015782566297830)
-    EVENTS_CHANNEL_ID: int = int(os.getenv("EVENTS_CHANNEL_ID", "1556209087920873542").strip() or 1556209087920873542)
-    COMMANDS_CHANNEL_ID: int = int(os.getenv("COMMANDS_CHANNEL_ID", "1555483142578770030").strip() or 1555483142578770030)
-    BRIDGE_PORT: int = int(
-        os.getenv("BRIDGE_PORT", "").strip()
-        or os.getenv("SERVER_PORT", "").strip()
-        or "25549"
-    )
+    BRIDGE_CHANNEL_ID: int = _env_int("BRIDGE_CHANNEL_ID", 1556015782566297830)
+    EVENTS_CHANNEL_ID: int = _env_int("EVENTS_CHANNEL_ID", 1556209087920873542)
+    COMMANDS_CHANNEL_ID: int = _env_int("COMMANDS_CHANNEL_ID", 1555483142578770030)
+    BRIDGE_PORT: int = _env_int("BRIDGE_PORT", 0) or _env_int("SERVER_PORT", 25549)
     BRIDGE_SECRET: str = os.getenv("BRIDGE_SECRET", "vanillaland_secret_2026").strip()
-    ONLINE_VOICE_CHANNEL_ID: int = int(os.getenv("ONLINE_VOICE_CHANNEL_ID", "0").strip() or 0)
-    TPS_VOICE_CHANNEL_ID: int = int(os.getenv("TPS_VOICE_CHANNEL_ID", "0").strip() or 0)
-    STATS_CATEGORY_ID: int = int(os.getenv("STATS_CATEGORY_ID", "0").strip() or 0)
+    ONLINE_VOICE_CHANNEL_ID: int = _env_int("ONLINE_VOICE_CHANNEL_ID", 0)
+    TPS_VOICE_CHANNEL_ID: int = _env_int("TPS_VOICE_CHANNEL_ID", 0)
+    STATS_CATEGORY_ID: int = _env_int("STATS_CATEGORY_ID", 0)
 
     # Двухфакторная аутентификация (2FA) и сессии IP
-    IP_SESSION_HOURS: float = float(os.getenv("IP_SESSION_HOURS", "48.0").strip() or 48.0)
-    LOGIN_2FA_TIMEOUT_SEC: int = int(os.getenv("LOGIN_2FA_TIMEOUT_SEC", "180").strip() or 180)
-    LINK_PANEL_CHANNEL_ID: int = int(os.getenv("LINK_PANEL_CHANNEL_ID", "0").strip() or 0)
+    IP_SESSION_HOURS: float = _env_float("IP_SESSION_HOURS", 48.0)
+    LOGIN_2FA_TIMEOUT_SEC: int = _env_int("LOGIN_2FA_TIMEOUT_SEC", 180)
+    LINK_PANEL_CHANNEL_ID: int = _env_int("LINK_PANEL_CHANNEL_ID", 0)

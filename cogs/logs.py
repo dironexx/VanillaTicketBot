@@ -245,7 +245,7 @@ class LogsCog(commands.Cog, name="Логирование и Защита"):
 
             # 3. Бан нарушителя с удалением сообщений за 1 день
             try:
-                await author.ban(reason="АвтоМодерация - реклама", delete_message_days=1)
+                await author.ban(reason="АвтоМодерация - реклама", delete_message_seconds=86400)
             except Exception as e:
                 logger.error(f"Ошибка бана нарушителя за рекламу: {e}")
 

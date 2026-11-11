@@ -390,7 +390,7 @@ class ModerationCog(commands.Cog, name="Модерация"):
             pass
 
         try:
-            await ctx.guild.ban(discord.Object(id=user_id_to_ban), reason=f"Бан от {ctx.author.name}: {actual_reason}", delete_message_days=0)
+            await ctx.guild.ban(discord.Object(id=user_id_to_ban), reason=f"Бан от {ctx.author.name}: {actual_reason}")
         except discord.Forbidden:
             return await ctx.send("У бота нет прав для бана этого пользователя.", ephemeral=True)
 
