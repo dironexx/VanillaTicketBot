@@ -8,6 +8,8 @@ from typing import Optional
 
 MSK = timezone(timedelta(hours=3))
 
+logger = logging.getLogger("VanillaBot.DB")
+
 
 def get_msk_now() -> datetime:
     return datetime.now(MSK)
@@ -28,9 +30,6 @@ class DatabaseManager:
         Safely recovers from SQLite database corruption (e.g. malformed disk image).
         Backs up the corrupted files and initializes a clean database.
         """
-        import logging
-        import time
-        logger = logging.getLogger("VanillaBot.DB")
         logger.critical(
             "SQLite database at '%s' is corrupted (%s). Initiating emergency self-healing recovery...",
             self.db_path,

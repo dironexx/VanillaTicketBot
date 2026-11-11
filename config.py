@@ -9,7 +9,7 @@ CWD = Path.cwd()
 # 1. Поиск и загрузка .env
 env_loaded = False
 for directory in [BASE_DIR, CWD]:
-    for filename in [".env", ".env.txt", "config.env", "bot.env", ".env.example"]:
+    for filename in [".env", ".env.txt", "config.env", "bot.env"]:
         candidate = directory / filename
         if candidate.is_file():
             load_dotenv(dotenv_path=candidate, override=True, encoding="utf-8")
@@ -23,7 +23,7 @@ if not env_loaded:
 
 # 2. Резервный парсер
 for directory in [BASE_DIR, CWD]:
-    for filename in [".env", ".env.txt", ".env.example"]:
+    for filename in [".env", ".env.txt"]:
         candidate = directory / filename
         if candidate.is_file():
             try:

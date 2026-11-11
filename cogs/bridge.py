@@ -16,15 +16,8 @@ from discord import app_commands, ui
 from discord.ext import commands, tasks
 
 from config import Config
-from database import DatabaseManager, get_msk_now_str
+from database import DatabaseManager
 from design import AG, Colors
-from cogs.inventory_renderer import (
-    ITEM_TRANSLATIONS,
-    format_item_name,
-    format_potion_effect,
-    render_inventory_image,
-    render_slots_grid,
-)
 
 logger = logging.getLogger("VanillaBot.Bridge")
 
@@ -118,15 +111,14 @@ def translate_death_message(death_msg: str, player_name: str) -> str:
 
 # --- МОДАЛЬНОЕ ОКНО И КНОПКА ДЛЯ ЛИЧНЫХ СООБЩЕНИЙ (DM) ---
 from cogs.bridge_views import (
+    MOB_TRANSLATIONS,
     get_skin_avatar_url,
     get_skin_body_url,
-    DmReplyModal,
     DmReplyView,
     TwoFactorVerifyView,
     TwoFactorPublicAlertView,
     LoginAlertView,
     AccountSecurityView,
-    LinkModal,
     PermanentLinkPanelView,
 )
 
@@ -229,6 +221,19 @@ class BridgeCog(commands.Cog, name="Мост Minecraft"):
         })
 
     async def start_web_server(self):
+        secret = (Config.BRIDGE_SECRET or "").strip()
+        if not secret:
+            logger.critical(
+                "BRIDGE_SECRET не задан — WebSocket-мост не запущен. "
+                "Укажите секрет в .env и в config.yml плагина (bridge.token)."
+            )
+            return
+        if secret == "vanillaland_secret_2026":
+            logger.warning(
+                "BRIDGE_SECRET использует значение по умолчанию — это небезопасно. "
+                "Сгенерируйте новый секрет (python -c \"import secrets;print(secrets.token_urlsafe(32))\") "
+                "и обновите его в .env и в config.yml плагина (bridge.token)."
+            )
         try:
             self.runner = web.AppRunner(self.app)
             await self.runner.setup()

@@ -187,6 +187,109 @@ class AltsChannelModal(ui.Modal, title="Ввод канала оповещени
         self.add_item(self.channel_input)
 
     async def on_submit(self, interaction: discord.Interaction):
+        raw = self.channel_input.value.strip()
+        # Извлекаем ID из упоминания <#123...>, ссылки или чистых цифр
+        match = re.search(r"(\d{17,20})", raw)
+        if raw and not match:
+            return await interaction.response.send_message(
+                "❌ Не удалось распознать ID канала. Укажите ID (17-20 цифр) или упоминание канала.",
+                ephemeral=True,
+            )
+
+        new_cid = int(match.group(1)) if match else None
+
+        if new_cid:
+            # Проверяем доступность канала для бота
+            ch = interaction.client.get_channel(new_cid)
+            if not ch:
+                try:
+                    ch = await interaction.client.fetch_channel(new_cid)
+                except Exception:
+                    ch = None
+
+            if not ch or not hasattr(ch, "send"):
+                return await interaction.response.send_message(
+                    f"❌ Бот не имеет доступа к каналу с ID `{new_cid}` или этот канал не поддерживает текстовые сообщения.",
+                    ephemeral=True,
+                )
+
+            guild = getattr(ch, "guild", interaction.guild)
+            if guild and guild.me:
+                perms = ch.permissions_for(guild.me)
+                if not (perms.view_channel and perms.send_messages and perms.embed_links):
+                    return await interaction.response.send_message(
+                        f"⚠️ У бота нет прав **Просматривать канал**, **Отправлять сообщения** или **Встраивать ссылки** в канале {ch.mention}!\n"
+                        f"Пожалуйста, выдайте боту эти права в настройках канала и повторите попытку.",
+                        ephemeral=True,
+                    )
+
+            if self.db:
+                self.db.set_setting("alts_alert_channel_id", str(new_cid))
+
+            # Отправляем тестовый алерт в выбранный канал
+            try:
+                test_embed = discord.Embed(
+                    title="🛡️ Канал оповещений безопасности подключен",
+                    description=(
+                        f"**Статус:** Канал успешно настроен и проверен.\n"
+                        f"**Инициатор:** {interaction.user.mention}\n"
+                        f"**Время:** `{get_msk_now_str()}`\n\n"
+                        f"*Сюда будут автоматически приходить оповещения об обходе банов, мультиаккаунтах и подозрительных входах.*"
+                    ),
+                    color=Colors.GREEN,
+                    timestamp=datetime.now(timezone.utc),
+                )
+                test_embed.set_footer(text="Vanilla Land • Безопасность и LiteBans")
+                await ch.send(embed=test_embed)
+            except Exception as e:
+                return await interaction.response.send_message(
+                    f"⚠️ Канал сохранён, но не удалось отправить тестовое сообщение: `{e}`",
+                    ephemeral=True,
+                )
+
+            if self.panel_view:
+                self.panel_view._sync_buttons()
+                try:
+                    if interaction.message:
+                        await interaction.message.edit(embed=self.panel_view.get_embed(), view=self.panel_view)
+                except Exception:
+                    pass
+
+            await interaction.response.send_message(
+                f"✅ Канал оповещений безопасности успешно установлен на {ch.mention} (`{new_cid}`)!\n"
+                f"Тестовое сообщение доставлено в канал.",
+                ephemeral=True,
+            )
+        else:
+            if self.db:
+                self.db.set_setting("alts_alert_channel_id", "")
+            if self.panel_view:
+                self.panel_view._sync_buttons()
+                try:
+                    if interaction.message:
+                        await interaction.message.edit(embed=self.panel_view.get_embed(), view=self.panel_view)
+                except Exception:
+                    pass
+            await interaction.response.send_message(
+                "🔄 Канал оповещений сброшен на значение по умолчанию (автоопределение из системных логов).",
+                ephemeral=True,
+            )
+
+
+class AltsQuickWhoisModal(ui.Modal, title="Быстрый поиск аккаунтов (Whois)"):
+    def __init__(self, db: Optional[DatabaseManager], bot: Optional[commands.Bot] = None):
+        super().__init__()
+        self.db = db
+        self.bot = bot
+        self.query_input = ui.TextInput(
+            label="Ник игрока или IP-адрес",
+            placeholder="Например: Steve или 194.25.110.197",
+            required=True,
+            max_length=64,
+        )
+        self.add_item(self.query_input)
+
+    async def on_submit(self, interaction: discord.Interaction):
         query = self.query_input.value.strip()
         if not self.db:
             return await interaction.response.send_message("❌ База данных не подключена.", ephemeral=True)
@@ -310,6 +413,259 @@ class AltsChannelModal(ui.Modal, title="Ввод канала оповещени
             embed.set_footer(text="Vanilla Land • Security Intelligence")
             return await interaction.followup.send(embed=embed, ephemeral=True)
 
+
+
+class AltsChannelConfigView(ui.View):
+    """Интерактивное меню выбора и тестирования канала алертов об обходе банов"""
+
+    def __init__(self, db: Optional[DatabaseManager], bot: commands.Bot, panel_view: Optional["AltsPanelControlView"] = None):
+        super().__init__(timeout=180)
+        self.db = db
+        self.bot = bot
+        self.panel_view = panel_view
+
+    @ui.select(
+        cls=ui.ChannelSelect,
+        channel_types=[discord.ChannelType.text, discord.ChannelType.news],
+        placeholder="Выберите канал для алертов из списка сервера...",
+        min_values=1,
+        max_values=1,
+        row=0,
+    )
+    async def select_channel(self, interaction: discord.Interaction, select: ui.ChannelSelect):
+        selected_ch = select.values[0]
+        ch = selected_ch
+        if not hasattr(ch, "send"):
+            resolved = self.bot.get_channel(selected_ch.id)
+            if resolved:
+                ch = resolved
+
+        guild = getattr(ch, "guild", interaction.guild)
+        if guild and guild.me and hasattr(ch, "permissions_for"):
+            perms = ch.permissions_for(guild.me)
+            if not (perms.view_channel and perms.send_messages and perms.embed_links):
+                return await interaction.response.send_message(
+                    f"⚠️ У бота нет прав **Просматривать канал**, **Отправлять сообщения** или **Встраивать ссылки** в канале {ch.mention}!\n"
+                    f"Выдайте боту права и попробуйте снова.",
+                    ephemeral=True,
+                )
+
+        if self.db:
+            self.db.set_setting("alts_alert_channel_id", str(ch.id))
+
+        try:
+            test_embed = discord.Embed(
+                title="🛡️ Канал оповещений безопасности подключен",
+                description=(
+                    f"**Статус:** Канал успешно настроен и проверен.\n"
+                    f"**Инициатор:** {interaction.user.mention}\n"
+                    f"**Время:** `{get_msk_now_str()}`\n\n"
+                    f"*Сюда будут автоматически приходить оповещения об обходе банов, мультиаккаунтах и подозрительных входах.*"
+                ),
+                color=Colors.GREEN,
+                timestamp=datetime.now(timezone.utc),
+            )
+            test_embed.set_footer(text="Vanilla Land • Безопасность и LiteBans")
+            await ch.send(embed=test_embed)
+            test_status = "Тестовое сообщение успешно доставлено."
+        except Exception as e:
+            test_status = f"Канал сохранён, но при тесте возникла ошибка: `{e}`"
+
+        if self.panel_view:
+            self.panel_view._sync_buttons()
+
+        await interaction.response.send_message(
+            f"✅ Канал оповещений об обходе банов установлен на {ch.mention} (`{ch.id}`)!\n{test_status}",
+            ephemeral=True,
+        )
+
+    @ui.button(label="Тестовый алерт", style=discord.ButtonStyle.success, emoji="🔔", row=1)
+    async def btn_test_alert(self, interaction: discord.Interaction, button: ui.Button):
+        sec_cog = interaction.client.get_cog("SecurityCog")
+        target_ch = await sec_cog._get_alert_channel() if sec_cog else None
+
+        if not target_ch:
+            return await interaction.response.send_message(
+                "❌ Не удалось определить канал для отправки алертов! Проверьте настройки каналов или выберите канал в меню выше.",
+                ephemeral=True,
+            )
+
+        try:
+            test_embed = discord.Embed(
+                title="🛡️ Тест канала алертов безопасности",
+                description=(
+                    f"**Статус:** Канал проверен и полностью готов к работе!\n"
+                    f"**Канал доставки:** {target_ch.mention} (`{getattr(target_ch, 'id', 'N/A')}`)\n"
+                    f"**Проверил:** {interaction.user.mention}\n"
+                    f"**Время:** `{get_msk_now_str()}`\n\n"
+                    f"*Это тестовое уведомление подтверждает, что бот имеет все необходимые права (View Channel, Send Messages, Embed Links).* "
+                ),
+                color=Colors.BLUE,
+                timestamp=datetime.now(timezone.utc),
+            )
+            test_embed.set_footer(text="Vanilla Land • LiteBans Guard Test")
+            await target_ch.send(embed=test_embed)
+            await interaction.response.send_message(
+                f"✅ Тестовый алерт успешно доставлен в {target_ch.mention}!",
+                ephemeral=True,
+            )
+        except Exception as e:
+            await interaction.response.send_message(
+                f"❌ Ошибка отправки в {target_ch.mention}: `{e}`\n"
+                f"Убедитесь, что у роли бота есть права **Просматривать канал**, **Отправлять сообщения** и **Встраивать ссылки**.",
+                ephemeral=True,
+            )
+
+    @ui.button(label="Ввести ID вручную", style=discord.ButtonStyle.secondary, emoji="⌨️", row=1)
+    async def btn_manual_id(self, interaction: discord.Interaction, button: ui.Button):
+        await interaction.response.send_modal(AltsChannelModal(self.db, self.panel_view))
+
+    @ui.button(label="Сбросить по умолчанию", style=discord.ButtonStyle.danger, emoji="🔄", row=1)
+    async def btn_reset(self, interaction: discord.Interaction, button: ui.Button):
+        if self.db:
+            self.db.set_setting("alts_alert_channel_id", "")
+        if self.panel_view:
+            self.panel_view._sync_buttons()
+        await interaction.response.send_message(
+            "🔄 Канал оповещений сброшен на системный канал по умолчанию.",
+            ephemeral=True,
+        )
+
+
+class AltsWhitelistModal(ui.Modal, title="Добавить в белый список"):
+    def __init__(self, db: Optional[DatabaseManager], whitelist_view: Optional["AltsWhitelistView"] = None):
+        super().__init__()
+        self.db = db
+        self.whitelist_view = whitelist_view
+
+        self.target_input = ui.TextInput(
+            label="Никнейм игрока или IP адрес",
+            placeholder="Например: Player123 или 94.25.110.197",
+            required=True,
+            max_length=64,
+        )
+        self.reason_input = ui.TextInput(
+            label="Причина добавления в исключения",
+            placeholder="Например: Братья играют с одного роутера / Тестер",
+            required=False,
+            max_length=128,
+        )
+        self.add_item(self.target_input)
+        self.add_item(self.reason_input)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        target = self.target_input.value.strip()
+        reason = self.reason_input.value.strip() or "Исключение безопасности"
+        if not target:
+            return await interaction.response.send_message("❌ Укажите ник или IP.", ephemeral=True)
+
+        is_ip = bool(re.match(r"^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$", target))
+        target_type = "ip" if is_ip else "player"
+
+        if self.db and hasattr(self.db, "add_security_whitelist"):
+            self.db.add_security_whitelist(
+                target=target,
+                target_type=target_type,
+                reason=reason,
+                added_by=interaction.user.name,
+            )
+
+        if self.whitelist_view:
+            await interaction.response.defer()
+            await self.whitelist_view.refresh(interaction)
+        else:
+            await interaction.response.send_message(
+                f"✅ **{target}** ({target_type}) успешно добавлен в белый список!\n**Причина:** {reason}",
+                ephemeral=True,
+            )
+
+
+class AltsWhitelistDeleteSelect(ui.Select):
+    def __init__(self, items: list[dict]):
+        options = []
+        for it in items[:25]:
+            t = it["target"]
+            typ = it.get("type", "player")
+            reason = it.get("reason", "") or "Без причины"
+            label = f"{t} ({typ})"[:100]
+            desc = f"Причина: {reason}"[:100]
+            options.append(discord.SelectOption(label=label, value=t, description=desc, emoji="🗑️"))
+        super().__init__(
+            placeholder="Выберите запись для удаления из исключений...",
+            min_values=1,
+            max_values=1,
+            options=options,
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        target = self.values[0]
+        view: "AltsWhitelistView" = self.view
+        if view.db and hasattr(view.db, "remove_security_whitelist"):
+            view.db.remove_security_whitelist(target)
+        await view.refresh(interaction)
+
+
+class AltsWhitelistView(ui.View):
+    def __init__(self, db: Optional[DatabaseManager], bot: commands.Bot, panel_view: Optional["AltsPanelControlView"] = None):
+        super().__init__(timeout=180)
+        self.db = db
+        self.bot = bot
+        self.panel_view = panel_view
+        self._populate_items()
+
+    def _populate_items(self):
+        self.clear_items()
+        items = self.db.get_security_whitelist() if self.db else []
+        if items:
+            self.add_item(AltsWhitelistDeleteSelect(items))
+        self.add_item(self.btn_add_entry)
+        self.add_item(self.btn_refresh)
+        if items:
+            self.add_item(self.btn_clear_all)
+
+    def get_embed(self) -> discord.Embed:
+        wl = self.db.get_security_whitelist() if self.db else []
+        if not wl:
+            desc = "*Белый список пуст. Вы можете добавить ник игрока или IP в исключения с помощью кнопки ниже.*"
+        else:
+            wl_lines = [
+                f"• `{w['target']}` ({w['type']}) — *{w['reason'] or 'Без причины'}* (добавил: {w['added_by']}, {w.get('added_at', '')[:10]})"
+                for w in wl[:25]
+            ]
+            desc = f"**Всего исключений в базе:** {len(wl)}\n\n" + "\n".join(wl_lines)
+
+        embed = discord.Embed(
+            title="🛡️ Белый список исключений безопасности",
+            description=desc + "\n\n*Игроки и IP из этого списка игнорируются автокиком и автобаном при мультиаккаунтах и проверках.*",
+            color=Colors.BLUE,
+            timestamp=datetime.now(timezone.utc),
+        )
+        embed.set_footer(text="Vanilla Land • Общая база данных безопасности")
+        return embed
+
+    @ui.button(label="Добавить исключение", style=discord.ButtonStyle.success, emoji="➕", row=1)
+    async def btn_add_entry(self, interaction: discord.Interaction, button: ui.Button):
+        await interaction.response.send_modal(AltsWhitelistModal(self.db, self))
+
+    @ui.button(label="Обновить", style=discord.ButtonStyle.secondary, emoji="🔄", row=1)
+    async def btn_refresh(self, interaction: discord.Interaction, button: ui.Button):
+        await self.refresh(interaction)
+
+    @ui.button(label="Очистить всё", style=discord.ButtonStyle.danger, emoji="🧹", row=1)
+    async def btn_clear_all(self, interaction: discord.Interaction, button: ui.Button):
+        if self.db:
+            with self.db._get_connection() as conn:
+                conn.execute("DELETE FROM security_whitelist")
+                conn.commit()
+        await self.refresh(interaction)
+
+    async def refresh(self, interaction: discord.Interaction):
+        self._populate_items()
+        embed = self.get_embed()
+        if interaction.response.is_done():
+            await interaction.followup.edit_message(message_id=interaction.message.id, embed=embed, view=self)
+        else:
+            await interaction.response.edit_message(embed=embed, view=self)
 
 
 class AltsDisplaySettingsView(ui.View):

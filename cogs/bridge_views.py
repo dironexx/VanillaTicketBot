@@ -7,6 +7,8 @@
 - Модальные окна ввода ников и ответов в ЛС (LinkModal, DmReplyModal)
 """
 
+import asyncio
+import secrets
 import time
 from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any, TYPE_CHECKING
