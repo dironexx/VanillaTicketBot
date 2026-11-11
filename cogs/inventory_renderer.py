@@ -1,7 +1,58 @@
 import io
+import os
 import re
+from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 from PIL import Image, ImageDraw, ImageFont
+
+# Абсолютный путь к assets/ — не зависит от рабочей директории (systemd/cron)
+ASSETS_DIR = Path(__file__).resolve().parent.parent / "assets"
+
+# Плоских иконок нет в паке — берём ближайшую ванильную текстуру
+TEXTURE_ALIASES: Dict[str, str] = {
+    "compass": "compass_00",
+    "clock": "clock_00",
+    "recovery_compass": "recovery_compass_00",
+    "tipped_arrow": "tipped_arrow_head",
+    "crossbow": "crossbow_standby",
+    "shield": "empty_armor_slot_shield",
+    "chest": "barrel_top",
+    "ender_chest": "obsidian",
+    "enchanting_table": "enchanting_table_top",
+    "crafting_table": "crafting_table_top",
+    "command_block": "command_block_front",
+    "barrel": "barrel_top",
+    "respawn_anchor": "respawn_anchor_side0",
+    "player_head": "carved_pumpkin",
+    "zombie_head": "carved_pumpkin",
+    "creeper_head": "carved_pumpkin",
+    "dragon_head": "carved_pumpkin",
+    "skeleton_skull": "carved_pumpkin",
+    "wither_skeleton_skull": "carved_pumpkin",
+    "piglin_head": "carved_pumpkin",
+}
+
+_WOOD_TYPES = {
+    "oak", "spruce", "birch", "jungle", "acacia", "dark_oak", "mangrove",
+    "cherry", "pale_oak", "bamboo", "crimson", "warped",
+}
+
+# Для блочных предметов (лестницы/плиты/...) в паке есть только базовая текстура
+BLOCK_SUFFIX_FALLBACKS: Dict[str, tuple] = {
+    "_stairs": ("", "_planks", "_block", "_bricks", "s"),
+    "_slab": ("", "_planks", "_block", "_bricks", "s"),
+    "_wall": ("", "_planks", "_block", "_bricks", "s"),
+    "_fence": ("", "_planks", "s"),
+    "_fence_gate": ("", "_planks"),
+    "_button": ("", "_planks"),
+    "_pressure_plate": ("", "_planks"),
+    "_door": ("_door_top", "_door_bottom", "_planks"),
+    "_trapdoor": ("_trapdoor", "_planks"),
+    "_bed": ("_wool",),
+    "_carpet": ("_wool",),
+    "_sign": ("_sign", "_planks"),
+    "_hanging_sign": ("_hanging_sign", "_planks"),
+}
 
 # --- СЛОВАРЬ ПЕРЕВОДА ПРЕДМЕТОВ MINECRAFT НА РУССКИЙ ЯЗЫК ---
 ITEM_TRANSLATIONS: Dict[str, Tuple[str, str]] = {
@@ -259,61 +310,85 @@ def format_potion_effect(effect_raw: str) -> str:
 
 
 
-import os
-
-
 class MinecraftTextureManager:
-    """Менеджер и кэш оригинальных текстур Minecraft 26.3"""
-    def __init__(self, assets_dir: str = "assets/textures"):
-        self.item_dir = os.path.join(assets_dir, "item")
-        self.block_dir = os.path.join(assets_dir, "block")
+    """Менеджер и кэш текстур Minecraft (плоские item/block + алиасы для блочных предметов)."""
+
+    def __init__(self, assets_dir: str | Path = None):
+        base = Path(assets_dir) if assets_dir else ASSETS_DIR / "textures"
+        self.item_dir = str(base / "item")
+        self.block_dir = str(base / "block")
         self.cache: Dict[Tuple[str, int], Image.Image] = {}
 
-    def get_texture(self, raw_name: Optional[str], target_size: int = 36) -> Optional[Image.Image]:
+    @staticmethod
+    def _candidates(raw_name: str) -> list[str]:
+        clean = raw_name.lower().strip()
+        cands: list[str] = []
+
+        def add(value: str) -> None:
+            if value and value not in cands:
+                cands.append(value)
+
+        add(TEXTURE_ALIASES.get(clean, ""))
+
+        # WAXED_/EXPOSED_/... префиксы медных блоков
+        base = clean
+        for pref in ("waxed_", "exposed_", "weathered_", "oxidized_"):
+            if base.startswith(pref):
+                base = base[len(pref):]
+        if base != clean:
+            add(base)
+
+        stems = [clean]
+        if base != clean:
+            stems.append(base)
+        for source in stems:
+            for suffix, variants in BLOCK_SUFFIX_FALLBACKS.items():
+                if not source.endswith(suffix):
+                    continue
+                stem = source[: -len(suffix)]
+                for variant in variants:
+                    if variant == "_planks" and stem not in _WOOD_TYPES:
+                        continue
+                    add(stem + variant if variant else stem)
+                break
+
+        if "shulker_box" in clean:
+            add("shulker_box")
+        if "potion" in clean:
+            if "splash" in clean:
+                add("splash_potion")
+            elif "lingering" in clean:
+                add("lingering_potion")
+            else:
+                add("potion")
+        if "golden_apple" in clean:
+            add("golden_apple")
+
+        add(clean)
+        return cands
+
+    def get_texture(self, raw_name: Optional[str], target_size: int = 32) -> Optional[Image.Image]:
         if not raw_name or raw_name.upper() in ("AIR", "EMPTY", "NONE"):
             return None
         key = (raw_name.upper(), target_size)
         if key in self.cache:
             return self.cache[key]
 
-        clean = raw_name.lower().strip()
-        candidates = [clean]
-        if "shulker_box" in clean:
-            candidates.append(clean)
-            candidates.append("shulker_box")
-        if "potion" in clean:
-            if "splash" in clean:
-                candidates.append("splash_potion")
-            elif "lingering" in clean:
-                candidates.append("lingering_potion")
-            else:
-                candidates.append("potion")
-        if "golden_apple" in clean:
-            candidates.append("golden_apple")
-
-        found_path = None
-        for c in candidates:
-            c_png = c if c.endswith(".png") else c + ".png"
-            p1 = os.path.join(self.item_dir, c_png)
-            if os.path.isfile(p1):
-                found_path = p1
-                break
-            p2 = os.path.join(self.block_dir, c_png)
-            if os.path.isfile(p2):
-                found_path = p2
-                break
-
-        if not found_path:
-            return None
-
-        try:
-            with Image.open(found_path) as im:
-                im = im.convert("RGBA")
-                resized = im.resize((target_size, target_size), Image.Resampling.NEAREST)
-                self.cache[key] = resized
-                return resized
-        except Exception:
-            return None
+        for candidate in self._candidates(raw_name):
+            c_png = candidate if candidate.endswith(".png") else candidate + ".png"
+            for base in (self.item_dir, self.block_dir):
+                path = os.path.join(base, c_png)
+                if not os.path.isfile(path):
+                    continue
+                try:
+                    with Image.open(path) as im:
+                        im = im.convert("RGBA")
+                        resized = im.resize((target_size, target_size), Image.Resampling.NEAREST)
+                        self.cache[key] = resized
+                        return resized
+                except Exception:
+                    continue
+        return None
 
     def get_silhouette(self, slot_type: str, target_size: int = 32) -> Optional[Image.Image]:
         name_map = {
@@ -341,26 +416,39 @@ class MinecraftTextureManager:
             return None
 
 
-TEXTURE_MGR = MinecraftTextureManager()
+TEXTURE_MGR = MinecraftTextureManager(ASSETS_DIR / "textures")
+
+
+_FONT_CACHE: Dict[int, ImageFont.ImageFont] = {}
 
 
 def _get_font(size: int = 12) -> ImageFont.ImageFont:
-    local_font = os.path.join("assets", "fonts", "font.ttf")
-    if os.path.isfile(local_font):
-        try:
-            return ImageFont.truetype(local_font, size)
-        except Exception:
-            pass
+    if size in _FONT_CACHE:
+        return _FONT_CACHE[size]
 
-    for name in ["segoeui.ttf", "arial.ttf", "calibri.ttf", "DejaVuSans.ttf"]:
+    font = None
+    local_font = ASSETS_DIR / "fonts" / "font.ttf"
+    if local_font.is_file():
         try:
-            return ImageFont.truetype(name, size)
+            font = ImageFont.truetype(str(local_font), size)
         except Exception:
-            continue
-    try:
-        return ImageFont.load_default(size=size)
-    except Exception:
-        return ImageFont.load_default()
+            font = None
+
+    if font is None:
+        for name in ["segoeui.ttf", "arial.ttf", "calibri.ttf", "DejaVuSans.ttf"]:
+            try:
+                font = ImageFont.truetype(name, size)
+                break
+            except Exception:
+                continue
+    if font is None:
+        try:
+            font = ImageFont.load_default(size=size)
+        except Exception:
+            font = ImageFont.load_default()
+
+    _FONT_CACHE[size] = font
+    return font
 
 
 def _draw_slot(
@@ -384,17 +472,27 @@ def _draw_slot(
     draw.line([(x, y + size), (x + size, y + size)], fill=(59, 62, 69, 255), width=1)
     draw.line([(x + size, y), (x + size, y + size)], fill=(59, 62, 69, 255), width=1)
 
-    tex = TEXTURE_MGR.get_texture(item_name, 36) if item_name and item_name.upper() != "AIR" else None
+    tex_size = 32
+    tex = TEXTURE_MGR.get_texture(item_name, tex_size) if item_name and item_name.upper() != "AIR" else None
     if tex:
-        ox = x + (size - 36) // 2
-        oy = y + (size - 36) // 2
+        ox = x + (size - tex_size) // 2
+        oy = y + (size - tex_size) // 2
         img.paste(tex, (ox, oy), tex)
     elif silhouette:
-        sil = TEXTURE_MGR.get_silhouette(silhouette, 32)
+        sil = TEXTURE_MGR.get_silhouette(silhouette, tex_size)
         if sil:
-            ox = x + (size - 32) // 2
-            oy = y + (size - 32) // 2
+            ox = x + (size - tex_size) // 2
+            oy = y + (size - tex_size) // 2
             img.paste(sil, (ox, oy), sil)
+    else:
+        # Текстуры нет — аккуратный знак вопроса вместо пустого слота
+        draw.text(
+            (x + size // 2, y + size // 2),
+            "?",
+            fill=(150, 156, 166, 255),
+            font=_get_font(16),
+            anchor="mm",
+        )
 
     # 3. Счетчик стака с тенью (Minecraft drop shadow)
     if count > 1:
