@@ -1,0 +1,36 @@
+# Секреты и локальная конфигурация
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Локальная БД и рантайм-данные
+*.db
+*.db-wal
+*.db-shm
+transcripts/
+*.log
+
+# Инструменты агента
+.pi/
+
+# Старые бэкапы, патчи и архивы (не рабочий код)
+scratch/
+.backup_cogs/
+*.zip
+*.rar
+*.tar.gz
+*.7z
+
+# Билд-артефакты плагина
+jar_latest/
+target/
+
+# Скриншоты в корне (не часть проекта)
+/*.png
