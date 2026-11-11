@@ -308,7 +308,7 @@ def build_mod_help_embed(guild: Optional[discord.Guild]) -> discord.Embed:
             "• `!endersee <ник>` — Просмотр эндер-сундука\n"
             "• `!chunks` — Диагностика нагрузки чанков и мобов\n"
             "• `!automod [on/off]` — Переключение фильтра ссылок и рекламы\n"
-            "• `!bridge_status` — Состояние сетевого сокета моста"
+            "• `!online` — Онлайн, TPS и список игроков (состояние моста)"
         ),
         inline=False,
     )
@@ -322,7 +322,8 @@ def build_mod_help_embed(guild: Optional[discord.Guild]) -> discord.Embed:
             "• `/backup_status` / `/backup_create` — Статус и создание бэкапа (DriveBackupV2)\n"
             "• `/chat_search <запрос>` — Поиск по истории сообщений в игре\n"
             "• `/rules_sync` — Синхронизация правил из VanillaRules в Discord\n"
-            "• `/set_alts_channel [#канал]` — Настройка канала оповещений о твинках"
+            "• `!alts_channel [#канал]` — Настройка канала оповещений о твинках\n"
+            "• `!alts_panel` — Панель защиты от твинков и обхода банов"
         ),
         inline=False,
     )
