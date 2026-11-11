@@ -3695,5 +3695,8 @@ async def setup(bot: commands.Bot):
     db: DatabaseManager = getattr(bot, "db")
     cog = BridgeCog(bot, db)
     await bot.add_cog(cog)
+    # Persistent-вью: работают после рестарта бота (данные резолвятся по interaction.user.id)
     bot.add_view(PermanentLinkPanelView(cog))
+    bot.add_view(AccountSecurityView(cog))
+    bot.add_view(LoginAlertView(cog))
 

@@ -462,8 +462,9 @@ class TwoFactorPublicAlertView(ui.View):
 
 
 class LoginAlertView(ui.View):
-    """Интерактивное меню тихого пуш-уведомления о входе в игру (доверенный IP)"""
-    def __init__(self, bridge_cog: "BridgeCog", player_name: str, discord_user_id: int):
+    """Пуш-уведомление о входе (persistent: игрок резолвится по interaction.user.id)."""
+
+    def __init__(self, bridge_cog: "BridgeCog", player_name: str = "", discord_user_id: int = 0):
         super().__init__(timeout=None)
         self.bridge_cog = bridge_cog
         self.player_name = player_name
@@ -472,22 +473,24 @@ class LoginAlertView(ui.View):
     @ui.button(label="Заблокировать (Экстренный кик)", style=discord.ButtonStyle.danger, emoji="🚨", custom_id="sec:alert_kick")
     async def alert_kick_btn(self, interaction: discord.Interaction, button: ui.Button):
         is_dm = interaction.guild is None
-        if interaction.user.id != self.discord_user_id:
+        if self.discord_user_id and interaction.user.id != self.discord_user_id:
             msg = "❌ Действие недоступно для этого пользователя."
             return await interaction.response.send_message(msg) if is_dm else await interaction.response.send_message(msg, ephemeral=True)
 
-        self.bridge_cog.db.clear_ip_sessions(self.player_name)
-        await self.bridge_cog.broadcast_packet({"type": "emergency_kick", "player": self.player_name})
-        await self.bridge_cog.broadcast_packet({"type": "clear_sessions", "player": self.player_name})
-        for c in self.children:
-            c.disabled = True
-        button.label = "Аккаунт заблокирован"
-        button.emoji = "⛔"
+        linked = self.bridge_cog.db.get_linked_account_by_discord(interaction.user.id)
+        if not linked:
+            msg = "❌ У вас нет привязанного аккаунта Minecraft."
+            return await interaction.response.send_message(msg) if is_dm else await interaction.response.send_message(msg, ephemeral=True)
+        player_name = linked["player_name"]
+
+        self.bridge_cog.db.clear_ip_sessions(player_name)
+        await self.bridge_cog.broadcast_packet({"type": "emergency_kick", "player": player_name})
+        await self.bridge_cog.broadcast_packet({"type": "clear_sessions", "player": player_name})
 
         embed = discord.Embed(
             title="🚨 Аккаунт экстренно заблокирован • Vanilla Land",
             description=(
-                f"Все доверенные сессии игрока **`{self.player_name}`** сброшены.\n"
+                f"Все доверенные сессии игрока **`{player_name}`** сброшены.\n"
                 "Если кто-то находился на сервере под вашим аккаунтом — он немедленно исключён.\n\n"
                 "🔒 **Рекомендация по безопасности:**\n"
                 "Немедленно зайдите на сервер и смените пароль: `/changepassword`."
@@ -495,66 +498,85 @@ class LoginAlertView(ui.View):
             color=Colors.RED,
         )
         embed.set_footer(text="Vanilla Land Security • Экстренная блокировка")
-        skin_url = get_skin_avatar_url(self.player_name, None, self.bridge_cog.db)
+        skin_url = get_skin_avatar_url(player_name, None, self.bridge_cog.db)
         if skin_url:
             embed.set_thumbnail(url=skin_url)
-        await interaction.response.edit_message(embed=embed, view=self)
+        await interaction.response.edit_message(embed=embed, view=None)
 
 
 class AccountSecurityView(ui.View):
-    """Интерфейс настроек безопасности, управления 2FA, сроками сессий и пуш-алертами"""
-    def __init__(self, bridge_cog: "BridgeCog", discord_user_id: int, player_name: str):
+    """Центр безопасности аккаунта (persistent: данные резолвятся по interaction.user.id)."""
+
+    def __init__(self, bridge_cog: "BridgeCog", discord_user_id: int = 0, player_name: str = ""):
         super().__init__(timeout=None)
         self.bridge_cog = bridge_cog
         self.discord_user_id = discord_user_id
         self.player_name = player_name
         self.update_buttons()
 
-    def update_buttons(self):
-        linked = self.bridge_cog.db.get_linked_account_by_discord(self.discord_user_id)
+    def _linked(self, user_id: int):
+        return self.bridge_cog.db.get_linked_account_by_discord(user_id)
+
+    async def _reply(self, interaction: discord.Interaction, text: str):
+        if interaction.guild is None:
+            return await interaction.response.send_message(text)
+        return await interaction.response.send_message(text, ephemeral=True)
+
+    def update_buttons(self, user_id: Optional[int] = None):
+        uid = int(user_id or self.discord_user_id or 0)
+        if not uid:
+            return
+        linked = self._linked(uid)
         is_2fa = linked.get("two_factor_enabled", True) if linked else False
         trust_hours = linked.get("trust_duration_hours", 48) if linked else 48
         alerts_on = linked.get("login_alerts_enabled", False) if linked else False
-
         trust_tag = "Строгий" if trust_hours <= 0 else (f"{trust_hours}ч" if trust_hours < 168 else "7д")
 
         for child in self.children:
-            if isinstance(child, ui.Button):
-                if child.custom_id == "sec:toggle_2fa":
-                    child.label = f"2FA: {'ВКЛ' if is_2fa else 'ВЫКЛ'}"
-                    child.emoji = "🛡️" if is_2fa else "⚠️"
-                    child.style = discord.ButtonStyle.primary if is_2fa else discord.ButtonStyle.secondary
-                elif child.custom_id == "sec:trust_duration":
-                    child.label = f"Срок IP: {trust_tag}"
-                    child.emoji = "⏳"
-                elif child.custom_id == "sec:toggle_alerts":
-                    child.label = f"Алерты: {'ВКЛ' if alerts_on else 'ВЫКЛ'}"
-                    child.emoji = "🔔" if alerts_on else "🔕"
-                    child.style = discord.ButtonStyle.primary if alerts_on else discord.ButtonStyle.secondary
+            if not isinstance(child, ui.Button):
+                continue
+            if child.custom_id == "sec:toggle_2fa":
+                child.label = f"2FA: {'ВКЛ' if is_2fa else 'ВЫКЛ'}"
+                child.emoji = "🛡️" if is_2fa else "⚠️"
+                child.style = discord.ButtonStyle.primary if is_2fa else discord.ButtonStyle.secondary
+            elif child.custom_id == "sec:trust_duration":
+                child.label = f"Срок IP: {trust_tag}"
+                child.emoji = "⏳"
+            elif child.custom_id == "sec:toggle_alerts":
+                child.label = f"Алерты: {'ВКЛ' if alerts_on else 'ВЫКЛ'}"
+                child.emoji = "🔔" if alerts_on else "🔕"
+                child.style = discord.ButtonStyle.primary if alerts_on else discord.ButtonStyle.secondary
 
-    def build_embed(self, notice: Optional[str] = None) -> discord.Embed:
-        linked = self.bridge_cog.db.get_linked_account_by_discord(self.discord_user_id)
+    def build_embed(
+        self,
+        notice: Optional[str] = None,
+        user_id: Optional[int] = None,
+        player_name: Optional[str] = None,
+    ) -> discord.Embed:
+        uid = int(user_id or self.discord_user_id or 0)
+        linked = self._linked(uid) if uid else None
+        player_name = player_name or (linked or {}).get("player_name") or self.player_name
+
         if not linked:
             return AG.embed(
                 title="Безопасность аккаунта • Vanilla Land",
-                description="У вас нет привязанного аккаунта Minecraft.",
+                description="У вас нет привязанного аккаунта Minecraft. Используйте `/link`.",
                 color=Colors.DARK,
             )
 
         is_2fa = linked.get("two_factor_enabled", True)
         trust_hours = linked.get("trust_duration_hours", 48)
         alerts_on = linked.get("login_alerts_enabled", False)
-        sessions = self.bridge_cog.db.get_trusted_ip_sessions(self.player_name)
+        sessions = self.bridge_cog.db.get_trusted_ip_sessions(player_name)
 
         trust_str = "Каждый вход" if trust_hours <= 0 else f"{trust_hours} ч."
         status_2fa = f"Включен (сессия = {trust_str})" if is_2fa else "Выключен"
         alerts_str = "Включены" if alerts_on else "Выключены"
-        dc_mention = f"<@{self.discord_user_id}>"
-        linked_at = linked.get('linked_at', 'Не зафиксирована')
+        linked_at = linked.get("linked_at", "Не зафиксирована")
 
         desc = (
-            f"• 👤 **Игровой ник:** `{self.player_name}`\n"
-            f"• 🔗 **Привязка Discord:** {dc_mention}\n"
+            f"• 👤 **Игровой ник:** `{player_name}`\n"
+            f"• 🔗 **Привязка Discord:** <@{uid}>\n"
             f"• 🔐 **2FA - Подтверждение входа:** `{status_2fa}`\n"
             f"• 🔔 **Push-уведомления в ЛС:** `{alerts_str}`\n"
             f"• 📅 **Дата привязки:** `{linked_at}`"
@@ -563,11 +585,11 @@ class AccountSecurityView(ui.View):
             desc = f"**{notice}**\n\n" + desc
 
         embed = discord.Embed(
-            title=f"Безопасность аккаунта • {self.player_name}",
+            title=f"Безопасность аккаунта • {player_name}",
             description=desc,
             color=0xFF8C00 if is_2fa else Colors.DARK,
         )
-        skin_url = get_skin_avatar_url(self.player_name, None, self.bridge_cog.db)
+        skin_url = get_skin_avatar_url(player_name, None, self.bridge_cog.db)
         if skin_url:
             embed.set_thumbnail(url=skin_url)
 
@@ -582,77 +604,67 @@ class AccountSecurityView(ui.View):
                 inline=False,
             )
         else:
-            msg = "*Строгий режим: доверенные сессии не сохраняются (код запрашивается при каждом входе).*" if trust_hours <= 0 else "*Нет активных сессий (при следующем входе потребуется код).* "
-            embed.add_field(
-                name="🛡️ Доверенные IP-сессии",
-                value=msg,
-                inline=False,
+            msg = (
+                "*Строгий режим: доверенные сессии не сохраняются (код запрашивается при каждом входе).*"
+                if trust_hours <= 0
+                else "*Нет активных сессий (при следующем входе потребуется код).* "
             )
+            embed.add_field(name="🛡️ Доверенные IP-сессии", value=msg, inline=False)
 
         embed.set_footer(text="Vanilla Land • Центр безопасности 2FA")
         return embed
 
     @ui.button(label="2FA", style=discord.ButtonStyle.primary, emoji="🛡️", custom_id="sec:toggle_2fa", row=0)
     async def toggle_2fa_btn(self, interaction: discord.Interaction, button: ui.Button):
-        is_dm = interaction.guild is None
-        if interaction.user.id != self.discord_user_id:
-            msg = "❌ Это меню другого пользователя."
-            return await interaction.response.send_message(msg) if is_dm else await interaction.response.send_message(msg, ephemeral=True)
-
-        linked = self.bridge_cog.db.get_linked_account_by_discord(self.discord_user_id)
+        linked = self._linked(interaction.user.id)
         if not linked:
-            msg = "❌ Аккаунт не привязан."
-            return await interaction.response.send_message(msg) if is_dm else await interaction.response.send_message(msg, ephemeral=True)
-
-        current = linked.get("two_factor_enabled", True)
-        new_state = not current
-        self.bridge_cog.db.set_two_factor_enabled(self.discord_user_id, new_state)
-        self.update_buttons()
+            return await self._reply(interaction, "❌ У вас нет привязанного аккаунта Minecraft.")
+        new_state = not linked.get("two_factor_enabled", True)
+        self.bridge_cog.db.set_two_factor_enabled(interaction.user.id, new_state)
+        if self.discord_user_id:
+            self.update_buttons(interaction.user.id)
         notice = "✔ Двухфакторная защита 2FA активирована." if new_state else "⚠️ Двухфакторная защита 2FA отключена."
-        await interaction.response.edit_message(embed=self.build_embed(notice=notice), view=self)
+        await interaction.response.edit_message(
+            embed=self.build_embed(notice, interaction.user.id, linked["player_name"]), view=self
+        )
 
     @ui.button(label="Срок IP: 48ч", style=discord.ButtonStyle.secondary, emoji="⏳", custom_id="sec:trust_duration", row=0)
     async def trust_duration_btn(self, interaction: discord.Interaction, button: ui.Button):
-        is_dm = interaction.guild is None
-        if interaction.user.id != self.discord_user_id:
-            msg = "❌ Это меню другого пользователя."
-            return await interaction.response.send_message(msg) if is_dm else await interaction.response.send_message(msg, ephemeral=True)
-
-        linked = self.bridge_cog.db.get_linked_account_by_discord(self.discord_user_id)
-        cur = linked.get("trust_duration_hours", 48) if linked else 48
-        cycle = {48: 168, 168: 0, 0: 24, 24: 48}
-        next_val = cycle.get(cur, 48)
-
-        self.bridge_cog.db.set_trust_duration(self.discord_user_id, next_val)
-        self.update_buttons()
+        linked = self._linked(interaction.user.id)
+        if not linked:
+            return await self._reply(interaction, "❌ У вас нет привязанного аккаунта Minecraft.")
+        cur = linked.get("trust_duration_hours", 48)
+        next_val = {48: 168, 168: 0, 0: 24, 24: 48}.get(cur, 48)
+        self.bridge_cog.db.set_trust_duration(interaction.user.id, next_val)
+        if self.discord_user_id:
+            self.update_buttons(interaction.user.id)
         label_map = {48: "48 часов", 168: "7 дней", 0: "Строгий режим (каждый вход)", 24: "24 часа"}
         notice = f"✔ Срок доверия к IP установлен на {label_map.get(next_val, '48ч')}."
-        await interaction.response.edit_message(embed=self.build_embed(notice=notice), view=self)
+        await interaction.response.edit_message(
+            embed=self.build_embed(notice, interaction.user.id, linked["player_name"]), view=self
+        )
 
     @ui.button(label="Уведомления", style=discord.ButtonStyle.secondary, emoji="🔔", custom_id="sec:toggle_alerts", row=0)
     async def toggle_alerts_btn(self, interaction: discord.Interaction, button: ui.Button):
-        is_dm = interaction.guild is None
-        if interaction.user.id != self.discord_user_id:
-            msg = "❌ Это меню другого пользователя."
-            return await interaction.response.send_message(msg) if is_dm else await interaction.response.send_message(msg, ephemeral=True)
-
-        linked = self.bridge_cog.db.get_linked_account_by_discord(self.discord_user_id)
-        cur = linked.get("login_alerts_enabled", False) if linked else False
-        new_val = not cur
-
-        self.bridge_cog.db.set_login_alerts_enabled(self.discord_user_id, new_val)
-        self.update_buttons()
+        linked = self._linked(interaction.user.id)
+        if not linked:
+            return await self._reply(interaction, "❌ У вас нет привязанного аккаунта Minecraft.")
+        new_val = not linked.get("login_alerts_enabled", False)
+        self.bridge_cog.db.set_login_alerts_enabled(interaction.user.id, new_val)
+        if self.discord_user_id:
+            self.update_buttons(interaction.user.id)
         notice = "✔ Уведомления о входе в ЛС включены." if new_val else "🔕 Уведомления о входе в ЛС выключены."
-        await interaction.response.edit_message(embed=self.build_embed(notice=notice), view=self)
+        await interaction.response.edit_message(
+            embed=self.build_embed(notice, interaction.user.id, linked["player_name"]), view=self
+        )
 
     @ui.button(label="Журнал входов", style=discord.ButtonStyle.secondary, emoji="📜", custom_id="sec:login_history", row=1)
     async def login_history_btn(self, interaction: discord.Interaction, button: ui.Button):
-        is_dm = interaction.guild is None
-        if interaction.user.id != self.discord_user_id:
-            msg = "❌ Это меню другого пользователя."
-            return await interaction.response.send_message(msg) if is_dm else await interaction.response.send_message(msg, ephemeral=True)
-
-        logins = self.bridge_cog.db.get_recent_logins(self.player_name, 5)
+        linked = self._linked(interaction.user.id)
+        if not linked:
+            return await self._reply(interaction, "❌ У вас нет привязанного аккаунта Minecraft.")
+        player_name = linked["player_name"]
+        logins = self.bridge_cog.db.get_recent_logins(player_name, 5)
         if not logins:
             notice = "📜 История входов пока пуста."
         else:
@@ -666,47 +678,48 @@ class AccountSecurityView(ui.View):
                 status_icon = "✔" if item["status"] == "SUCCESS" else "❌"
                 lines.append(f"• `{dt_str} UTC` — `{masked_ip}` ({status_icon} {item['status']})")
             notice = "📜 **Последние входы в аккаунт:**\n" + "\n".join(lines)
-        await interaction.response.edit_message(embed=self.build_embed(notice=notice), view=self)
+        await interaction.response.edit_message(
+            embed=self.build_embed(notice, interaction.user.id, player_name), view=self
+        )
 
     @ui.button(label="Экстренный сброс и кик", style=discord.ButtonStyle.danger, emoji="🚨", custom_id="sec:emergency_kick", row=1)
     async def emergency_kick_btn(self, interaction: discord.Interaction, button: ui.Button):
-        is_dm = interaction.guild is None
-        if interaction.user.id != self.discord_user_id:
-            msg = "❌ Это меню другого пользователя."
-            return await interaction.response.send_message(msg) if is_dm else await interaction.response.send_message(msg, ephemeral=True)
-
-        self.bridge_cog.db.clear_ip_sessions(self.player_name)
-        await self.bridge_cog.broadcast_packet({"type": "emergency_kick", "player": self.player_name})
-        await self.bridge_cog.broadcast_packet({"type": "clear_sessions", "player": self.player_name})
+        linked = self._linked(interaction.user.id)
+        if not linked:
+            return await self._reply(interaction, "❌ У вас нет привязанного аккаунта Minecraft.")
+        player_name = linked["player_name"]
+        self.bridge_cog.db.clear_ip_sessions(player_name)
+        await self.bridge_cog.broadcast_packet({"type": "emergency_kick", "player": player_name})
+        await self.bridge_cog.broadcast_packet({"type": "clear_sessions", "player": player_name})
         notice = "🚨 Все доверенные IP сброшены. Если кто-то находился на сервере — он исключён."
-        await interaction.response.edit_message(embed=self.build_embed(notice=notice), view=self)
+        await interaction.response.edit_message(
+            embed=self.build_embed(notice, interaction.user.id, player_name), view=self
+        )
 
     @ui.button(label="Отвязать аккаунт", style=discord.ButtonStyle.secondary, emoji="🔗", custom_id="sec:unlink_btn", row=1)
     async def unlink_btn(self, interaction: discord.Interaction, button: ui.Button):
-        is_dm = interaction.guild is None
-        if interaction.user.id != self.discord_user_id:
-            msg = "❌ Это меню другого пользователя."
-            return await interaction.response.send_message(msg) if is_dm else await interaction.response.send_message(msg, ephemeral=True)
+        linked = self._linked(interaction.user.id)
+        if not linked:
+            return await self._reply(interaction, "❌ У вас нет привязанного аккаунта Minecraft.")
+        player_name = linked["player_name"]
+        unlinked = self.bridge_cog.db.unlink_account_by_discord(interaction.user.id)
+        target_name = unlinked or player_name
+        self.bridge_cog.pending_2fa.pop(target_name.lower(), None)
+        try:
+            await self.bridge_cog.broadcast_packet({"type": "account_unlinked", "player": target_name})
+        except Exception:
+            pass
 
-        unlinked = self.bridge_cog.db.unlink_account_by_discord(self.discord_user_id)
-        target_name = unlinked or self.player_name
-        if target_name:
-            self.bridge_cog.pending_2fa.pop(target_name.lower(), None)
-            try:
-                await self.bridge_cog.broadcast_packet({"type": "account_unlinked", "player": target_name})
-            except Exception:
-                pass
-
-        for child in self.children:
-            child.disabled = True
         embed = discord.Embed(
             title="Аккаунт отвязан • Vanilla Land",
-            description=f"Аккаунт Minecraft **`{target_name}`** успешно отвязан от вашего Discord профиля. Двухфакторная защита 2FA отключена.",
+            description=(
+                f"Аккаунт Minecraft **`{target_name}`** успешно отвязан от вашего Discord профиля. "
+                "Двухфакторная защита 2FA отключена."
+            ),
             color=Colors.DARK,
         )
         embed.set_footer(text="Vanilla Land • Безопасность аккаунта")
-        await interaction.response.edit_message(embed=embed, view=self)
-
+        await interaction.response.edit_message(embed=embed, view=None)
 
 
 class LinkModal(ui.Modal, title="Привязка аккаунта Minecraft"):

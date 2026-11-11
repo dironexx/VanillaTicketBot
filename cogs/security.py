@@ -2658,3 +2658,7 @@ class SecurityCog(commands.Cog, name="Безопасность"):
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(SecurityCog(bot))
+    db = getattr(bot, "db", None)
+    if db is not None:
+        # Панель защиты от твинков должна работать после рестарта
+        bot.add_view(AltsPanelControlView(db, bot))
