@@ -226,7 +226,7 @@ python -X utf8 -m pyflakes main.py bot.py config.py database.py design.py cogs/*
   `!ticketunban`, `!check`, `!invsee`, `!endersee`, `!chunks`, `!bc`, `!maintenance`, `!automod`,
   `!alts`, `!whois`, `!chat_search`.
 - **Администрации**: `!ticket_panel`, `!verify_panel`, `!link_panel`, `!sync_roles`,
-  `!roles_info`, `!spec_role`, `!set_*_role`, `!verification_lockdown`, `!alts_panel`,
+  `!roles_info`, `!spec_role`, `!ticket_ping_role`, `!set_*_role`, `!verification_lockdown`, `!alts_panel`,
   `!alts_scan`, `!alts_history`, `!alts_whitelist`, `!record_ip`, `!healthcheck`,
   `!panic_whitelist`, `!backup_status`, `!backup_create`, `!rules_sync`, `!purge_junk`.
 

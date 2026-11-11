@@ -4,7 +4,7 @@ import logging
 import time
 from contextlib import contextmanager
 from datetime import datetime, timezone, timedelta
-from typing import Optional
+from typing import Optional, Union
 
 MSK = timezone(timedelta(hours=3))
 
@@ -899,14 +899,17 @@ class DatabaseManager:
             conn.commit()
             return cursor.rowcount > 0
 
-    def record_login(self, player_name: str, ip: str, status: str):
-        """Записывает событие входа в журнал безопасности"""
+    def record_login(self, player_name: str, ip: str, status: Union[str, bool] = "SUCCESS"):
+        """Записывает событие входа. Принимает 'SUCCESS'/'FAILED' или bool (обратная совместимость)."""
+        if isinstance(status, bool):
+            status = "SUCCESS" if status else "FAILED"
+        status_str = str(status or "SUCCESS").strip().upper() or "SUCCESS"
         now_ts = datetime.now(timezone.utc).timestamp()
         with self._get_connection() as conn:
             conn.execute("""
                 INSERT INTO login_history (player_name, ip, login_time, status)
                 VALUES (?, ?, ?, ?)
-            """, (player_name.strip(), ip.strip(), now_ts, status.strip()))
+            """, (player_name.strip(), ip.strip(), now_ts, status_str))
             conn.commit()
 
     def get_recent_logins(self, player_name: str, limit: int = 5) -> list[dict]:

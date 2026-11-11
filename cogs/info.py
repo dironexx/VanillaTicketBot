@@ -335,7 +335,9 @@ def build_mod_help_embed(guild: Optional[discord.Guild]) -> discord.Embed:
             "• `!verify_panel` — Панель верификации новых участников\n"
             "• `!ticket_panel` — Панель создания тикетов\n"
             "• `!roles_info` — Проверка настройки ролей верификации и мута\n"
-            "• `!sync_roles` — Раздать начальные роли участникам без ролей"
+            "• `!sync_roles` — Раздать начальные роли участникам без ролей\n"
+            "• `!ticket_ping_role add/remove/list/clear @роль` — Роли, которые пингуются в новых тикетах"
+            " *(владелец/админ)*"
         ),
         inline=False,
     )

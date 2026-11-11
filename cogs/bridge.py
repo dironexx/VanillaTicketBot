@@ -179,6 +179,11 @@ class BridgeCog(commands.Cog, name="Мост Minecraft"):
         self._alt_check_requests: Dict[str, float] = {}
         self._alt_check_manual: Dict[str, float] = {}
 
+        # Rate limit ввода кодов привязки: user_id -> список timestamp попыток
+        self._link_attempts: Dict[int, List[float]] = {}
+        self.link_max_attempts: int = 5
+        self.link_window_sec: float = 600.0
+
         # Кэш лидерборда и профилей игроков для надежности и нулевых задержек
         self.last_top_data: Optional[dict] = None
         self.cached_player_stats: Dict[str, Tuple[float, dict]] = {}
@@ -233,6 +238,21 @@ class BridgeCog(commands.Cog, name="Мост Minecraft"):
             return False
         if self._alt_check_manual.pop(key, 0.0) > now:
             return False
+        return True
+
+    def link_rate_ok(self, user_id: int) -> bool:
+        """Не более N попыток ввода кода привязки за окно (по умолчанию 5 за 10 минут)."""
+        try:
+            uid = int(user_id)
+        except (TypeError, ValueError):
+            return False
+        now = time.time()
+        attempts = [t for t in self._link_attempts.get(uid, []) if now - t < self.link_window_sec]
+        if len(attempts) >= self.link_max_attempts:
+            self._link_attempts[uid] = attempts[-self.link_max_attempts:]
+            return False
+        attempts.append(now)
+        self._link_attempts[uid] = attempts[-self.link_max_attempts:]
         return True
 
     async def query_minecraft(self, packet: dict, timeout: float = 3.0) -> Optional[dict]:
@@ -401,10 +421,13 @@ class BridgeCog(commands.Cog, name="Мост Minecraft"):
         except Exception as e:
             logger.debug(f"Ошибка синхронизации персонала с Minecraft: {e}")
 
-    async def update_bot_presence(self):
-        """Обновляет статус Discord бота в зависимости от режима техработ и онлайна (с защитой от Gateway Rate Limit)"""
+    async def update_bot_presence(self, force: bool = False):
+        """Обновляет статус Discord бота в зависимости от режима техработ и онлайна (с защитой от Gateway Rate Limit).
+
+        force=True игнорирует 10-секундный троттлинг (используется при on_ready).
+        """
         now = time.monotonic()
-        if now - getattr(self, "_last_presence_time", 0.0) < 10.0:
+        if not force and now - getattr(self, "_last_presence_time", 0.0) < 10.0:
             return
         self._last_presence_time = now
         try:
@@ -727,9 +750,11 @@ class BridgeCog(commands.Cog, name="Мост Minecraft"):
             reason = str(data.get("reason", "Технические работы"))
             self.maintenance_enabled = enabled
             self.maintenance_reason = reason
+            if not enabled:
+                self.was_restarting = False
+            self.create_tracked_task(self.update_bot_presence())
 
             events_ch = self.get_events_channel()
-            bridge_ch = self.bot.get_channel(Config.BRIDGE_CHANNEL_ID)
             if enabled:
                 embed = discord.Embed(
                     title="🔧 Внимание! Сервер переведён в режим технических работ",
@@ -897,7 +922,7 @@ class BridgeCog(commands.Cog, name="Мост Minecraft"):
 
             if not linked.get("two_factor_enabled", True):
                 # Игрок отключил 2FA подтверждение входов в настройках (/security)
-                self.db.record_login(player, ip, success=True)
+                self.db.record_login(player, ip, status="SUCCESS")
                 if linked.get("login_alerts_enabled", True):
                     self.create_tracked_task(self.send_login_push_alert(linked["discord_user_id"], player, ip))
                 await self.broadcast_packet({"type": "login_verdict", "player": player, "status": "2fa_disabled"})
@@ -905,7 +930,7 @@ class BridgeCog(commands.Cog, name="Мост Minecraft"):
 
             # Проверяем, доверен ли IP и не истекли ли часы сессии
             if self.db.is_ip_trusted(player, ip):
-                self.db.record_login(player, ip, success=True)
+                self.db.record_login(player, ip, status="SUCCESS")
                 if linked.get("login_alerts_enabled", True):
                     self.create_tracked_task(self.send_login_push_alert(linked["discord_user_id"], player, ip))
                 await self.broadcast_packet({
@@ -1005,7 +1030,7 @@ class BridgeCog(commands.Cog, name="Мост Minecraft"):
                 linked = self.db.get_linked_account_by_mc(player)
                 trust_hrs = linked.get("trust_duration_hours", Config.IP_SESSION_HOURS) if linked else Config.IP_SESSION_HOURS
                 self.db.trust_ip_session(player, ip, trust_hrs)
-                self.db.record_login(player, ip, success=True)
+                self.db.record_login(player, ip, status="SUCCESS")
                 pending = self.pending_2fa.pop(player.lower(), None)
                 if pending:
                     # Удаляем публичный алерт если был
@@ -1106,17 +1131,7 @@ class BridgeCog(commands.Cog, name="Мост Minecraft"):
                     "message": "Личные сообщения в Discord всё ещё закрыты! Откройте ЛС в настройках конфиденциальности.",
                 })
 
-        # 15. Синхронизация статуса техработ из Minecraft
-        elif p_type == "maintenance":
-            enabled = bool(data.get("enabled", False))
-            reason = data.get("reason", "Техническое обслуживание сервера")
-            self.maintenance_enabled = enabled
-            self.maintenance_reason = reason
-            if not enabled:
-                self.was_restarting = False
-            await self.update_bot_presence()
-
-        # 16. Синхронизация таймера техработ/рестарта из Minecraft
+        # 15. Синхронизация таймера техработ/рестарта из Minecraft
         elif p_type == "maintenance_countdown":
             mode = data.get("mode", "lock")
             reason = data.get("reason", "Плановые работы на сервере")
@@ -2968,7 +2983,13 @@ class BridgeCog(commands.Cog, name="Мост Minecraft"):
 
         # 2. Если введён 6-значный код (полученный из Minecraft)
         if clean_target.isdigit() and len(clean_target) == 6:
-            code_info = self.db.consume_link_code(clean_target)
+            if not self.link_rate_ok(user_id):
+                return await send_response(content="⏳ Слишком много попыток ввода кода. Попробуйте снова через 10 минут.")
+            code_info = self.db.get_link_code(clean_target)
+            if code_info and code_info.get("discord_user_id") and int(code_info["discord_user_id"]) != int(user_id):
+                return await send_response(content="❌ Этот код принадлежит другому Discord-пользователю. Получите код в своём аккаунте.")
+            if code_info:
+                code_info = self.db.consume_link_code(clean_target)
             if code_info and code_info.get("player_name"):
                 player_name = code_info["player_name"]
 

@@ -221,7 +221,7 @@ class TwoFactorVerifyView(ui.View):
         linked = self.bridge_cog.db.get_linked_account_by_mc(self.player)
         trust_hrs = linked.get("trust_duration_hours", Config.IP_SESSION_HOURS) if linked else Config.IP_SESSION_HOURS
         self.bridge_cog.db.trust_ip_session(self.player, self.ip, trust_hrs)
-        self.bridge_cog.db.record_login(self.player, self.ip, success=True)
+        self.bridge_cog.db.record_login(self.player, self.ip, status="SUCCESS")
         self.bridge_cog.pending_2fa.pop(self.player.lower(), None)
 
         # Отправляем подтверждение на сервер Minecraft
@@ -270,7 +270,7 @@ class TwoFactorVerifyView(ui.View):
             return await interaction.response.send_message("❌ Это действие доступно только владельцу аккаунта.", ephemeral=True)
 
         self.bridge_cog.pending_2fa.pop(self.player.lower(), None)
-        self.bridge_cog.db.record_login(self.player, self.ip, success=False)
+        self.bridge_cog.db.record_login(self.player, self.ip, status="FAILED")
 
         # Отправляем команду кика на сервер Minecraft
         await self.bridge_cog.broadcast_packet({
@@ -351,7 +351,7 @@ class TwoFactorPublicAlertView(ui.View):
         linked = self.bridge_cog.db.get_linked_account_by_mc(self.player)
         trust_hrs = linked.get("trust_duration_hours", Config.IP_SESSION_HOURS) if linked else Config.IP_SESSION_HOURS
         self.bridge_cog.db.trust_ip_session(self.player, self.ip, trust_hrs)
-        self.bridge_cog.db.record_login(self.player, self.ip, success=True)
+        self.bridge_cog.db.record_login(self.player, self.ip, status="SUCCESS")
         self.bridge_cog.pending_2fa.pop(self.player.lower(), None)
 
         await self.bridge_cog.broadcast_packet({
@@ -385,7 +385,7 @@ class TwoFactorPublicAlertView(ui.View):
             return await interaction.response.send_message("❌ Это действие предназначено только для владельца аккаунта.", ephemeral=True)
 
         self.bridge_cog.pending_2fa.pop(self.player.lower(), None)
-        self.bridge_cog.db.record_login(self.player, self.ip, success=False)
+        self.bridge_cog.db.record_login(self.player, self.ip, status="FAILED")
 
         await self.bridge_cog.broadcast_packet({
             "type": "2fa_rejected",
@@ -703,7 +703,17 @@ class LinkModal(ui.Modal, title="Привязка аккаунта Minecraft"):
 
         # 1. Если введен 6-значный код
         if val.isdigit() and len(val) == 6:
-            code_info = self.bridge_cog.db.consume_link_code(val)
+            if not self.bridge_cog.link_rate_ok(interaction.user.id):
+                return await interaction.response.send_message(
+                    "⏳ Слишком много попыток ввода кода. Попробуйте снова через 10 минут.", ephemeral=True
+                )
+            code_info = self.bridge_cog.db.get_link_code(val)
+            if code_info and code_info.get("discord_user_id") and int(code_info["discord_user_id"]) != int(interaction.user.id):
+                return await interaction.response.send_message(
+                    "❌ Этот код принадлежит другому Discord-пользователю. Получите код в своём аккаунте.", ephemeral=True
+                )
+            if code_info:
+                code_info = self.bridge_cog.db.consume_link_code(val)
             if code_info and code_info.get("player_name"):
                 player_name = code_info["player_name"]
                 already_mc = self.bridge_cog.db.get_linked_account_by_mc(player_name)

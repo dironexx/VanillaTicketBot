@@ -83,9 +83,18 @@ class VanillaSupportBot(commands.Bot):
             except Exception:
                 pass
 
-        await self.change_presence(
-            activity=discord.CustomActivity(name=Config.SERVER_IP)
-        )
+        # Статус выставляет мост (техработы / онлайн / TPS), а не on_ready напрямую,
+        # иначе после каждого реконнекта статус «Онлайн: N» затирается IP-адресом.
+        bridge = self.get_cog("Мост Minecraft")
+        if bridge and hasattr(bridge, "update_bot_presence"):
+            try:
+                await bridge.update_bot_presence(force=True)
+            except Exception as e:
+                logger.debug(f"Не удалось обновить статус через мост: {e}")
+        else:
+            await self.change_presence(
+                activity=discord.CustomActivity(name=Config.SERVER_IP)
+            )
 
     # --- ОБРАБОТЧИК НЕИЗВЕСТНЫХ КОМАНД И ОШИБОК ---
     async def on_command_error(self, ctx: commands.Context, error: commands.CommandError):

@@ -135,6 +135,23 @@ async def sync_spec_role_to_tickets(guild: Optional[discord.Guild], spec_role: O
         await asyncio.gather(*tasks)
 
 
+def get_ticket_ping_role_ids(db: DatabaseManager) -> list[int]:
+    """Роли, которые пингуются в тикетах.
+
+    Приоритет: настройка в БД (ключ есть, может быть пустой) -> Config.TICKET_PING_ROLE_ID.
+    Пустая строка в БД означает «не пинговать никого» (явно очищено командой).
+    """
+    try:
+        saved = db.get_setting("ticket_ping_role_ids")
+    except Exception:
+        saved = None
+    if saved is not None:
+        return [int(x) for x in str(saved).split(",") if x.strip().isdigit()]
+    if getattr(Config, "TICKET_PING_ROLE_ID", 0):
+        return [int(Config.TICKET_PING_ROLE_ID)]
+    return []
+
+
 def is_mod_or_admin(interaction_or_ctx) -> bool:
     user = (
         interaction_or_ctx.user
@@ -311,11 +328,21 @@ async def create_ticket_channel(
 
         mentions_list = [user.mention]
 
-        # Специальная роль для пинга в тикете (вместо СММ)
-        ping_role = guild.get_role(Config.TICKET_PING_ROLE_ID) if getattr(Config, "TICKET_PING_ROLE_ID", 0) else None
-        if ping_role:
-            overwrites[ping_role] = discord.PermissionOverwrite(view_channel=True, send_messages=True, attach_files=True, read_message_history=True)
-            mentions_list.append(ping_role.mention)
+        # Роли для пинга в тикете (настраиваются !ticket_ping_role; фолбэк — Config)
+        ping_roles: list[discord.Role] = []
+        for role_id in get_ticket_ping_role_ids(db):
+            role = guild.get_role(role_id)
+            if not role or role in ping_roles:
+                continue
+            ping_roles.append(role)
+            overwrites[role] = discord.PermissionOverwrite(
+                view_channel=True,
+                send_messages=True,
+                attach_files=True,
+                read_message_history=True,
+            )
+            if role.mention not in mentions_list:
+                mentions_list.append(role.mention)
 
         for role_id in Config.MOD_ROLE_IDS:
             role = guild.get_role(role_id)
@@ -324,7 +351,8 @@ async def create_ticket_channel(
                 if any(w in role.name.lower() for w in ("смм", "smm")):
                     continue
                 overwrites[role] = discord.PermissionOverwrite(view_channel=True, send_messages=True, attach_files=True, read_message_history=True)
-                if not ping_role and role.mention not in mentions_list:
+                # Если настроены отдельные роли пинга — не пингуем модерацию целиком
+                if not ping_roles and role.mention not in mentions_list:
                     mentions_list.append(role.mention)
 
         # Выдача доступа роли спека к тикету
@@ -663,6 +691,136 @@ class TicketsCog(commands.Cog, name="Тикеты"):
             color=discord.Color.from_rgb(0, 180, 216),
         )
         embed.set_footer(text="Vanilla Land • Поддержка")
+        await ctx.send(embed=embed, ephemeral=True)
+
+    # --- РОЛИ, КОТОРЫЕ ПИНГУЮТСЯ В ТИКЕТАХ (ВЛАДЕЛЕЦ) ---
+    @commands.hybrid_command(
+        name="ticket_ping_role",
+        aliases=["роль_пинга", "ticket_ping", "пинг_тикет"],
+        description="Управление ролями, которые пингуются в новых тикетах (владелец/админ)",
+    )
+    @app_commands.describe(
+        action="add / remove / list / clear",
+        role="Роль для add или remove",
+    )
+    async def ticket_ping_role_cmd(
+        self,
+        ctx: commands.Context,
+        action: str = "list",
+        role: Optional[discord.Role] = None,
+    ):
+        if not ctx.guild:
+            return await ctx.send("Команда доступна только на сервере.", ephemeral=True)
+
+        allowed = ctx.author.id == ctx.guild.owner_id
+        if not allowed and isinstance(ctx.author, discord.Member):
+            allowed = ctx.author.guild_permissions.administrator
+        if not allowed:
+            try:
+                allowed = await self.bot.is_owner(ctx.author)
+            except Exception:
+                allowed = False
+        if not allowed:
+            return await ctx.send(
+                "Только владелец сервера (или администратор) может менять роли пинга в тикетах.",
+                ephemeral=True,
+            )
+
+        if ctx.interaction:
+            await ctx.defer(ephemeral=True)
+
+        act = (action or "list").strip().lower()
+        raw_saved = None
+        try:
+            raw_saved = self.db.get_setting("ticket_ping_role_ids")
+        except Exception:
+            raw_saved = None
+        current_ids = get_ticket_ping_role_ids(self.db)
+
+        def _save(ids: list[int]) -> None:
+            self.db.set_setting("ticket_ping_role_ids", ",".join(str(i) for i in ids))
+
+        if act in ("add", "добавить", "+"):
+            if not role:
+                return await ctx.send("Укажите роль: `!ticket_ping_role add @роль`", ephemeral=True)
+            if role.id in current_ids:
+                return await ctx.send(f"Роль {role.mention} уже пингуется в тикетах.", ephemeral=True)
+            ids = current_ids + [role.id]
+            _save(ids)
+            # Даём доступ к уже открытым тикетам (без повторного пинга)
+            updated = 0
+            for row in self.db.get_all_active_tickets():
+                ch = self.bot.get_channel(row[0])
+                if isinstance(ch, discord.TextChannel):
+                    try:
+                        await ch.set_permissions(
+                            role,
+                            view_channel=True,
+                            send_messages=True,
+                            attach_files=True,
+                            read_message_history=True,
+                            reason=f"Роль пинга тикетов добавлена ({ctx.author.name})",
+                        )
+                        updated += 1
+                    except Exception:
+                        pass
+            embed = AG.embed(
+                title="Роль пинга тикетов добавлена",
+                description=(
+                    f"{role.mention} будет пинговаться в новых тикетах.\n"
+                    f"Доступ выдан в активных тикетах: **{updated}**.\n\n"
+                    f"Всего ролей пинга: **{len(ids)}**"
+                ),
+                color=Colors.GREEN,
+            )
+            return await ctx.send(embed=embed, ephemeral=True)
+
+        if act in ("remove", "убрать", "удалить", "-"):
+            if not role:
+                return await ctx.send("Укажите роль: `!ticket_ping_role remove @роль`", ephemeral=True)
+            if role.id not in current_ids:
+                return await ctx.send(f"Роль {role.mention} не настроена для пинга в тикетах.", ephemeral=True)
+            ids = [i for i in current_ids if i != role.id]
+            _save(ids)
+            note = ""
+            if role.id in Config.MOD_ROLE_IDS:
+                note = "\n*Роль остаётся в MOD_ROLE_IDS — доступ к тикетам у неё сохранится.*"
+            embed = AG.embed(
+                title="Роль пинга тикетов убрана",
+                description=(
+                    f"{role.mention} больше не будет пинговаться в новых тикетах.\n"
+                    f"Осталось ролей пинга: **{len(ids)}**.{note}"
+                ),
+                color=Colors.YELLOW,
+            )
+            return await ctx.send(embed=embed, ephemeral=True)
+
+        if act in ("clear", "сброс", "очистить"):
+            _save([])
+            return await ctx.send(
+                "Роли пинга тикетов очищены: новые тикеты создаются без пинга ролей.",
+                ephemeral=True,
+            )
+
+        # list / status
+        source = "база данных" if raw_saved is not None else "Config/.env"
+        if current_ids:
+            roles = [ctx.guild.get_role(i) for i in current_ids]
+            lines = [f"• {r.mention} (`{r.id}`)" if r else f"• `{i}` — роль не найдена" for r, i in zip(roles, current_ids)]
+            value = "\n".join(lines)
+        else:
+            value = "*Роли пинга не настроены (тикеты создаются без пинга).*"
+        embed = AG.embed(
+            title="Роли пинга в тикетах",
+            description=(
+                f"{value}\n\n"
+                f"Источник: `{source}`\n\n"
+                "`!ticket_ping_role add @роль` — добавить\n"
+                "`!ticket_ping_role remove @роль` — убрать\n"
+                "`!ticket_ping_role clear` — очистить всё"
+            ),
+            color=Colors.BLUE,
+        )
         await ctx.send(embed=embed, ephemeral=True)
 
 
