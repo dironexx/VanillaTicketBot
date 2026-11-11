@@ -920,6 +920,8 @@ class BridgeCog(commands.Cog, name="Мост Minecraft"):
                 await self.broadcast_packet({"type": "login_verdict", "player": player, "status": "not_linked"})
                 return
 
+            trust_hrs = linked.get("trust_duration_hours", Config.IP_SESSION_HOURS)
+
             if not linked.get("two_factor_enabled", True):
                 # Игрок отключил 2FA подтверждение входов в настройках (/security)
                 self.db.record_login(player, ip, status="SUCCESS")
@@ -938,6 +940,7 @@ class BridgeCog(commands.Cog, name="Мост Minecraft"):
                     "player": player,
                     "status": "trusted_session",
                     "ip": ip,
+                    "trust_hours": trust_hrs,
                 })
                 return
 
@@ -945,11 +948,13 @@ class BridgeCog(commands.Cog, name="Мост Minecraft"):
             code = f"{secrets.randbelow(900000) + 100000}"
             discord_id = linked["discord_user_id"]
             expires_at = time.time() + Config.LOGIN_2FA_TIMEOUT_SEC
+            session_id = uuid.uuid4().hex
             self.pending_2fa[player.lower()] = {
                 "code": code,
                 "ip": ip,
                 "discord_id": discord_id,
                 "expires_at": expires_at,
+                "session_id": session_id,
             }
 
             user = self.bot.get_user(discord_id)
@@ -961,7 +966,7 @@ class BridgeCog(commands.Cog, name="Мост Minecraft"):
 
             dm_sent = False
             if user:
-                view = TwoFactorVerifyView(self, player, ip, code, discord_id, expires_at)
+                view = TwoFactorVerifyView(self, player, ip, code, discord_id, expires_at, session_id=session_id)
                 embed = view.build_verify_embed()
                 try:
                     msg = await user.send(embed=embed, view=view)
@@ -978,7 +983,7 @@ class BridgeCog(commands.Cog, name="Мост Minecraft"):
                 # Отправляем интерактивный алерт в канал верификации или команд с упоминанием игрока
                 target_channel = self.bot.get_channel(Config.VERIFICATION_CHANNEL_ID) or self.bot.get_channel(Config.COMMANDS_CHANNEL_ID) or self.get_events_channel()
                 if target_channel and isinstance(target_channel, discord.TextChannel):
-                    pub_view = TwoFactorPublicAlertView(self, player, ip, code, discord_id, expires_at)
+                    pub_view = TwoFactorPublicAlertView(self, player, ip, code, discord_id, expires_at, session_id=session_id)
                     pub_embed = discord.Embed(
                         title="⚠️ Закрыты личные сообщения Discord • Vanilla Land 2FA",
                         description=(
@@ -1011,6 +1016,7 @@ class BridgeCog(commands.Cog, name="Мост Minecraft"):
                     "code": code,
                     "ip": ip,
                     "timeout": Config.LOGIN_2FA_TIMEOUT_SEC,
+                    "trust_hours": trust_hrs,
                 })
             else:
                 await self.broadcast_packet({
@@ -1020,6 +1026,7 @@ class BridgeCog(commands.Cog, name="Мост Minecraft"):
                     "code": code,
                     "ip": ip,
                     "timeout": Config.LOGIN_2FA_TIMEOUT_SEC,
+                    "trust_hours": trust_hrs,
                 })
 
         # 14. Игрок подтвердил 2FA вводом кода в игре (/code <код>)
@@ -1095,7 +1102,9 @@ class BridgeCog(commands.Cog, name="Мост Minecraft"):
 
             dm_sent = False
             if user:
-                view = TwoFactorVerifyView(self, player, ip, code, discord_id, expires_at)
+                view = TwoFactorVerifyView(
+                    self, player, ip, code, discord_id, expires_at, session_id=pending.get("session_id", "")
+                )
                 embed = view.build_verify_embed()
                 try:
                     msg = await user.send(embed=embed, view=view)

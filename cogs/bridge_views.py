@@ -161,6 +161,7 @@ class TwoFactorVerifyView(ui.View):
         code: str,
         discord_user_id: int,
         expires_at: float,
+        session_id: str = "",
         public_alert_msg: Optional[discord.Message] = None,
     ):
         super().__init__(timeout=Config.LOGIN_2FA_TIMEOUT_SEC)
@@ -170,8 +171,16 @@ class TwoFactorVerifyView(ui.View):
         self.code = code
         self.discord_user_id = discord_user_id
         self.expires_at = expires_at
+        self.session_id = session_id
         self.public_alert_msg = public_alert_msg
         self.message: Optional[discord.Message] = None
+
+    def _session_stale(self) -> bool:
+        """Подтверждение относится к актуальной сессии входа, а не к старой/чужой."""
+        pending = self.bridge_cog.pending_2fa.get(self.player.lower())
+        if not pending or not self.session_id:
+            return True
+        return pending.get("session_id") != self.session_id
 
     def build_verify_embed(self) -> discord.Embed:
         now_ts = int(time.time())
@@ -216,6 +225,10 @@ class TwoFactorVerifyView(ui.View):
     async def confirm_btn(self, interaction: discord.Interaction, button: ui.Button):
         if interaction.user.id != self.discord_user_id:
             return await interaction.response.send_message("❌ Это действие доступно только владельцу аккаунта.", ephemeral=True)
+        if self._session_stale():
+            return await interaction.response.send_message(
+                "⚠️ Это подтверждение устарело. Запросите новый код на сервере.", ephemeral=True
+            )
 
         # Доверяем IP на настроенный пользователем срок
         linked = self.bridge_cog.db.get_linked_account_by_mc(self.player)
@@ -229,6 +242,7 @@ class TwoFactorVerifyView(ui.View):
             "type": "2fa_verified",
             "player": self.player,
             "ip": self.ip,
+            "trust_hours": trust_hrs,
         })
 
         if self.public_alert_msg:
@@ -268,6 +282,10 @@ class TwoFactorVerifyView(ui.View):
     async def reject_btn(self, interaction: discord.Interaction, button: ui.Button):
         if interaction.user.id != self.discord_user_id:
             return await interaction.response.send_message("❌ Это действие доступно только владельцу аккаунта.", ephemeral=True)
+        if self._session_stale():
+            return await interaction.response.send_message(
+                "⚠️ Это подтверждение устарело. Запросите новый код на сервере.", ephemeral=True
+            )
 
         self.bridge_cog.pending_2fa.pop(self.player.lower(), None)
         self.bridge_cog.db.record_login(self.player, self.ip, status="FAILED")
@@ -333,7 +351,16 @@ class TwoFactorVerifyView(ui.View):
 
 class TwoFactorPublicAlertView(ui.View):
     """Интерактивное уведомление в публичном/верификационном канале, когда у игрока закрыты ЛС"""
-    def __init__(self, bridge_cog: "BridgeCog", player: str, ip: str, code: str, discord_user_id: int, expires_at: float):
+    def __init__(
+        self,
+        bridge_cog: "BridgeCog",
+        player: str,
+        ip: str,
+        code: str,
+        discord_user_id: int,
+        expires_at: float,
+        session_id: str = "",
+    ):
         super().__init__(timeout=Config.LOGIN_2FA_TIMEOUT_SEC)
         self.bridge_cog = bridge_cog
         self.player = player
@@ -341,12 +368,23 @@ class TwoFactorPublicAlertView(ui.View):
         self.code = code
         self.discord_user_id = discord_user_id
         self.expires_at = expires_at
+        self.session_id = session_id
         self.message: Optional[discord.Message] = None
+
+    def _session_stale(self) -> bool:
+        pending = self.bridge_cog.pending_2fa.get(self.player.lower())
+        if not pending or not self.session_id:
+            return True
+        return pending.get("session_id") != self.session_id
 
     @ui.button(label="Подтвердить вход", style=discord.ButtonStyle.success, emoji="🛡️", custom_id="2fa_pub:verify")
     async def confirm_btn(self, interaction: discord.Interaction, button: ui.Button):
         if interaction.user.id != self.discord_user_id:
             return await interaction.response.send_message("❌ Это действие предназначено только для владельца аккаунта.", ephemeral=True)
+        if self._session_stale():
+            return await interaction.response.send_message(
+                "⚠️ Это подтверждение устарело. Запросите новый код на сервере.", ephemeral=True
+            )
 
         linked = self.bridge_cog.db.get_linked_account_by_mc(self.player)
         trust_hrs = linked.get("trust_duration_hours", Config.IP_SESSION_HOURS) if linked else Config.IP_SESSION_HOURS
@@ -358,6 +396,7 @@ class TwoFactorPublicAlertView(ui.View):
             "type": "2fa_verified",
             "player": self.player,
             "ip": self.ip,
+            "trust_hours": trust_hrs,
         })
 
         embed = discord.Embed(
@@ -383,6 +422,10 @@ class TwoFactorPublicAlertView(ui.View):
     async def reject_btn(self, interaction: discord.Interaction, button: ui.Button):
         if interaction.user.id != self.discord_user_id:
             return await interaction.response.send_message("❌ Это действие предназначено только для владельца аккаунта.", ephemeral=True)
+        if self._session_stale():
+            return await interaction.response.send_message(
+                "⚠️ Это подтверждение устарело. Запросите новый код на сервере.", ephemeral=True
+            )
 
         self.bridge_cog.pending_2fa.pop(self.player.lower(), None)
         self.bridge_cog.db.record_login(self.player, self.ip, status="FAILED")
