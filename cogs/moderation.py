@@ -112,7 +112,7 @@ class ModerationCog(commands.Cog, name="Модерация"):
             now_ts = time.time()
             expired = self.db.get_expired_mutes(now_ts)
 
-            for user_id, guild_id, reason in expired:
+            for user_id, guild_id, _reason in expired:
                 guild = self.bot.get_guild(guild_id)
                 if not guild:
                     self.db.delete_mute(user_id, guild_id)
@@ -151,7 +151,7 @@ class ModerationCog(commands.Cog, name="Модерация"):
             now_ts = time.time()
             expired = self.db.get_expired_vc_bans(now_ts)
 
-            for user_id, guild_id, reason in expired:
+            for user_id, guild_id, _reason in expired:
                 guild = self.bot.get_guild(guild_id)
                 if not guild:
                     self.db.delete_vc_ban(user_id, guild_id)

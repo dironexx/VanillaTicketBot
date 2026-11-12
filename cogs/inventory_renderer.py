@@ -598,7 +598,7 @@ def render_inventory_image(
     """Генерирует полную визуальную раскладку инвентаря игрока с оригинальными текстурами Minecraft"""
     slot_size = 52
     pad = 4
-    margin_x, margin_y = 20, 16
+    margin_x, _margin_y = 20, 16
 
     # 9 колонок
     total_w = margin_x * 2 + 9 * slot_size + 8 * pad

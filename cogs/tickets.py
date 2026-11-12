@@ -584,7 +584,7 @@ class TicketsCog(commands.Cog, name="Тикеты"):
             return await ctx.send(embed=embed)
 
         lines = []
-        for ch_id, u_id, u_name, last_act, created in tickets:
+        for ch_id, _u_id, u_name, last_act, _created in tickets:
             channel = self.bot.get_channel(ch_id)
             ch_mention = channel.mention if channel else f"`#{ch_id}` (удален)"
             lines.append(f"• {ch_mention} — {u_name} | Посл. активность: `{last_act}`")
@@ -810,7 +810,7 @@ class TicketsCog(commands.Cog, name="Тикеты"):
         source = "база данных" if raw_saved is not None else "Config/.env"
         if current_ids:
             roles = [ctx.guild.get_role(i) for i in current_ids]
-            lines = [f"• {r.mention} (`{r.id}`)" if r else f"• `{i}` — роль не найдена" for r, i in zip(roles, current_ids)]
+            lines = [f"• {r.mention} (`{r.id}`)" if r else f"• `{i}` — роль не найдена" for r, i in zip(roles, current_ids, strict=False)]
             value = "\n".join(lines)
         else:
             value = "*Роли пинга не настроены (тикеты создаются без пинга).*"

@@ -243,7 +243,6 @@ class LogsCog(commands.Cog, name="Логирование и Защита"):
                 pass
 
             # 3. Мут на 1 час вместо мгновенного бана (решение о бане — кнопкой)
-            muted = False
             mute_role = get_mute_role(guild, self.db)
             if mute_role and guild.me.top_role > mute_role:
                 try:
@@ -253,7 +252,6 @@ class LogsCog(commands.Cog, name="Логирование и Защита"):
                     except Exception:
                         pass
                     self.db.save_mute(author.id, guild.id, time.time() + 3600, "АвтоМодерация - реклама")
-                    muted = True
                 except Exception as e:
                     logger.error(f"Ошибка мута нарушителя за рекламу: {e}")
 

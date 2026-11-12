@@ -2058,7 +2058,7 @@ class BridgeCog(commands.Cog, name="Мост Minecraft"):
         if max_mb > 1:
             used_gb = used_mb / 1024.0
             max_gb = max_mb / 1024.0
-            free_gb = free_mb / 1024.0
+            free_mb / 1024.0
             embed.add_field(
                 name="💾 Память JVM (RAM)",
                 value=(

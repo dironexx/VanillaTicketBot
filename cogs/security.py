@@ -337,7 +337,7 @@ class AltsQuickWhoisModal(ui.Modal, title="Быстрый поиск аккау�
         show_net = (self.db.get_setting("whois_show_net", "true").lower() == "true") if self.db else True
         show_geo = (self.db.get_setting("whois_show_geo", "true").lower() == "true") if self.db else True
         show_alts = (self.db.get_setting("whois_show_alts", "true").lower() == "true") if self.db else True
-        show_litebans = (self.db.get_setting("whois_show_litebans", "true").lower() == "true") if self.db else True
+        (self.db.get_setting("whois_show_litebans", "true").lower() == "true") if self.db else True
 
         is_ip = bool(re.match(r"^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$", query))
         if is_ip:
@@ -1125,7 +1125,7 @@ class AltsPanelControlView(ui.View):
             wl_lines = [f"• `{w['target']}` ({w['type']}) — *{w['reason'] or 'Без причины'}* (от {w['added_by']})" for w in wl[:15]]
             desc = "**Текущие исключения:**\n" + "\n".join(wl_lines)
 
-        embed = discord.Embed(
+        discord.Embed(
             title="🛡️ Белый список безопасности (Исключения)",
             description=desc + "\n\n*Игроки и IP из белого списка игнорируются автокиком и автобаном при мультиаккаунтах.*",
             color=Colors.BLUE,
@@ -1195,9 +1195,8 @@ class AltBanModal(ui.Modal, title="Блокировка за нарушение"
         if bridge_cog and hasattr(bridge_cog, "broadcast_packet"):
             cmd = f"ban {self.login_player} {clean_reason}"
             await bridge_cog.broadcast_packet({"type": "execute_console_command", "command": cmd})
-            msg = f"Игрок `{self.login_player}` успешно заблокирован с причиной: «{clean_reason}»."
         else:
-            msg = "Мост с Minecraft сервером не подключен. Команда блокировки не отправлена."
+            pass
 
         for item in self.view.children:
             if isinstance(item, ui.Button) and item.custom_id == "btn_ban_for_alt_evasion":
@@ -1410,14 +1409,13 @@ class HealthcheckAdminView(ui.View):
         bridge_cog = get_bridge_cog(bot)
         bridge_connected = False
         maint_enabled = False
-        maint_reason = "Технические работы"
         mc_start_ts = 0
 
         if bridge_cog:
             active_socks = getattr(bridge_cog, "active_sockets", set())
             bridge_connected = len(active_socks) > 0
             maint_enabled = bool(getattr(bridge_cog, "maintenance_enabled", False))
-            maint_reason = str(getattr(bridge_cog, "maintenance_reason", "Технические работы"))
+            str(getattr(bridge_cog, "maintenance_reason", "Технические работы"))
             mc_start_ts = int(getattr(bridge_cog, "mc_server_start_time", 0))
 
         # 3. Аптаймы
@@ -1502,15 +1500,12 @@ class HealthcheckAdminView(ui.View):
         # Определение статуса сервера
         if maint_enabled:
             status_title = "🟡 ТЕХНИЧЕСКИЕ РАБОТЫ"
-            status_desc = f"На сервере ведутся регламентные работы: *{maint_reason}*"
             color = Colors.YELLOW
         elif bridge_connected:
             status_title = "🟢 СЕРВЕР В СЕТИ"
-            status_desc = "Синхронизация с ядром Paper 26.3 активна"
             color = Colors.GREEN
         else:
             status_title = "🔴 СЕРВЕР ОФФЛАЙН"
-            status_desc = "Соединение с мостом WebSocket разорвано или сервер выключен"
             color = Colors.RED
 
         embed = discord.Embed(
@@ -1553,7 +1548,7 @@ class HealthcheckAdminView(ui.View):
         )
 
         # Модуль 3: Безопасность и доступ (inline=False)
-        tickets_cnt = db_stats.get("active_tickets", 0)
+        db_stats.get("active_tickets", 0)
         linked_cnt = db_stats.get("linked_accounts", 0)
         sessions_cnt = db_stats.get("active_sessions", 0)
         embed.add_field(
@@ -2682,7 +2677,6 @@ class SecurityCog(commands.Cog, name="Безопасность"):
     )
     @app_commands.describe(player="Никнейм игрока", ip="IP адрес")
     async def record_ip_cmd(self, ctx: commands.Context, player: str, ip: str):
-        author = ctx.author
         has_perm = is_tech_admin_or_owner(ctx)
         if not has_perm:
             return await ctx.send("Недостаточно прав.", ephemeral=True)
