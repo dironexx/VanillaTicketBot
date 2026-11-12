@@ -21,7 +21,8 @@ transcripts/
 .pi/
 
 # Старые бэкапы, патчи и архивы (не рабочий код)
-scratch/
+scratch/*
+!scratch/VanillaBridgeProject/
 .backup_cogs/
 *.zip
 *.rar

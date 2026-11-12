@@ -175,12 +175,25 @@ class TwoFactorVerifyView(ui.View):
         self.public_alert_msg = public_alert_msg
         self.message: Optional[discord.Message] = None
 
-    def _session_stale(self) -> bool:
+    @staticmethod
+    def _is_session_stale(bridge_cog: "BridgeCog", player: str, session_id: str) -> bool:
         """Подтверждение относится к актуальной сессии входа, а не к старой/чужой."""
-        pending = self.bridge_cog.pending_2fa.get(self.player.lower())
-        if not pending or not self.session_id:
+        pending = bridge_cog.pending_2fa.get(player.lower())
+        if not pending or not session_id:
             return True
-        return pending.get("session_id") != self.session_id
+        return pending.get("session_id") != session_id
+
+    def _session_stale(self) -> bool:
+        return self._is_session_stale(self.bridge_cog, self.player, self.session_id)
+
+    @staticmethod
+    def _resolve_trust_hours(bridge_cog: "BridgeCog", player: str) -> int:
+        linked = bridge_cog.db.get_linked_account_by_mc(player)
+        raw = linked.get("trust_duration_hours", Config.IP_SESSION_HOURS) if linked else Config.IP_SESSION_HOURS
+        try:
+            return int(round(float(raw)))
+        except (TypeError, ValueError):
+            return int(round(float(Config.IP_SESSION_HOURS)))
 
     def build_verify_embed(self) -> discord.Embed:
         now_ts = int(time.time())
@@ -231,8 +244,7 @@ class TwoFactorVerifyView(ui.View):
             )
 
         # Доверяем IP на настроенный пользователем срок
-        linked = self.bridge_cog.db.get_linked_account_by_mc(self.player)
-        trust_hrs = linked.get("trust_duration_hours", Config.IP_SESSION_HOURS) if linked else Config.IP_SESSION_HOURS
+        trust_hrs = self._resolve_trust_hours(self.bridge_cog, self.player)
         self.bridge_cog.db.trust_ip_session(self.player, self.ip, trust_hrs)
         self.bridge_cog.db.record_login(self.player, self.ip, status="SUCCESS")
         self.bridge_cog.pending_2fa.pop(self.player.lower(), None)
@@ -243,6 +255,7 @@ class TwoFactorVerifyView(ui.View):
             "player": self.player,
             "ip": self.ip,
             "trust_hours": trust_hrs,
+            "session_id": self.session_id,
         })
 
         if self.public_alert_msg:
@@ -294,6 +307,7 @@ class TwoFactorVerifyView(ui.View):
         await self.bridge_cog.broadcast_packet({
             "type": "2fa_rejected",
             "player": self.player,
+            "session_id": self.session_id,
         })
 
         if self.public_alert_msg:
@@ -372,10 +386,7 @@ class TwoFactorPublicAlertView(ui.View):
         self.message: Optional[discord.Message] = None
 
     def _session_stale(self) -> bool:
-        pending = self.bridge_cog.pending_2fa.get(self.player.lower())
-        if not pending or not self.session_id:
-            return True
-        return pending.get("session_id") != self.session_id
+        return TwoFactorVerifyView._is_session_stale(self.bridge_cog, self.player, self.session_id)
 
     @ui.button(label="Подтвердить вход", style=discord.ButtonStyle.success, emoji="🛡️", custom_id="2fa_pub:verify")
     async def confirm_btn(self, interaction: discord.Interaction, button: ui.Button):
@@ -386,8 +397,7 @@ class TwoFactorPublicAlertView(ui.View):
                 "⚠️ Это подтверждение устарело. Запросите новый код на сервере.", ephemeral=True
             )
 
-        linked = self.bridge_cog.db.get_linked_account_by_mc(self.player)
-        trust_hrs = linked.get("trust_duration_hours", Config.IP_SESSION_HOURS) if linked else Config.IP_SESSION_HOURS
+        trust_hrs = TwoFactorVerifyView._resolve_trust_hours(self.bridge_cog, self.player)
         self.bridge_cog.db.trust_ip_session(self.player, self.ip, trust_hrs)
         self.bridge_cog.db.record_login(self.player, self.ip, status="SUCCESS")
         self.bridge_cog.pending_2fa.pop(self.player.lower(), None)
@@ -397,6 +407,7 @@ class TwoFactorPublicAlertView(ui.View):
             "player": self.player,
             "ip": self.ip,
             "trust_hours": trust_hrs,
+            "session_id": self.session_id,
         })
 
         embed = discord.Embed(
@@ -433,6 +444,7 @@ class TwoFactorPublicAlertView(ui.View):
         await self.bridge_cog.broadcast_packet({
             "type": "2fa_rejected",
             "player": self.player,
+            "session_id": self.session_id,
         })
 
         embed = discord.Embed(
@@ -614,6 +626,13 @@ class AccountSecurityView(ui.View):
         embed.set_footer(text="Vanilla Land • Центр безопасности 2FA")
         return embed
 
+    def _view_for_message(self, user_id: int, player_name: str) -> "AccountSecurityView":
+        """Возвращает view с актуальными кнопками, не мутируя shared persistent-инстанс."""
+        if self.discord_user_id:
+            self.update_buttons(user_id)
+            return self
+        return AccountSecurityView(self.bridge_cog, user_id, player_name)
+
     @ui.button(label="2FA", style=discord.ButtonStyle.primary, emoji="🛡️", custom_id="sec:toggle_2fa", row=0)
     async def toggle_2fa_btn(self, interaction: discord.Interaction, button: ui.Button):
         linked = self._linked(interaction.user.id)
@@ -621,11 +640,11 @@ class AccountSecurityView(ui.View):
             return await self._reply(interaction, "❌ У вас нет привязанного аккаунта Minecraft.")
         new_state = not linked.get("two_factor_enabled", True)
         self.bridge_cog.db.set_two_factor_enabled(interaction.user.id, new_state)
-        if self.discord_user_id:
-            self.update_buttons(interaction.user.id)
         notice = "✔ Двухфакторная защита 2FA активирована." if new_state else "⚠️ Двухфакторная защита 2FA отключена."
+        player_name = linked["player_name"]
         await interaction.response.edit_message(
-            embed=self.build_embed(notice, interaction.user.id, linked["player_name"]), view=self
+            embed=self.build_embed(notice, interaction.user.id, player_name),
+            view=self._view_for_message(interaction.user.id, player_name),
         )
 
     @ui.button(label="Срок IP: 48ч", style=discord.ButtonStyle.secondary, emoji="⏳", custom_id="sec:trust_duration", row=0)
@@ -636,12 +655,12 @@ class AccountSecurityView(ui.View):
         cur = linked.get("trust_duration_hours", 48)
         next_val = {48: 168, 168: 0, 0: 24, 24: 48}.get(cur, 48)
         self.bridge_cog.db.set_trust_duration(interaction.user.id, next_val)
-        if self.discord_user_id:
-            self.update_buttons(interaction.user.id)
         label_map = {48: "48 часов", 168: "7 дней", 0: "Строгий режим (каждый вход)", 24: "24 часа"}
         notice = f"✔ Срок доверия к IP установлен на {label_map.get(next_val, '48ч')}."
+        player_name = linked["player_name"]
         await interaction.response.edit_message(
-            embed=self.build_embed(notice, interaction.user.id, linked["player_name"]), view=self
+            embed=self.build_embed(notice, interaction.user.id, player_name),
+            view=self._view_for_message(interaction.user.id, player_name),
         )
 
     @ui.button(label="Уведомления", style=discord.ButtonStyle.secondary, emoji="🔔", custom_id="sec:toggle_alerts", row=0)
@@ -651,11 +670,11 @@ class AccountSecurityView(ui.View):
             return await self._reply(interaction, "❌ У вас нет привязанного аккаунта Minecraft.")
         new_val = not linked.get("login_alerts_enabled", False)
         self.bridge_cog.db.set_login_alerts_enabled(interaction.user.id, new_val)
-        if self.discord_user_id:
-            self.update_buttons(interaction.user.id)
         notice = "✔ Уведомления о входе в ЛС включены." if new_val else "🔕 Уведомления о входе в ЛС выключены."
+        player_name = linked["player_name"]
         await interaction.response.edit_message(
-            embed=self.build_embed(notice, interaction.user.id, linked["player_name"]), view=self
+            embed=self.build_embed(notice, interaction.user.id, player_name),
+            view=self._view_for_message(interaction.user.id, player_name),
         )
 
     @ui.button(label="Журнал входов", style=discord.ButtonStyle.secondary, emoji="📜", custom_id="sec:login_history", row=1)
@@ -679,7 +698,8 @@ class AccountSecurityView(ui.View):
                 lines.append(f"• `{dt_str} UTC` — `{masked_ip}` ({status_icon} {item['status']})")
             notice = "📜 **Последние входы в аккаунт:**\n" + "\n".join(lines)
         await interaction.response.edit_message(
-            embed=self.build_embed(notice, interaction.user.id, player_name), view=self
+            embed=self.build_embed(notice, interaction.user.id, player_name),
+            view=self._view_for_message(interaction.user.id, player_name),
         )
 
     @ui.button(label="Экстренный сброс и кик", style=discord.ButtonStyle.danger, emoji="🚨", custom_id="sec:emergency_kick", row=1)
@@ -693,7 +713,8 @@ class AccountSecurityView(ui.View):
         await self.bridge_cog.broadcast_packet({"type": "clear_sessions", "player": player_name})
         notice = "🚨 Все доверенные IP сброшены. Если кто-то находился на сервере — он исключён."
         await interaction.response.edit_message(
-            embed=self.build_embed(notice, interaction.user.id, player_name), view=self
+            embed=self.build_embed(notice, interaction.user.id, player_name),
+            view=self._view_for_message(interaction.user.id, player_name),
         )
 
     @ui.button(label="Отвязать аккаунт", style=discord.ButtonStyle.secondary, emoji="🔗", custom_id="sec:unlink_btn", row=1)

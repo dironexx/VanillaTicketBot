@@ -1,0 +1,52 @@
+name: VanillaBridge
+version: '1.0'
+main: my.bridge.VanillaBridge
+api-version: '26.3'
+softdepend: [CustomInteractiveChat, AuthMe, VanillaChat]
+description: Discord Bridge for Vanilla Land (Paper 26.3)
+commands:
+  bridge:
+    description: Управление мостом Vanilla Land
+    permission: vanillabridge.admin
+    usage: /bridge [reload|status]
+  rd:
+    description: Ответить на личное сообщение из Discord
+    aliases: [rdc, replyd, dcr]
+    usage: /rd [сообщение]
+  link:
+    description: Привязать свой аккаунт Minecraft к Discord
+    aliases: [привязать, linkaccount]
+    usage: /link [6-значный код]
+  code:
+    description: Ввести 6-значный код подтверждения безопасности (2FA)
+    aliases: [код, auth, confirm]
+    usage: /code [6 цифр]
+  vbc:
+    description: Цветное объявление на весь сервер
+    aliases: [vbroadcast, об, объявление, bc, broadcast]
+    permission: vanillabridge.admin
+    usage: /vbc [текст]
+  links:
+    description: Полезные ссылки проекта (сайт, дискорд, тг)
+    aliases: [ссылки, linki, webs]
+  discord:
+    description: Ссылка на Discord сервер
+    aliases: [ds, дс]
+  site:
+    description: Наш сайт
+    aliases: [website, сайт]
+  donate:
+    description: Магазин и донат сервера
+    aliases: [донат, store, shop, магазин]
+  telegram:
+    description: Наш Телеграм канал
+    aliases: [tg, тг]
+  maintenance:
+    description: Включить или выключить режим техработ на сервере
+    aliases: [техработы, maint]
+    permission: vanillabridge.admin
+    usage: /maintenance [on|off] [причина]
+permissions:
+  vanillabridge.admin:
+    description: Право на управление мостом
+    default: op

@@ -920,7 +920,11 @@ class BridgeCog(commands.Cog, name="Мост Minecraft"):
                 await self.broadcast_packet({"type": "login_verdict", "player": player, "status": "not_linked"})
                 return
 
-            trust_hrs = linked.get("trust_duration_hours", Config.IP_SESSION_HOURS)
+            raw_trust = linked.get("trust_duration_hours", Config.IP_SESSION_HOURS)
+            try:
+                trust_hrs = int(round(float(raw_trust)))
+            except (TypeError, ValueError):
+                trust_hrs = int(round(float(Config.IP_SESSION_HOURS)))
 
             if not linked.get("two_factor_enabled", True):
                 # Игрок отключил 2FA подтверждение входов в настройках (/security)
@@ -1017,6 +1021,7 @@ class BridgeCog(commands.Cog, name="Мост Minecraft"):
                     "ip": ip,
                     "timeout": Config.LOGIN_2FA_TIMEOUT_SEC,
                     "trust_hours": trust_hrs,
+                    "session_id": session_id,
                 })
             else:
                 await self.broadcast_packet({
@@ -1027,6 +1032,7 @@ class BridgeCog(commands.Cog, name="Мост Minecraft"):
                     "ip": ip,
                     "timeout": Config.LOGIN_2FA_TIMEOUT_SEC,
                     "trust_hours": trust_hrs,
+                    "session_id": session_id,
                 })
 
         # 14. Игрок подтвердил 2FA вводом кода в игре (/code <код>)
@@ -1035,7 +1041,11 @@ class BridgeCog(commands.Cog, name="Мост Minecraft"):
             ip = data.get("ip", "127.0.0.1").strip()
             if player:
                 linked = self.db.get_linked_account_by_mc(player)
-                trust_hrs = linked.get("trust_duration_hours", Config.IP_SESSION_HOURS) if linked else Config.IP_SESSION_HOURS
+                raw_trust = linked.get("trust_duration_hours", Config.IP_SESSION_HOURS) if linked else Config.IP_SESSION_HOURS
+                try:
+                    trust_hrs = int(round(float(raw_trust)))
+                except (TypeError, ValueError):
+                    trust_hrs = int(round(float(Config.IP_SESSION_HOURS)))
                 self.db.trust_ip_session(player, ip, trust_hrs)
                 self.db.record_login(player, ip, status="SUCCESS")
                 pending = self.pending_2fa.pop(player.lower(), None)

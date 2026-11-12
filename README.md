@@ -141,6 +141,8 @@ pip install -r requirements.txt
 
 - Плагин подключается к боту по `ws://`/`wss://` и передаёт секрет в query/заголовке.
 - В `config.yml` плагина: `server-id` (`main`/`vps`), `bridge.ws-url`, `bridge.token`.
+- `security.trust-duration-hours` (по умолчанию 48) — резервный срок доверия к IP. Бот передаёт `trust_hours` в `login_verdict`/`2fa_verified`; `0` = строгий режим (IP не запоминается).
+- Плагин проверяет `session_id` у `2fa_verified`/`2fa_rejected`, чтобы старое подтверждение не сработало повторно.
 - Бот принимает несколько серверов одновременно (main + vps): сокеты хранятся множеством,
   широковещательные пакеты уходят всем.
 - Пакеты: `join/quit/death/chat/stats/lifecycle`, `check_alts_bans` → `alts_bans_result`,
@@ -239,6 +241,8 @@ python -X utf8 -m pyflakes main.py bot.py config.py database.py design.py cogs/*
 - Точка входа — `main.py` (не `bot.py`, он лишь обёртка).
 - Плагин: `scratch/VanillaBridgeProject` (`pom.xml`, Paper API 1.21, Java 21), сборка:
   ```bash
-  cd scratch/VanillaBridgeProject && mvn -q package
+  cd scratch/VanillaBridgeProject && mvn -q -DskipTests package
+  # готовый jar: scratch/VanillaBridgeProject/target/VanillaBridge-1.0.jar
+  # копия для выкладки: jar_latest/VanillaBridge-1.0.jar
   ```
 - `scratch/` — старые патчи и бэкапы, в деплой не входят.
