@@ -144,6 +144,7 @@ class BridgeCog(commands.Cog, name="Мост Minecraft"):
         self.mc_max: int = 0
         self.mc_tps: float = 20.0
         self.mc_players: List[str] = []
+        self._socket_stats: Dict[int, dict] = {}
         self.last_stats_time: float = 0.0
         self.mc_server_start_time: float = 0.0
 
@@ -181,6 +182,8 @@ class BridgeCog(commands.Cog, name="Мост Minecraft"):
 
         # Rate limit ввода кодов привязки: user_id -> список timestamp попыток
         self._link_attempts: Dict[int, List[float]] = {}
+        # Rate limit /code resend: player.lower() -> список timestamp
+        self._resend_attempts: Dict[str, List[float]] = {}
         self.link_max_attempts: int = 5
         self.link_window_sec: float = 600.0
 
@@ -200,6 +203,29 @@ class BridgeCog(commands.Cog, name="Мост Minecraft"):
         self._background_tasks.add(task)
         task.add_done_callback(self._background_tasks.discard)
         return task
+
+    def _recompute_stats(self) -> None:
+        """Суммирует онлайн по всем подключённым серверам (main + vps)."""
+        stats = [st for st in self._socket_stats.values() if st]
+        if not stats:
+            self.mc_online = 0
+            self.mc_max = 0
+            self.mc_tps = 20.0
+            self.mc_mspt = 20.0
+            self.mc_mem_used = 0
+            self.mc_mem_max = 0
+            self.mc_players = []
+            return
+        self.mc_online = sum(int(st.get("online", 0)) for st in stats)
+        self.mc_max = sum(int(st.get("max", 0)) for st in stats)
+        self.mc_tps = min(float(st.get("tps", 20.0)) for st in stats)
+        self.mc_mspt = max(float(st.get("mspt", 20.0)) for st in stats)
+        self.mc_mem_used = sum(int(st.get("mem_used", 0)) for st in stats)
+        self.mc_mem_max = sum(int(st.get("mem_max", 0)) for st in stats)
+        players: List[str] = []
+        for st in stats:
+            players.extend(st.get("players", []))
+        self.mc_players = players
 
     @property
     def is_connected(self) -> bool:
@@ -238,6 +264,20 @@ class BridgeCog(commands.Cog, name="Мост Minecraft"):
             return False
         if self._alt_check_manual.pop(key, 0.0) > now:
             return False
+        return True
+
+    def resend_rate_ok(self, player: str) -> bool:
+        """Не более 3 повторных отправок кода за 10 минут на игрока."""
+        key = str(player or "").strip().lower()
+        if not key:
+            return False
+        now = time.time()
+        attempts = [t for t in self._resend_attempts.get(key, []) if now - t < 600.0]
+        if len(attempts) >= 3:
+            self._resend_attempts[key] = attempts[-3:]
+            return False
+        attempts.append(now)
+        self._resend_attempts[key] = attempts[-3:]
         return True
 
     def link_rate_ok(self, user_id: int) -> bool:
@@ -287,11 +327,12 @@ class BridgeCog(commands.Cog, name="Мост Minecraft"):
             )
             return
         if secret == "vanillaland_secret_2026":
-            logger.warning(
-                "BRIDGE_SECRET использует значение по умолчанию — это небезопасно. "
+            logger.critical(
+                "BRIDGE_SECRET использует значение по умолчанию — WebSocket-мост НЕ запущен. "
                 "Сгенерируйте новый секрет (python -c \"import secrets;print(secrets.token_urlsafe(32))\") "
                 "и обновите его в .env и в config.yml плагина (bridge.token)."
             )
+            return
         try:
             self.runner = web.AppRunner(self.app)
             await self.runner.setup()
@@ -387,7 +428,7 @@ class BridgeCog(commands.Cog, name="Мост Minecraft"):
                 if msg.type == aiohttp.WSMsgType.TEXT:
                     try:
                         data = json.loads(msg.data)
-                        await self.handle_minecraft_packet(data)
+                        await self.handle_minecraft_packet(data, ws)
                     except json.JSONDecodeError as dec_err:
                         logger.debug("Получен невалидный JSON пакет от Minecraft: %s (ошибка: %s)", msg.data, dec_err)
                     except Exception as e:
@@ -397,8 +438,9 @@ class BridgeCog(commands.Cog, name="Мост Minecraft"):
         finally:
             async with self._sockets_lock:
                 self.active_sockets.discard(ws)
+            self._socket_stats.pop(id(ws), None)
+            self._recompute_stats()
             if not self.active_sockets:
-                self.mc_online = 0
                 logger.info("Minecraft сервер отключился от моста.")
                 self.create_tracked_task(self.update_bot_presence())
 
@@ -487,7 +529,7 @@ class BridgeCog(commands.Cog, name="Мост Minecraft"):
         return fb if isinstance(fb, discord.TextChannel) else None
 
     # --- ОБРАБОТКА ПАКЕТОВ ОТ MINECRAFT ---
-    async def handle_minecraft_packet(self, data: dict):
+    async def handle_minecraft_packet(self, data: dict, ws=None):
         p_type = data.get("type")
 
         # При входе игрока сразу же фиксируем IP в базе данных до отправки событий
@@ -585,17 +627,20 @@ class BridgeCog(commands.Cog, name="Мост Minecraft"):
 
         # 4. Метрики (Онлайн, TPS, MSPT, память и список игроков)
         elif p_type == "stats":
-            new_online = int(data.get("online", 0))
-            online_changed = (new_online != self.mc_online)
-            self.mc_online = new_online
-            self.mc_max = int(data.get("max", 0))
-            self.mc_tps = float(data.get("tps", 20.0))
-            self.mc_mspt = float(data.get("mspt", 20.0))
-            self.mc_mem_used = int(data.get("mem_used", 0))
-            self.mc_mem_max = int(data.get("mem_max", 0))
+            old_online = self.mc_online
             raw_players = data.get("players", [])
-            if isinstance(raw_players, list):
-                self.mc_players = [str(p) for p in raw_players if p]
+            sid = id(ws) if ws is not None else 0
+            self._socket_stats[sid] = {
+                "online": int(data.get("online", 0)),
+                "max": int(data.get("max", 0)),
+                "tps": float(data.get("tps", 20.0)),
+                "mspt": float(data.get("mspt", 20.0)),
+                "mem_used": int(data.get("mem_used", 0)),
+                "mem_max": int(data.get("mem_max", 0)),
+                "players": [str(p) for p in raw_players if p] if isinstance(raw_players, list) else [],
+            }
+            self._recompute_stats()
+            online_changed = (self.mc_online != old_online)
             self.last_stats_time = time.time()
             self.pending_channel_update = True
             self.was_connected = True
@@ -740,7 +785,8 @@ class BridgeCog(commands.Cog, name="Мост Minecraft"):
                         )
                         embed.set_footer(text="Vanilla Land • ЛС моста")
                         view = DmReplyView(self, player)
-                        await user.send(embed=embed, view=view)
+                        dm_msg = await user.send(embed=embed, view=view)
+                        self.db.save_dm_reply_target(dm_msg.id, player)
                 except Exception as e:
                     logger.error(f"Не удалось доставить ЛС пользователю {target_id_str}: {e}")
 
@@ -1086,6 +1132,15 @@ class BridgeCog(commands.Cog, name="Мост Minecraft"):
         elif p_type == "2fa_resend_code":
             player = data.get("player", "").strip()
             if not player:
+                return
+
+            if not self.resend_rate_ok(player):
+                await self.broadcast_packet({
+                    "type": "2fa_resend_result",
+                    "player": player,
+                    "success": False,
+                    "message": "Слишком часто. Повторная отправка кода — не более 3 раз за 10 минут.",
+                })
                 return
 
             pending = self.pending_2fa.get(player.lower())
@@ -1680,7 +1735,8 @@ class BridgeCog(commands.Cog, name="Мост Minecraft"):
             await ctx.send(f"✉️ Личное сообщение отправлено игроку **{clean_player}** в Minecraft! Проверьте ЛС от бота.", ephemeral=True)
 
         try:
-            await ctx.author.send(embed=embed, view=view)
+            dm_msg = await ctx.author.send(embed=embed, view=view)
+            self.db.save_dm_reply_target(dm_msg.id, clean_player)
         except discord.Forbidden:
             if not ctx.interaction and ctx.channel:
                 await ctx.channel.send(
@@ -2331,7 +2387,7 @@ class BridgeCog(commands.Cog, name="Мост Minecraft"):
             linked_acc = self.db.get_linked_account_by_mc(clean_name)
 
             desc = (
-                f"*Игрок сейчас оффлайн. Показаны данные из базы сервера.*"
+                "*Игрок сейчас оффлайн. Показаны данные из базы сервера.*"
                 if self.active_sockets
                 else "*Сервер Minecraft сейчас недоступен. Показаны сохранённые данные моста.*"
             )
@@ -2593,7 +2649,7 @@ class BridgeCog(commands.Cog, name="Мост Minecraft"):
         clean_name = player_name.strip()
         data = await self.query_minecraft({"type": "query_player", "player": clean_name}, timeout=3.5)
         if not data:
-            return await ctx.send(f"Сервер не ответил или оффлайн.", ephemeral=True)
+            return await ctx.send("Сервер не ответил или оффлайн.", ephemeral=True)
 
         is_online = data.get("online", False)
         uuid_str = data.get("uuid", "Неизвестно")
@@ -2622,9 +2678,6 @@ class BridgeCog(commands.Cog, name="Мост Minecraft"):
         from cogs.inventory_renderer import (
             format_item_name,
             format_potion_effect,
-            render_slots_grid,
-            render_inventory_image,
-            ITEM_TRANSLATIONS,
         )
 
         world = data.get("world", "world")
@@ -2710,8 +2763,6 @@ class BridgeCog(commands.Cog, name="Мост Minecraft"):
         from cogs.inventory_renderer import (
             render_inventory_image,
             format_item_name,
-            ITEM_TRANSLATIONS,
-            render_slots_grid,
         )
 
         inv_items = data.get("inventory", [])
@@ -2788,7 +2839,6 @@ class BridgeCog(commands.Cog, name="Мост Minecraft"):
         from cogs.inventory_renderer import (
             render_slots_grid,
             format_item_name,
-            ITEM_TRANSLATIONS,
         )
 
         ender_items = data.get("ender", [])
@@ -3702,11 +3752,12 @@ class ProfileView(ui.View):
 
 
 async def setup(bot: commands.Bot):
-    db: DatabaseManager = getattr(bot, "db")
+    db: DatabaseManager = bot.db
     cog = BridgeCog(bot, db)
     await bot.add_cog(cog)
     # Persistent-вью: работают после рестарта бота (данные резолвятся по interaction.user.id)
     bot.add_view(PermanentLinkPanelView(cog))
     bot.add_view(AccountSecurityView(cog))
     bot.add_view(LoginAlertView(cog))
+    bot.add_view(DmReplyView(cog))
 

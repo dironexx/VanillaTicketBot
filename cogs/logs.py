@@ -1,4 +1,3 @@
-import asyncio
 import logging
 import re
 import time
@@ -90,12 +89,12 @@ class AntiInviteActionView(ui.View):
             view=self,
         )
 
-    @ui.button(label="Оставить суточный мут", style=discord.ButtonStyle.secondary, emoji="⏳")
+    @ui.button(label="Оставить мут (1 ч)", style=discord.ButtonStyle.secondary, emoji="⏳")
     async def keep_mute_button(self, interaction: discord.Interaction, button: ui.Button):
         for item in self.children:
             item.disabled = True
         await interaction.response.edit_message(
-            content=f"⏳ **Решение принято:** Суточный мут оставлен в силе (подтвердил {interaction.user.mention}).",
+            content=f"⏳ **Решение принято:** Мут оставлен в силе (подтвердил {interaction.user.mention}).",
             view=self,
         )
 
@@ -228,7 +227,7 @@ class LogsCog(commands.Cog, name="Логирование и Защита"):
             # 2. Отправляем нарушителю сообщение в ЛС перед баном
             try:
                 dm_embed = AG.embed(
-                    title="Блокировка на сервере • Vanilla Land",
+                    title="Мут на сервере • Vanilla Land",
                     description=(
                         f"Вы были заблокированы на сервере **Vanilla Land**.\n\n"
                         f"• **Причина:** `АвтоМодерация - реклама`\n"
@@ -243,17 +242,26 @@ class LogsCog(commands.Cog, name="Логирование и Защита"):
             except Exception:
                 pass
 
-            # 3. Бан нарушителя с удалением сообщений за 1 день
-            try:
-                await author.ban(reason="АвтоМодерация - реклама", delete_message_seconds=86400)
-            except Exception as e:
-                logger.error(f"Ошибка бана нарушителя за рекламу: {e}")
+            # 3. Мут на 1 час вместо мгновенного бана (решение о бане — кнопкой)
+            muted = False
+            mute_role = get_mute_role(guild, self.db)
+            if mute_role and guild.me.top_role > mute_role:
+                try:
+                    await author.add_roles(mute_role, reason="АвтоМодерация - реклама")
+                    try:
+                        await author.timeout(timedelta(minutes=60), reason="АвтоМодерация - реклама")
+                    except Exception:
+                        pass
+                    self.db.save_mute(author.id, guild.id, time.time() + 3600, "АвтоМодерация - реклама")
+                    muted = True
+                except Exception as e:
+                    logger.error(f"Ошибка мута нарушителя за рекламу: {e}")
 
             # 4. Лог в канал Администрации
             admin_ch = self.get_admin_channel(guild)
             if admin_ch:
                 alert_embed = AG.embed(
-                    title="Автомодерация • Блокировка за рекламу",
+                    title="Автомодерация • Мут за рекламу",
                     description=(
                         f"Пользователь был автоматически **заблокирован (Бан)**.\n\n"
                         f"• **Нарушитель:** {author.mention} (`{author.name}` | ID: `{author.id}`)\n"
@@ -267,7 +275,7 @@ class LogsCog(commands.Cog, name="Логирование и Защита"):
                     thumbnail=author.display_avatar.url,
                     footer=f"Vanilla Land • ID: {author.id}",
                 )
-                await admin_ch.send(embed=alert_embed)
+                await admin_ch.send(embed=alert_embed, view=AntiInviteActionView(author.id, self.db))
 
     # --- ЛОГ УДАЛЕНИЯ СООБЩЕНИЙ ---
     @commands.Cog.listener()
@@ -392,5 +400,5 @@ class LogsCog(commands.Cog, name="Логирование и Защита"):
 
 
 async def setup(bot: commands.Bot):
-    db: DatabaseManager = getattr(bot, "db")
+    db: DatabaseManager = bot.db
     await bot.add_cog(LogsCog(bot, db))

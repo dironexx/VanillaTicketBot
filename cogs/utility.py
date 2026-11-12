@@ -1,9 +1,7 @@
-import asyncio
 import logging
 import random
 import re
 import time
-from datetime import datetime, timedelta
 from typing import Optional
 
 import discord
@@ -11,7 +9,7 @@ from discord import app_commands
 from discord.ext import commands, tasks
 
 from config import Config
-from database import DatabaseManager, MSK
+from database import DatabaseManager
 from design import AG, Colors
 
 logger = logging.getLogger("VanillaBot.Utility")
@@ -315,5 +313,5 @@ class UtilityCog(commands.Cog, name="Утилиты"):
 
 
 async def setup(bot: commands.Bot):
-    db: DatabaseManager = getattr(bot, "db")
+    db: DatabaseManager = bot.db
     await bot.add_cog(UtilityCog(bot, db))

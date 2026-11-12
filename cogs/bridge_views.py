@@ -11,7 +11,7 @@ import asyncio
 import secrets
 import time
 from datetime import datetime, timezone
-from typing import Optional, List, Dict, Any, TYPE_CHECKING
+from typing import Optional, TYPE_CHECKING
 
 import discord
 from discord import ui
@@ -134,18 +134,29 @@ class DmReplyModal(ui.Modal):
         )
         embed.set_footer(text="Vanilla Land • ЛС моста")
         view = DmReplyView(self.bridge_cog, self.target_player)
-        await interaction.response.send_message(embed=embed, view=view)
+        msg = await interaction.response.send_message(embed=embed, view=view)
+        try:
+            self.bridge_cog.db.save_dm_reply_target(msg.id, self.target_player)
+        except Exception:
+            pass
 
 
 class DmReplyView(ui.View):
-    def __init__(self, bridge_cog: "BridgeCog", target_player: str):
+    def __init__(self, bridge_cog: "BridgeCog", target_player: str = ""):
         super().__init__(timeout=None)
         self.bridge_cog = bridge_cog
         self.target_player = target_player
 
     @ui.button(label="✉️ Написать ещё / Ответить", style=discord.ButtonStyle.primary, custom_id="bridge:dm_reply_btn")
     async def reply_btn(self, interaction: discord.Interaction, button: ui.Button):
-        modal = DmReplyModal(self.bridge_cog, self.target_player)
+        target = self.target_player
+        if not target and self.bridge_cog.db and interaction.message:
+            target = self.bridge_cog.db.get_dm_reply_target(interaction.message.id)
+        if not target:
+            return await interaction.response.send_message(
+                "Диалог устарел. Используйте `/msg_mc`, чтобы начать новый.", ephemeral=True
+            )
+        modal = DmReplyModal(self.bridge_cog, target)
         await interaction.response.send_modal(modal)
 
 
@@ -627,11 +638,10 @@ class AccountSecurityView(ui.View):
         return embed
 
     def _view_for_message(self, user_id: int, player_name: str) -> "AccountSecurityView":
-        """Возвращает view с актуальными кнопками, не мутируя shared persistent-инстанс."""
+        """Persistent-инстанс переиспользуем; для личных вью обновляем подписи кнопок."""
         if self.discord_user_id:
             self.update_buttons(user_id)
-            return self
-        return AccountSecurityView(self.bridge_cog, user_id, player_name)
+        return self
 
     @ui.button(label="2FA", style=discord.ButtonStyle.primary, emoji="🛡️", custom_id="sec:toggle_2fa", row=0)
     async def toggle_2fa_btn(self, interaction: discord.Interaction, button: ui.Button):

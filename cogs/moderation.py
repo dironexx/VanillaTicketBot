@@ -757,5 +757,5 @@ class ModerationCog(commands.Cog, name="Модерация"):
 
 
 async def setup(bot: commands.Bot):
-    db: DatabaseManager = getattr(bot, "db")
+    db: DatabaseManager = bot.db
     await bot.add_cog(ModerationCog(bot, db))

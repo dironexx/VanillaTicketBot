@@ -10,7 +10,7 @@ from discord.ext import commands, tasks
 
 from config import Config
 from database import DatabaseManager, MSK, get_msk_now
-from design import AG, AGColors, Colors
+from design import AG, Colors
 
 logger = logging.getLogger("VanillaBot.Tickets")
 
@@ -195,7 +195,7 @@ async def save_transcript_to_file(channel: discord.TextChannel) -> str:
         "==================================================\n",
     ]
 
-    async for msg in channel.history(limit=1000, oldest_first=True):
+    async for msg in channel.history(limit=None, oldest_first=True):
         msg_time = msg.created_at.astimezone(MSK).strftime("%d.%m %H:%M:%S")
         if msg.author.bot:
             if msg.embeds:
@@ -218,9 +218,13 @@ async def save_transcript_to_file(channel: discord.TextChannel) -> str:
     if len(lines) <= 5:
         lines.append("[В диалоге не было сообщений]")
 
-    with open(filename, "w", encoding="utf-8") as f:
-        f.write("\n".join(lines))
+    payload = "\n".join(lines)
 
+    def _write_transcript() -> None:
+        with open(filename, "w", encoding="utf-8") as f:
+            f.write(payload)
+
+    await asyncio.to_thread(_write_transcript)
     return filename
 
 
@@ -825,5 +829,5 @@ class TicketsCog(commands.Cog, name="Тикеты"):
 
 
 async def setup(bot: commands.Bot):
-    db: DatabaseManager = getattr(bot, "db")
+    db: DatabaseManager = bot.db
     await bot.add_cog(TicketsCog(bot, db))

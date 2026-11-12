@@ -13,14 +13,14 @@ for directory in [BASE_DIR, CWD]:
     for filename in [".env", ".env.txt", "config.env", "bot.env"]:
         candidate = directory / filename
         if candidate.is_file():
-            load_dotenv(dotenv_path=candidate, override=True, encoding="utf-8")
+            load_dotenv(dotenv_path=candidate, override=False, encoding="utf-8")
             env_loaded = True
             break
     if env_loaded:
         break
 
 if not env_loaded:
-    load_dotenv(override=True)
+    load_dotenv(override=False)
 
 # 2. Резервный парсер
 for directory in [BASE_DIR, CWD]:
@@ -124,6 +124,12 @@ class Config:
             "MOD_ROLE_IDS",
             "1542891413887262811,1472604035528921099,1543299319874981968",
         ).split(",")
+        if r.strip().isdigit()
+    ]
+    # Отдельные роли для security-команд (если пусто — используется MOD_ROLE_IDS)
+    ADMIN_ROLE_IDS: list[int] = [
+        int(r.strip())
+        for r in os.getenv("ADMIN_ROLE_IDS", "").split(",")
         if r.strip().isdigit()
     ]
     SPEC_ROLE_ID: int = _env_int("SPEC_ROLE_ID", 0)

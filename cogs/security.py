@@ -7,10 +7,9 @@ import json
 import logging
 import math
 import os
-import threading
 import time
 from datetime import datetime, timezone, timedelta
-from typing import Optional, List, Dict, Any, Union
+from typing import Optional, Any
 
 import discord
 from discord import app_commands, ui
@@ -18,7 +17,7 @@ from discord.ext import commands
 
 from config import Config
 from database import DatabaseManager, get_msk_now_str
-from design import AG, Colors
+from design import Colors
 
 logger = logging.getLogger("VanillaBot.Security")
 
@@ -73,6 +72,12 @@ def get_bridge_cog(client_or_bot):
         or next((c for c in getattr(client_or_bot, "cogs", {}).values() if hasattr(c, "active_sockets")), None)
     )
 
+def _admin_role_ids() -> set[int]:
+    """ID ролей для security-команд: ADMIN_ROLE_IDS, иначе MOD_ROLE_IDS (без имён ролей)."""
+    ids = set(getattr(Config, "ADMIN_ROLE_IDS", []) or [])
+    return ids or set(Config.MOD_ROLE_IDS)
+
+
 def is_tech_admin_or_owner(ctx: commands.Context) -> bool:
     """Проверяет права: владелец сервера, администратор или роль технического администратора (работает в каналах и ЛС)"""
     author = ctx.author
@@ -97,17 +102,10 @@ def is_tech_admin_or_owner(ctx: commands.Context) -> bool:
 
     if guild and author.id == guild.owner_id:
         return True
-    if author.guild_permissions.administrator or author.guild_permissions.manage_guild:
+    if author.guild_permissions.administrator:
         return True
 
-    # Роль тех. админа по имени или ID
-    for r in author.roles:
-        name_low = r.name.lower().strip()
-        if any(w in name_low for w in ("тех", "админ", "admin", "куратор", "разработчик", "developer", "owner", "создатель", "руковод", "void")):
-            return True
-        if r.id in Config.MOD_ROLE_IDS:
-            return True
-    return False
+    return any(r.id in _admin_role_ids() for r in author.roles)
 
 
 _IP_CACHE: dict[str, dict] = {}
@@ -156,8 +154,22 @@ async def check_ip_intel(ip: str) -> dict:
                     if data.get("success"):
                         security = data.get("security") or {}
                         connection = data.get("connection") or {}
+                        is_vpn = bool(security.get("proxy") or security.get("vpn") or security.get("hosting"))
+                        if not security:
+                            # Бесплатный ipwho.is не отдаёт security — добираем флаги у ip-api
+                            try:
+                                vpn_timeout = aiohttp.ClientTimeout(total=2.0)
+                                async with aiohttp.ClientSession(timeout=vpn_timeout) as vpn_session:
+                                    vpn_url = f"http://ip-api.com/json/{clean_ip}?fields=status,proxy,hosting"
+                                    async with vpn_session.get(vpn_url) as vpn_resp:
+                                        if vpn_resp.status == 200:
+                                            vpn_data = await vpn_resp.json()
+                                            if vpn_data.get("status") == "success":
+                                                is_vpn = bool(vpn_data.get("proxy") or vpn_data.get("hosting"))
+                            except Exception as vpn_err:
+                                logger.debug(f"VPN fallback error for {clean_ip}: {vpn_err}")
                         res = {
-                            "is_vpn": bool(security.get("proxy") or security.get("vpn") or security.get("hosting")),
+                            "is_vpn": is_vpn,
                             "country": data.get("country") or "",
                             "city": data.get("city") or "",
                             "isp": connection.get("isp") or connection.get("org") or "Неизвестно",
@@ -673,11 +685,13 @@ class AltsWhitelistView(ui.View):
 
     @ui.button(label="Очистить всё", style=discord.ButtonStyle.danger, emoji="🧹", row=1)
     async def btn_clear_all(self, interaction: discord.Interaction, button: ui.Button):
-        if self.db:
-            with self.db._get_connection() as conn:
-                conn.execute("DELETE FROM security_whitelist")
-                conn.commit()
-        await self.refresh(interaction)
+        if not self.db:
+            return await interaction.response.send_message("База данных недоступна.", ephemeral=True)
+        await interaction.response.send_message(
+            "Удалить **все** исключения безопасности? Это действие необратимо.",
+            view=WhitelistClearConfirmView(self),
+            ephemeral=True,
+        )
 
     async def refresh(self, interaction: discord.Interaction):
         self._populate_items()
@@ -686,6 +700,23 @@ class AltsWhitelistView(ui.View):
             await interaction.followup.edit_message(message_id=interaction.message.id, embed=embed, view=self)
         else:
             await interaction.response.edit_message(embed=embed, view=self)
+
+
+class WhitelistClearConfirmView(ui.View):
+    def __init__(self, owner_view: "AltsWhitelistView"):
+        super().__init__(timeout=60)
+        self.owner_view = owner_view
+
+    @ui.button(label="Да, удалить всё", style=discord.ButtonStyle.danger, emoji="🧹")
+    async def confirm(self, interaction: discord.Interaction, button: ui.Button):
+        db = self.owner_view.db
+        if db:
+            with db._get_connection() as conn:
+                conn.execute("DELETE FROM security_whitelist")
+                conn.commit()
+        await interaction.response.edit_message(
+            content="Белый список исключений очищен.", embed=None, view=None
+        )
 
 
 class AltsDisplaySettingsView(ui.View):
@@ -779,15 +810,9 @@ class AltsPanelControlView(ui.View):
         self._sync_buttons()
 
     def _check_perms(self, member: discord.Member) -> bool:
-        if member.guild_permissions.administrator:
-            return True
-        for r in member.roles:
-            n = r.name.lower()
-            if any(w in n for w in ("куратор", "admin", "админ", "moder", "модер", "dev", "owner", "тех")):
-                return True
-            if r.id in Config.MOD_ROLE_IDS:
-                return True
-        return False
+        return bool(member.guild_permissions.administrator) or any(
+            r.id in _admin_role_ids() for r in member.roles
+        )
 
     def _sync_buttons(self):
         mode = self.db.get_setting("alts_protection_mode", "alert").lower() if self.db else "alert"
@@ -1213,13 +1238,15 @@ class AltActionView(ui.View):
     def _check_perms(self, member: discord.Member) -> bool:
         if member.guild_permissions.administrator or member.guild_permissions.ban_members:
             return True
-        if any(r.id in Config.MOD_ROLE_IDS for r in member.roles):
-            return True
-        for r in member.roles:
-            n = r.name.lower()
-            if any(w in n for w in ("админ", "admin", "модер", "moder", "куратор", "dev", "owner", "руковод", "void")):
-                return True
-        return False
+        return any(r.id in _admin_role_ids() for r in member.roles)
+
+    def _state(self, interaction: discord.Interaction):
+        """Состояние алерта: из БД по message_id (после рестарта) или из инстанса."""
+        if self.db and interaction.message:
+            data = self.db.get_security_alert(interaction.message.id)
+            if data:
+                return data["player"], data["banned_nick"], data["banned_reason"], data["ip"]
+        return self.login_player, self.banned_nick, self.banned_reason, self.ip
 
     @ui.button(
         label="Забанить за обход",
@@ -1233,9 +1260,12 @@ class AltActionView(ui.View):
             return await interaction.response.send_message("Ошибка доступа.", ephemeral=True)
         if not self._check_perms(author):
             return await interaction.response.send_message("Недостаточно прав для выполнения действия.", ephemeral=True)
-
-        default_reason = f"Обход бана ({self.banned_nick}): {self.banned_reason}" if self.banned_nick != self.login_player else self.banned_reason
-        await interaction.response.send_modal(AltBanModal(self.login_player, default_reason, self))
+        login_player, banned_nick, banned_reason, ip = self._state(interaction)
+        if not login_player:
+            return await interaction.response.send_message("Алерт устарел: нет данных игрока.", ephemeral=True)
+        default_reason = f"Обход бана ({banned_nick}): {banned_reason}" if banned_nick != login_player else banned_reason
+        view = AltActionView(login_player, banned_nick, banned_reason, self.db, ip)
+        await interaction.response.send_modal(AltBanModal(login_player, default_reason, view))
 
     @ui.button(
         label="Исключить (Kick)",
@@ -1247,18 +1277,24 @@ class AltActionView(ui.View):
         author = interaction.user
         if not isinstance(author, discord.Member) or not self._check_perms(author):
             return await interaction.response.send_message("Недостаточно прав.", ephemeral=True)
+        login_player, banned_nick, banned_reason, ip = self._state(interaction)
+        if not login_player:
+            return await interaction.response.send_message("Алерт устарел: нет данных игрока.", ephemeral=True)
 
         bridge_cog = get_bridge_cog(interaction.client)
-        clean_k_nick = self.login_player.strip().split()[0] if self.login_player else "Игрок"
-        kick_reason = f"Обход бана ({self.banned_nick}): {self.banned_reason}"
-        clean_k_reason = kick_reason.replace("\n", " ").replace("\r", " ").replace(";", " ").strip()
+        clean_k_nick = login_player.strip().split()[0] if login_player else "Игрок"
+        kick_reason = f"Обход бана ({banned_nick}): {banned_reason}"
+        clean_k_reason = kick_reason.replace("\n", " ").replace("\n", " ").replace(";", " ").strip()
         if bridge_cog and hasattr(bridge_cog, "broadcast_packet"):
             await bridge_cog.broadcast_packet({"type": "execute_console_command", "command": f"kick {clean_k_nick} {clean_k_reason}"})
-            button.disabled = True
-            button.label = f"Исключен ({clean_k_nick})"
+            new_view = AltActionView(login_player, banned_nick, banned_reason, self.db, ip)
+            for child in new_view.children:
+                if getattr(child, "custom_id", "") == "btn_kick_alt":
+                    child.disabled = True
+                    child.label = f"Исключен ({clean_k_nick})"
             try:
                 if interaction.message:
-                    await interaction.message.edit(view=self)
+                    await interaction.message.edit(view=new_view)
             except Exception:
                 pass
             await interaction.response.send_message(f"Игрок `{clean_k_nick}` исключен с сервера.", ephemeral=True)
@@ -1275,23 +1311,34 @@ class AltActionView(ui.View):
         author = interaction.user
         if not isinstance(author, discord.Member) or not self._check_perms(author):
             return await interaction.response.send_message("Недостаточно прав.", ephemeral=True)
+        login_player, banned_nick, banned_reason, ip = self._state(interaction)
+        if not login_player:
+            return await interaction.response.send_message("Алерт устарел: нет данных игрока.", ephemeral=True)
 
         bridge_cog = get_bridge_cog(interaction.client)
-        clean_k_nick = self.login_player.strip().split()[0] if self.login_player else "Игрок"
-        ipban_reason = f"Обход бана ({self.banned_nick}): {self.banned_reason}"
-        clean_k_reason = ipban_reason.replace("\n", " ").replace("\r", " ").replace(";", " ").strip()
+        clean_k_nick = login_player.strip().split()[0] if login_player else "Игрок"
+        ipban_reason = f"Обход бана ({banned_nick}): {banned_reason}"
+        clean_k_reason = ipban_reason.replace("\n", " ").replace("\n", " ").replace(";", " ").strip()
         if bridge_cog and hasattr(bridge_cog, "broadcast_packet"):
             await bridge_cog.broadcast_packet({"type": "execute_console_command", "command": f"ban-ip {clean_k_nick} {clean_k_reason}"})
-            button.disabled = True
-            button.label = f"IP забанен ({clean_k_nick})"
+            new_view = AltActionView(login_player, banned_nick, banned_reason, self.db, ip)
+            for child in new_view.children:
+                if getattr(child, "custom_id", "") == "btn_ipban_alt":
+                    child.disabled = True
+                    child.label = f"IP забанен ({clean_k_nick})"
             try:
                 if interaction.message:
-                    await interaction.message.edit(view=self)
+                    await interaction.message.edit(view=new_view)
             except Exception:
                 pass
             await interaction.response.send_message(f"IP адрес игрока `{clean_k_nick}` заблокирован на сервере.", ephemeral=True)
         else:
             await interaction.response.send_message("Мост с сервером недоступен.", ephemeral=True)
+
+
+def _db_quick_check(db) -> None:
+    with db._get_connection() as conn:
+        conn.execute("PRAGMA quick_check").fetchone()
 
 
 def make_gauge_bar(val: float, max_val: float, length: int = 8) -> str:
@@ -1336,14 +1383,10 @@ class HealthcheckAdminView(ui.View):
             return True
 
         if isinstance(member, discord.Member):
-            if member.guild_permissions.administrator or member.guild_permissions.manage_guild:
+            if member.guild_permissions.administrator:
                 return True
-            for r in member.roles:
-                name_low = r.name.lower().strip()
-                if any(w in name_low for w in ("тех", "админ", "admin", "куратор", "разработчик", "developer", "owner", "создатель", "руковод", "void")):
-                    return True
-                if r.id in Config.MOD_ROLE_IDS:
-                    return True
+            if any(r.id in _admin_role_ids() for r in member.roles):
+                return True
 
         await interaction.response.send_message(
             "⛔ Эта интерактивная диагностическая панель доступна только технической администрации.",
@@ -1392,8 +1435,7 @@ class HealthcheckAdminView(ui.View):
         if db:
             try:
                 t0 = time.perf_counter()
-                with db._get_connection() as conn:
-                    conn.execute("PRAGMA quick_check").fetchone()
+                await asyncio.to_thread(_db_quick_check, db)
                 db_speed = round((time.perf_counter() - t0) * 1000, 2)
                 db_status = f"🟢 `{db_speed} ms` (PRAGMA OK)"
                 if hasattr(db, "get_db_stats"):
@@ -1406,7 +1448,7 @@ class HealthcheckAdminView(ui.View):
 
         # 5. Реальное дисковое пространство хостинга (SSD)
         try:
-            d_total, d_used, d_free = shutil.disk_usage(".")
+            d_total, d_used, d_free = await asyncio.to_thread(shutil.disk_usage, ".")
             used_gb = round(d_used / (1024 ** 3), 1)
             total_gb = round(d_total / (1024 ** 3), 1)
             disk_pct = round((d_used / d_total) * 100, 1)
@@ -2012,7 +2054,7 @@ class SecurityCog(commands.Cog, name="Безопасность"):
             desc_parts.extend([
                 f"\n**Связанные аккаунты по точному IP ({len(accounts_block)}):**",
                 f"{accounts_text}",
-                f"\n*Все аккаунты имеют идентичный IP адрес. Данные о бане получены напрямую из LiteBans.*"
+                "\n*Все аккаунты имеют идентичный IP адрес. Данные о бане получены напрямую из LiteBans.*"
             ])
 
             embed = discord.Embed(
@@ -2026,7 +2068,9 @@ class SecurityCog(commands.Cog, name="Безопасность"):
 
             view = AltActionView(login_player, b_nick, b_reason, self.db, ip=ip)
             try:
-                await target_channel.send(embed=embed, view=view)
+                alert_msg = await target_channel.send(embed=embed, view=view)
+                if self.db:
+                    self.db.save_security_alert(alert_msg.id, login_player, b_nick, b_reason, ip)
             except discord.Forbidden:
                 logger.error("Нет прав на отправку алертов в канал %s. Пытаюсь отправить в резервный...", target_channel)
                 guild = getattr(target_channel, "guild", None) or (self.bot.guilds[0] if self.bot.guilds else None)
@@ -2034,11 +2078,13 @@ class SecurityCog(commands.Cog, name="Безопасность"):
                     for fallback_ch in guild.text_channels:
                         if fallback_ch.id != getattr(target_channel, "id", 0) and self._can_send_to(fallback_ch):
                             try:
-                                await fallback_ch.send(
-                                    content=f"⚠️ **Внимание персонала:** Основной канал алертов недоступен. Алерт перенаправлен сюда:",
+                                fb_msg = await fallback_ch.send(
+                                    content="⚠️ **Внимание персонала:** Основной канал алертов недоступен. Алерт перенаправлен сюда:",
                                     embed=embed,
                                     view=view
                                 )
+                                if self.db:
+                                    self.db.save_security_alert(fb_msg.id, login_player, b_nick, b_reason, ip)
                                 break
                             except Exception:
                                 continue
@@ -2076,7 +2122,7 @@ class SecurityCog(commands.Cog, name="Безопасность"):
             desc_parts = [
                 f"**Игрок:** `{login_player}` • `[Забанен]`",
                 f"**IP адрес:** `{ip}`",
-                f"**Статус в LiteBans:** Активный бан",
+                "**Статус в LiteBans:** Активный бан",
                 f"**Причина бана:** «{b_reason}»",
                 f"**Срок:** {b_dur} *(выдал `{b_by}`)*",
             ]
@@ -2093,7 +2139,9 @@ class SecurityCog(commands.Cog, name="Безопасность"):
             embed.set_footer(text="Vanilla Land • LiteBans")
             view = AltActionView(login_player, login_player, b_reason, self.db, ip=ip)
             try:
-                await target_channel.send(embed=embed, view=view)
+                alert_msg = await target_channel.send(embed=embed, view=view)
+                if self.db:
+                    self.db.save_security_alert(alert_msg.id, login_player, login_player, b_reason, ip)
             except Exception as e:
                 logger.error(f"Ошибка отправки алерта забаненного входа: {e}")
 
@@ -2616,16 +2664,9 @@ class SecurityCog(commands.Cog, name="Безопасность"):
         if not isinstance(author, discord.Member):
             return await ctx.send("Команда доступна только на сервере.", ephemeral=True)
 
-        has_perm = author.guild_permissions.administrator
-        if not has_perm:
-            for r in author.roles:
-                n = r.name.lower()
-                if any(w in n for w in ("админ", "admin", "модер", "moder", "куратор", "dev", "owner", "руковод")):
-                    has_perm = True
-                    break
-                if r.id in Config.MOD_ROLE_IDS:
-                    has_perm = True
-                    break
+        has_perm = bool(author.guild_permissions.administrator) or any(
+            r.id in _admin_role_ids() for r in author.roles
+        )
         if not has_perm:
             return await ctx.send("Недостаточно прав для управления параметрами безопасности.", ephemeral=True)
 
@@ -2643,8 +2684,6 @@ class SecurityCog(commands.Cog, name="Безопасность"):
     async def record_ip_cmd(self, ctx: commands.Context, player: str, ip: str):
         author = ctx.author
         has_perm = is_tech_admin_or_owner(ctx)
-        if not has_perm and isinstance(author, discord.Member):
-            has_perm = author.guild_permissions.administrator or any(r.id in Config.MOD_ROLE_IDS for r in author.roles)
         if not has_perm:
             return await ctx.send("Недостаточно прав.", ephemeral=True)
         if not self.db:
@@ -2660,5 +2699,6 @@ async def setup(bot: commands.Bot):
     await bot.add_cog(SecurityCog(bot))
     db = getattr(bot, "db", None)
     if db is not None:
-        # Панель защиты от твинков должна работать после рестарта
+        # Панели и алерты должны работать после рестарта
         bot.add_view(AltsPanelControlView(db, bot))
+        bot.add_view(AltActionView("", "", "", db))

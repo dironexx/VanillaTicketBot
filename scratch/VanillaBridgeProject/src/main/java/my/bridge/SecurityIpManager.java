@@ -44,6 +44,7 @@ public class SecurityIpManager {
     private final Map<String, Long> localIpSessions = new ConcurrentHashMap<String, Long>();
     private final Map<String, Long> localIpDurations = new ConcurrentHashMap<String, Long>();
     private final File storageFile;
+    private final File durationsFile;
     private static final long DEFAULT_SESSION_DURATION_MS = 172800000L;
     private volatile long defaultTrustDurationMs = 172800000L;
     private static final Pattern SESSION_PARSE_PATTERN = Pattern.compile("\"([^\"]+)\"\\s*:\\s*([0-9]+)");
@@ -51,7 +52,9 @@ public class SecurityIpManager {
     public SecurityIpManager(VanillaBridge plugin) {
         this.plugin = plugin;
         this.storageFile = new File(plugin.getDataFolder(), "ip_sessions.json");
+        this.durationsFile = new File(plugin.getDataFolder(), "ip_session_durations.json");
         this.loadSessions();
+        this.loadDurations();
     }
 
     public boolean isIpTrusted(String playerName, String ip) {
@@ -146,7 +149,7 @@ public class SecurityIpManager {
         }
         PendingAuthSession session = this.pendingSessions.get(uuid);
         if (session == null) {
-            return true;
+            return false;
         }
         String currentId = session.getSessionId();
         return currentId == null || currentId.isEmpty() || currentId.equals(incomingSessionId);
@@ -339,6 +342,31 @@ public class SecurityIpManager {
         }
     }
 
+    private void loadDurations() {
+        if (!this.durationsFile.exists()) {
+            return;
+        }
+        try (FileReader reader = new FileReader(this.durationsFile, StandardCharsets.UTF_8)) {
+            StringBuilder sb = new StringBuilder();
+            char[] buf = new char[1024];
+            int read;
+            while ((read = reader.read(buf)) != -1) {
+                sb.append(buf, 0, read);
+            }
+            Matcher matcher = SESSION_PARSE_PATTERN.matcher(sb.toString());
+            while (matcher.find()) {
+                String key = matcher.group(1);
+                long duration = Long.parseLong(matcher.group(2));
+                if (duration > 0L) {
+                    this.localIpDurations.put(key, duration);
+                }
+            }
+        }
+        catch (Exception e) {
+            this.plugin.getLogger().log(Level.WARNING, "Не удалось загрузить IP-дурации: " + e.getMessage(), e);
+        }
+    }
+
     private void saveSessionsAsync() {
         Bukkit.getScheduler().runTaskAsynchronously((Plugin)this.plugin, this::saveSessions);
     }
@@ -362,6 +390,19 @@ public class SecurityIpManager {
             json.append("\n}\n");
             try (FileWriter writer = new FileWriter(this.storageFile, StandardCharsets.UTF_8);){
                 writer.write(json.toString());
+            }
+            StringBuilder durationsJson = new StringBuilder("{\n");
+            boolean firstDuration = true;
+            for (Map.Entry<String, Long> entry : this.localIpDurations.entrySet()) {
+                if (!firstDuration) {
+                    durationsJson.append(",\n");
+                }
+                durationsJson.append("  \"").append(entry.getKey()).append("\": ").append(entry.getValue());
+                firstDuration = false;
+            }
+            durationsJson.append("\n}\n");
+            try (FileWriter durationsWriter = new FileWriter(this.durationsFile, StandardCharsets.UTF_8);){
+                durationsWriter.write(durationsJson.toString());
             }
         }
         catch (Exception e) {

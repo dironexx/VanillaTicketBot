@@ -6,7 +6,7 @@ import discord
 from discord.ext import commands
 
 from config import Config
-from design import AG, Colors, DonateLinkView, RulesLinkView
+from design import AG, DonateLinkView, RulesLinkView
 
 
 def format_uptime(start_time: float) -> str:

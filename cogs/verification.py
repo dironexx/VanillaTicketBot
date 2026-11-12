@@ -1,6 +1,6 @@
 import asyncio
 import logging
-from typing import Optional, Union
+from typing import Optional
 import discord
 from discord import app_commands, ui
 from discord.ext import commands, tasks
@@ -36,26 +36,12 @@ def get_verified_role(guild: discord.Guild, db: Optional[DatabaseManager] = None
 
 
 def is_bad_unverified_role(role: Optional[discord.Role]) -> bool:
-    """Определяет старые/ошибочные роли вроде unverified/unveriferived для автоматической замены"""
-    if not role:
-        return False
-    name_low = role.name.lower().strip()
-    if name_low in ("неверифицирован", "неверифицированный", "не верифицирован"):
-        return False
-    if role.id == 1473543870397677704:
-        return True
-    return (
-        name_low in (
-            "unverified",
-            "un-verified",
-            "unveriferived",
-            "unverifirived",
-            "unverifired",
-            "unverifered",
-            "unverified_old",
-        )
-        or name_low.startswith("unverif")
-    )
+    """Устаревшая роль-заглушка по известному ID.
+
+    Удаляем только её: роли по имени (unverified_*) больше не трогаем,
+    чтобы не снести кастомную роль сервера.
+    """
+    return bool(role and role.id == 1473543870397677704)
 
 
 def get_unverified_role(guild: discord.Guild, db: Optional[DatabaseManager] = None) -> Optional[discord.Role]:

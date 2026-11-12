@@ -256,6 +256,21 @@ class DatabaseManager:
                 status TEXT NOT NULL
             )
         """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS security_alerts (
+                message_id INTEGER PRIMARY KEY,
+                player TEXT NOT NULL,
+                banned_nick TEXT,
+                banned_reason TEXT,
+                ip TEXT
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS dm_reply_targets (
+                message_id INTEGER PRIMARY KEY,
+                target_player TEXT NOT NULL
+            )
+        """)
         conn.execute("INSERT OR IGNORE INTO ticket_counter (id, count) VALUES (1, 0)")
         conn.commit()
 
@@ -1120,6 +1135,42 @@ class DatabaseManager:
                 "last_seen": a.get("last_seen", "")
             })
         return result
+
+    # --- СОСТОЯНИЕ PERSISTENT-ВЬЮ ---
+    def save_security_alert(self, message_id: int, player: str, banned_nick: str, banned_reason: str, ip: str = ""):
+        with self._get_connection() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO security_alerts (message_id, player, banned_nick, banned_reason, ip) VALUES (?, ?, ?, ?, ?)",
+                (int(message_id), player, banned_nick, banned_reason, ip),
+            )
+            conn.commit()
+
+    def get_security_alert(self, message_id: int) -> Optional[dict]:
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT player, banned_nick, banned_reason, ip FROM security_alerts WHERE message_id = ?",
+                (int(message_id),),
+            )
+            row = cursor.fetchone()
+            if not row:
+                return None
+            return {"player": row[0], "banned_nick": row[1], "banned_reason": row[2], "ip": row[3]}
+
+    def save_dm_reply_target(self, message_id: int, target_player: str):
+        with self._get_connection() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO dm_reply_targets (message_id, target_player) VALUES (?, ?)",
+                (int(message_id), target_player),
+            )
+            conn.commit()
+
+    def get_dm_reply_target(self, message_id: int) -> Optional[str]:
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT target_player FROM dm_reply_targets WHERE message_id = ?", (int(message_id),))
+            row = cursor.fetchone()
+            return row[0] if row else None
 
     def get_db_stats(self) -> dict:
         """Возвращает сводную статистику записей в базе данных для системной диагностики"""

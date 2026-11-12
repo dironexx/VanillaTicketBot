@@ -7,7 +7,7 @@ UI Kit & Embed Helper for Vanilla Land Discord Bot
 - Удобные интерактивные кнопки Discord
 """
 
-from typing import Optional, List, Union
+from typing import Optional
 import discord
 from discord import ui
 from config import Config
