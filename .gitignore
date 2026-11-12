@@ -17,6 +17,9 @@ venv/
 transcripts/
 *.log
 
+# Служебный кэш Cloudflare
+.cloudflare/
+
 # Инструменты агента
 .pi/
 
