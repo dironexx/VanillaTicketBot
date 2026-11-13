@@ -99,7 +99,7 @@ pip install -r requirements.txt
 
 ## Деплой (VPS/VDS)
 
-1. Загрузите на сервер: `main.py`, `bot.py`, `config.py`, `database.py`, `design.py`,
+1. Загрузите на сервер: `main.py`, `bot.py`, `config.py`, `config_sync.py`, `database.py`, `design.py`,
    `cogs/`, `assets/`, `requirements.txt`, `.env` (создать на сервере, не заливать из репозитория).
 2. Установите зависимости и запустите:
    ```bash
@@ -170,6 +170,24 @@ python -X utf8 -c "import secrets; print(secrets.token_urlsafe(32))"
 подключиться к мосту и слать поддельные пакеты. Бот предупреждает об этом в логе.
 
 ---
+
+## Автосинхронизация конфигов
+
+- **Бот:** при старте `config_sync.py` добавляет в `.env` только отсутствующие
+  несекретные ключи (`ADMIN_ROLE_IDS`, `BRIDGE_PORT` и т.п.). Существующие значения
+  не перезаписываются; `DISCORD_TOKEN` и `BRIDGE_SECRET` не трогаются.
+- **Плагин:** `migrateConfig()` вызывает `copyDefaults(true)` — в `config.yml`
+  добавляются новые ключи (например, `security.trust-duration-hours`), значения
+  существующих сохраняются.
+- Отключить для тестов: `VANILLA_ENV_SYNC=0`.
+
+## Тесты
+
+```bash
+python -X utf8 -m unittest discover -s tests -t . -v
+```
+
+Тесты не меняют реальный `.env` (`VANILLA_ENV_SYNC=0`) и используют временные БД.
 
 ## Ассеты и рендер
 

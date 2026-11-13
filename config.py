@@ -7,6 +7,16 @@ from dotenv import load_dotenv
 BASE_DIR = Path(__file__).resolve().parent
 CWD = Path.cwd()
 
+# 0. Автодобавление новых несекретных ключей (значения не перезаписываются).
+# Отключается переменной VANILLA_ENV_SYNC=0 (используется в тестах).
+try:
+    from config_sync import sync_env_file
+
+    if os.getenv("VANILLA_ENV_SYNC", "1") != "0":
+        sync_env_file()
+except Exception:
+    pass
+
 # 1. Поиск и загрузка .env
 env_loaded = False
 for directory in [BASE_DIR, CWD]:

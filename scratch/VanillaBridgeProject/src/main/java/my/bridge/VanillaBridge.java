@@ -273,8 +273,12 @@ implements CommandExecutor {
 
     public void migrateConfig() {
         File configFile = new File(this.getDataFolder(), "config.yml");
+        // Добавляем ключи, которых нет в старом config.yml, не меняя существующие значения.
+        this.saveDefaultConfig();
+        this.getConfig().options().copyDefaults(true);
+        this.saveConfig();
+        this.reloadConfig();
         if (!configFile.exists()) {
-            this.saveDefaultConfig();
             return;
         }
         try {
