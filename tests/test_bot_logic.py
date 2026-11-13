@@ -109,6 +109,21 @@ class BridgeLogicTests(unittest.TestCase):
         self.assertFalse(result["is_vpn"])
         self.assertEqual(result["country"], "Локальный")
 
+    def test_env_bool_parser_and_feature_flags(self):
+        from config import Config, _env_bool
+
+        self.assertTrue(_env_bool("NON_EXISTENT_VAR", True))
+        self.assertFalse(_env_bool("NON_EXISTENT_VAR", False))
+
+        os.environ["TEST_FLAG_ON"] = "true"
+        os.environ["TEST_FLAG_OFF"] = "0"
+        self.assertTrue(_env_bool("TEST_FLAG_ON", False))
+        self.assertFalse(_env_bool("TEST_FLAG_OFF", True))
+
+        self.assertIsInstance(Config.BRIDGE_ENABLE_ALTS_CHECK, bool)
+        self.assertIsInstance(Config.BRIDGE_ENABLE_MAINTENANCE_SYNC, bool)
+        self.assertIsInstance(Config.BRIDGE_ENABLE_STATS_CHANNELS, bool)
+
 
 if __name__ == "__main__":
     unittest.main()

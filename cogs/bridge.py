@@ -354,6 +354,13 @@ class BridgeCog(commands.Cog, name="Мост Minecraft"):
             await self.runner.cleanup()
 
     async def broadcast_packet(self, payload: dict):
+        p_type = str(payload.get("type", ""))
+        if p_type.startswith("maintenance") and not Config.BRIDGE_ENABLE_MAINTENANCE_SYNC:
+            logger.debug("Синхронизация техработ отключена в конфиге, пакет %s пропущен", p_type)
+            return
+        if p_type == "check_alts_bans" and not Config.BRIDGE_ENABLE_ALTS_CHECK:
+            logger.debug("Проверка альтов через мост отключена в конфиге, пакет check_alts_bans пропущен")
+            return
         raw_json = json.dumps(payload, ensure_ascii=False)
         async with self._sockets_lock:
             sockets_to_remove = set()
@@ -1474,6 +1481,8 @@ class BridgeCog(commands.Cog, name="Мост Minecraft"):
         self, guild: discord.Guild, online_name: str = "", tps_name: str = ""
     ) -> bool:
         """Находит существующие каналы статистики, удаляет дубликаты и обновляет имена"""
+        if not Config.BRIDGE_ENABLE_STATS_CHANNELS:
+            return False
         if not guild or not guild.me.guild_permissions.manage_channels:
             return False
 
@@ -2146,7 +2155,7 @@ class BridgeCog(commands.Cog, name="Мост Minecraft"):
 
             # Опрос LiteBans по всем аккаунтам на этом IP
             banned_map = {}
-            if self.active_sockets and alts_on_ip:
+            if Config.BRIDGE_ENABLE_ALTS_CHECK and self.active_sockets and alts_on_ip:
                 check_names = list(set(a["player_name"] for a in alts_on_ip))
                 check_str = ",".join(check_names)
                 def check_packet_ip(p_type, p_data):
@@ -2216,7 +2225,7 @@ class BridgeCog(commands.Cog, name="Мост Minecraft"):
 
         # Опрос LiteBans по целевому игроку и всем его твинкам
         banned_map = {}
-        if self.active_sockets and (known_ips or alts):
+        if Config.BRIDGE_ENABLE_ALTS_CHECK and self.active_sockets and (known_ips or alts):
             check_names = list(set([clean_target] + [a["player_name"] for a in alts]))
             check_str = ",".join(check_names)
             def check_packet_player(p_type, p_data):

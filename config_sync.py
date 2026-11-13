@@ -23,6 +23,9 @@ DEFAULT_KEYS: tuple[tuple[str, str], ...] = (
     ("LOGIN_2FA_TIMEOUT_SEC", "180"),
     ("DB_PATH", "tickets.db"),
     ("TRANSCRIPTS_DIR", "transcripts"),
+    ("BRIDGE_ENABLE_ALTS_CHECK", "0"),
+    ("BRIDGE_ENABLE_MAINTENANCE_SYNC", "0"),
+    ("BRIDGE_ENABLE_STATS_CHANNELS", "1"),
 )
 
 SYNC_MARKER = "# --- Автодобавлено при обновлении (значения можно менять) ---"

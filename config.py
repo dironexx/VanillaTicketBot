@@ -110,6 +110,21 @@ def _env_float(name: str, default: float = 0.0) -> float:
         return default
 
 
+def _env_bool(name: str, default: bool = False) -> bool:
+    """bool из env (1, true, yes, on -> True; 0, false, no, off -> False)."""
+    raw = (os.getenv(name) or "").strip().lower()
+    if not raw:
+        return default
+    if raw in ("1", "true", "yes", "on", "y"):
+        return True
+    if raw in ("0", "false", "no", "off", "n"):
+        return False
+    logging.getLogger("VanillaBot.Config").warning(
+        "Некорректное значение %s=%r, использую %s", name, raw, default
+    )
+    return default
+
+
 class Config:
     DISCORD_TOKEN: str = _resolve_token()
     DISCORD_PROXY: Optional[str] = (
@@ -188,3 +203,9 @@ class Config:
     IP_SESSION_HOURS: float = _env_float("IP_SESSION_HOURS", 48.0)
     LOGIN_2FA_TIMEOUT_SEC: int = _env_int("LOGIN_2FA_TIMEOUT_SEC", 180)
     LINK_PANEL_CHANNEL_ID: int = _env_int("LINK_PANEL_CHANNEL_ID", 0)
+
+    # Модули совместимости моста с серверным ядром (Rahu / Flectone / MineGuard)
+    # Если на сервере проверка твинков или техработы ведутся ядром, флаги отключают дублирование
+    BRIDGE_ENABLE_ALTS_CHECK: bool = _env_bool("BRIDGE_ENABLE_ALTS_CHECK", False)
+    BRIDGE_ENABLE_MAINTENANCE_SYNC: bool = _env_bool("BRIDGE_ENABLE_MAINTENANCE_SYNC", False)
+    BRIDGE_ENABLE_STATS_CHANNELS: bool = _env_bool("BRIDGE_ENABLE_STATS_CHANNELS", True)
