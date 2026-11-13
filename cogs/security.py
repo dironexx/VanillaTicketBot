@@ -1768,9 +1768,9 @@ class SecurityCog(commands.Cog, name="Безопасность"):
         Находит наилучший доступный канал для оповещений безопасности:
         1. Настроенный вручную через панель / базу (alts_alert_channel_id)
         2. Config.ALTS_ALERT_CHANNEL_ID (из .env)
-        3. Config.EVENTS_CHANNEL_ID (канал событий сервера)
+        3. Поиск в гильдиях по ключевым именам каналов банов/безопасности (#баны, #bans, #обход-банов, #alts, #security)
         4. Config.ADMIN_LOG_CHANNEL_ID / LOG_CHANNEL_ID (логи)
-        5. Поиск по имени: #обход-банов, #alts, #алерты, #модерация, #security, #логи
+        5. Config.EVENTS_CHANNEL_ID (канал событий сервера)
         6. Первый текстовый канал гильдии, где бот имеет права отправки
         """
         # 1. Из базы данных
@@ -1788,15 +1788,7 @@ class SecurityCog(commands.Cog, name="Безопасность"):
             if ch:
                 return ch
 
-        # 3. Перебираем кандидаты из конфигурации по очереди (НЕ прерывая цикл при первой ошибке!)
-        for attr in ("EVENTS_CHANNEL_ID", "ADMIN_LOG_CHANNEL_ID", "LOG_CHANNEL_ID"):
-            cid = getattr(Config, attr, None)
-            if cid and cid > 0:
-                ch = await self._resolve_channel(cid)
-                if ch:
-                    return ch
-
-        # 4. Поиск в гильдиях по ключевым именам каналов
+        # 3. Поиск в гильдиях по ключевым именам каналов банов и безопасности
         guild = None
         if Config.GUILD_ID:
             guild = self.bot.get_guild(Config.GUILD_ID)
@@ -1804,12 +1796,21 @@ class SecurityCog(commands.Cog, name="Безопасность"):
             guild = self.bot.guilds[0]
 
         if guild:
-            name_keywords = ("обход", "alt", "алерт", "alert", "безопасност", "security", "модер", "лог")
+            name_keywords = ("бан", "ban", "обход", "alt", "алерт", "alert", "безопасност", "security")
             for c in guild.text_channels:
                 c_name = c.name.lower()
                 if any(kw in c_name for kw in name_keywords) and self._can_send_to(c):
                     return c
 
+        # 4. Перебираем системные каналы логов и событий (админ-логи, логи, события)
+        for attr in ("ADMIN_LOG_CHANNEL_ID", "LOG_CHANNEL_ID", "EVENTS_CHANNEL_ID"):
+            cid = getattr(Config, attr, None)
+            if cid and cid > 0:
+                ch = await self._resolve_channel(cid)
+                if ch:
+                    return ch
+
+        if guild:
             # 5. Первый канал, где есть права на отправку
             for c in guild.text_channels:
                 if self._can_send_to(c):
@@ -1970,16 +1971,22 @@ class SecurityCog(commands.Cog, name="Безопасность"):
         bridge_cog = get_bridge_cog(self.bot)
         online_set = {p.lower() for p in getattr(bridge_cog, "mc_players", [])} if bridge_cog else set()
 
-        other_banned = [b for b in banned if b.get("player", "").lower() != login_player.lower()]
-        is_login_banned = any(b.get("player", "").lower() == login_player.lower() for b in banned)
+        other_banned = [
+            b for b in banned
+            if (b.get("player", "") if isinstance(b, dict) else str(b)).strip().lower() != login_player.lower()
+        ]
+        is_login_banned = any(
+            (b.get("player", "") if isinstance(b, dict) else str(b)).strip().lower() == login_player.lower()
+            for b in banned
+        )
 
         # СЦЕНАРИЙ 1: ОБХОД БАНА (с этого IP заходил аккаунт, у которого в LiteBans активен бан)
         if other_banned:
             primary_banned = other_banned[0]
-            b_nick = primary_banned.get("player", "Игрок")
-            b_reason = primary_banned.get("reason", "Нарушение правил")
-            b_by = primary_banned.get("banned_by", "Console")
-            b_dur = primary_banned.get("duration", "Навсегда")
+            b_nick = (primary_banned.get("player", "Игрок") if isinstance(primary_banned, dict) else str(primary_banned)).strip()
+            b_reason = (primary_banned.get("reason", "Нарушение правил") if isinstance(primary_banned, dict) else "Нарушение правил").strip()
+            b_by = (primary_banned.get("banned_by", "Console") if isinstance(primary_banned, dict) else "Console").strip()
+            b_dur = (primary_banned.get("duration", "Навсегда") if isinstance(primary_banned, dict) else "Навсегда").strip()
 
             clean_k_reason = f"Обход бана ({b_nick}): {b_reason}".replace("\n", " ").replace("\r", " ").replace(";", " ").strip()
             clean_k_nick = login_player.strip().split()[0] if login_player else "Игрок"
@@ -2013,10 +2020,10 @@ class SecurityCog(commands.Cog, name="Безопасность"):
 
             accounts_block = []
             for b in other_banned:
-                p_nick = b.get("player", "Игрок")
-                p_reason = b.get("reason", "Нарушение правил")
-                p_dur = b.get("duration", "Навсегда")
-                p_by = b.get("banned_by", "Console")
+                p_nick = (b.get("player", "Игрок") if isinstance(b, dict) else str(b)).strip()
+                p_reason = (b.get("reason", "Нарушение правил") if isinstance(b, dict) else "Нарушение правил").strip()
+                p_dur = (b.get("duration", "Навсегда") if isinstance(b, dict) else "Навсегда").strip()
+                p_by = (b.get("banned_by", "Console") if isinstance(b, dict) else "Console").strip()
                 accounts_block.append(f"• `{p_nick}` • `[Забанен]` «{p_reason}» ({p_dur}, выдал `{p_by}`)")
 
             # Текущий игрок
@@ -2024,10 +2031,10 @@ class SecurityCog(commands.Cog, name="Безопасность"):
             accounts_block.append(f"• `{login_player}` • {login_on_tag} *(текущий)*")
 
             # Чистые твинки по этому же IP
-            other_banned_lowers = {b.get("player", "").lower() for b in other_banned}
+            other_banned_lowers = {(b.get("player", "") if isinstance(b, dict) else str(b)).strip().lower() for b in other_banned}
             clean_alts = []
             for c in clean:
-                c_nick = c.get("player", "") if isinstance(c, dict) else str(c)
+                c_nick = (c.get("player", "") if isinstance(c, dict) else str(c)).strip()
                 if c_nick and c_nick.lower() != login_player.lower() and c_nick.lower() not in other_banned_lowers:
                     c_online = c.get("online") if isinstance(c, dict) else (c_nick.lower() in online_set)
                     clean_alts.append((c_nick, c_online))
@@ -2066,6 +2073,7 @@ class SecurityCog(commands.Cog, name="Безопасность"):
                 alert_msg = await target_channel.send(embed=embed, view=view)
                 if self.db:
                     self.db.save_security_alert(alert_msg.id, login_player, b_nick, b_reason, ip)
+                logger.info("Алерт об обходе бана для %s успешно отправлен в канал %s", login_player, target_channel)
             except discord.Forbidden:
                 logger.error("Нет прав на отправку алертов в канал %s. Пытаюсь отправить в резервный...", target_channel)
                 guild = getattr(target_channel, "guild", None) or (self.bot.guilds[0] if self.bot.guilds else None)
@@ -2090,10 +2098,13 @@ class SecurityCog(commands.Cog, name="Безопасность"):
 
         # СЦЕНАРИЙ 2: САМ ВХОДЯЩИЙ ИГРОК ЗАБАНЕН В LiteBans
         elif is_login_banned:
-            b_item = next(b for b in banned if b.get("player", "").lower() == login_player.lower())
-            b_reason = b_item.get("reason", "Нарушение правил")
-            b_dur = b_item.get("duration", "Навсегда")
-            b_by = b_item.get("banned_by", "Console")
+            b_item = next(
+                b for b in banned
+                if (b.get("player", "") if isinstance(b, dict) else str(b)).strip().lower() == login_player.lower()
+            )
+            b_reason = (b_item.get("reason", "Нарушение правил") if isinstance(b_item, dict) else "Нарушение правил").strip()
+            b_dur = (b_item.get("duration", "Навсегда") if isinstance(b_item, dict) else "Навсегда").strip()
+            b_by = (b_item.get("banned_by", "Console") if isinstance(b_item, dict) else "Console").strip()
 
             clean_k_reason = b_reason.replace("\n", " ").replace("\r", " ").replace(";", " ").strip() if b_reason else "Нарушение правил"
             clean_k_nick = login_player.strip().split()[0] if login_player else "Игрок"
@@ -2137,6 +2148,7 @@ class SecurityCog(commands.Cog, name="Безопасность"):
                 alert_msg = await target_channel.send(embed=embed, view=view)
                 if self.db:
                     self.db.save_security_alert(alert_msg.id, login_player, login_player, b_reason, ip)
+                logger.info("Алерт забаненного игрока %s успешно отправлен в канал %s", login_player, target_channel)
             except Exception as e:
                 logger.error(f"Ошибка отправки алерта забаненного входа: {e}")
 
@@ -2144,11 +2156,16 @@ class SecurityCog(commands.Cog, name="Безопасность"):
         else:
             only_bans = (self.db.get_setting("alts_alert_only_bans", "true").lower() == "true") if self.db else True
             if only_bans:
+                clean_count = len(clean) if isinstance(clean, list) else 0
+                logger.info(
+                    "Для игрока %s найдены только чистые аккаунты (%d шт., банов нет), алерт опущен согласно настройке alts_alert_only_bans=true",
+                    login_player, clean_count
+                )
                 return
 
             clean_names = []
             for c in clean:
-                c_nick = c.get("player", "") if isinstance(c, dict) else str(c)
+                c_nick = (c.get("player", "") if isinstance(c, dict) else str(c)).strip()
                 if c_nick and c_nick.lower() != login_player.lower():
                     c_online = c.get("online") if isinstance(c, dict) else (c_nick.lower() in online_set)
                     clean_names.append((c_nick, c_online))
@@ -2180,8 +2197,11 @@ class SecurityCog(commands.Cog, name="Безопасность"):
                 embed.set_footer(text="Vanilla Land • Учёт мультиаккаунтов")
                 try:
                     await target_channel.send(embed=embed)
+                    logger.info("Алерт о мультиаккаунтах для %s успешно отправлен в канал %s", login_player, target_channel)
                 except Exception as e:
                     logger.error(f"Ошибка отправки алерта чистых твинков: {e}")
+            else:
+                logger.debug("Для игрока %s других связанных аккаунтов не найдено", login_player)
 
 
     @commands.hybrid_command(

@@ -109,6 +109,21 @@ class BridgeLogicTests(unittest.TestCase):
         self.assertFalse(result["is_vpn"])
         self.assertEqual(result["country"], "Локальный")
 
+    def test_alert_channel_prefers_bans_name_over_events(self):
+        from cogs.security import SecurityCog
+        cog = SecurityCog(SimpleNamespace(guilds=[]))
+        cog.db = SimpleNamespace(get_setting=lambda k: None)
+        cog._resolve_channel = lambda cid: asyncio.sleep(0, result=SimpleNamespace(id=cid, name=f"ch_{cid}"))
+        cog._can_send_to = lambda c: True
+
+        ban_ch = SimpleNamespace(id=101, name="баны", send=True)
+        events_ch = SimpleNamespace(id=202, name="события", send=True)
+        guild = SimpleNamespace(text_channels=[events_ch, ban_ch])
+        cog.bot = SimpleNamespace(get_guild=lambda gid: guild, guilds=[guild])
+
+        resolved = asyncio.run(cog._get_alert_channel())
+        self.assertEqual(resolved.id, 101)
+
     def test_env_bool_parser_and_feature_flags(self):
         from config import Config, _env_bool
 
