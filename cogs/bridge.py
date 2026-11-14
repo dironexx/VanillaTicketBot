@@ -402,7 +402,12 @@ class BridgeCog(commands.Cog, name="Мост Minecraft"):
 
         self.active_sockets.add(ws)
         self.was_connected = True
-        logger.info(f"Minecraft сервер успешно подключился к мосту ({request.remote})")
+        client_ip = (
+            request.headers.get("CF-Connecting-IP")
+            or request.headers.get("X-Forwarded-For", "").split(",")[0].strip()
+            or request.remote
+        )
+        logger.info(f"Minecraft сервер успешно подключился к мосту ({Config.SERVER_IP} / {client_ip})")
 
         # Если на боте активен режим техработ, сразу передаем его серверу
         if self.maintenance_enabled:

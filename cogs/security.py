@@ -1600,8 +1600,8 @@ class HealthcheckAdminView(ui.View):
                 f"Discord Gateway:     {gw_ping} ms\n"
                 f"SQLite Roundtrip:    {db_speed_str}\n"
                 f"Active Sockets:      {sockets_cnt} соединений\n"
-                f"Cloudflare Nginx:    bridge.vanillaland.fun:80\n"
-                f"Target Port:         172.18.0.1:{Config.BRIDGE_PORT}\n"
+                f"Minecraft Server:    {Config.SERVER_IP}:25565\n"
+                f"WebSocket Bridge:    bridge.vanillaland.fun:443\n"
                 f"```"
             ),
             color=Colors.GREEN if gw_ping < 120 else Colors.YELLOW,
