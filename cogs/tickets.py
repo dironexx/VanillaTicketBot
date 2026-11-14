@@ -497,18 +497,15 @@ def build_suspect_embed(bot: commands.Bot, db: DatabaseManager, suspect_nick: st
     alts = summary.get("alts", [])
     ips = summary.get("ips", [])
     alerts = summary.get("alerts", [])
-    deaths = summary.get("death_count", 0)
-    last_death = summary.get("last_death", "Нет записей")
 
     bridge_cog = bot.get_cog("Мост Minecraft")
     is_online = False
     if bridge_cog and hasattr(bridge_cog, "mc_players"):
         is_online = any(p.lower() == player.lower() for p in bridge_cog.mc_players)
 
-    status_str = "🟢 В сети на сервере" if is_online else "⚫ Не в сети"
+    status_str = "🟢 В сети" if is_online else "⚫ Оффлайн"
     embed = AG.embed(
         title=f"Досье игрока • {player}",
-        description="Оперативная сводка для модерации сервера.",
         footer="Vanilla Land • Безопасность",
     )
     embed.add_field(name="Статус", value=status_str, inline=True)
@@ -533,7 +530,15 @@ def build_suspect_embed(bot: commands.Bot, db: DatabaseManager, suspect_nick: st
         alert_lines = [f"• Забаненный твинк `{al['banned_nick']}`: {al['reason']}" for al in alerts[:3]]
         embed.add_field(name="Алерты безопасности", value="\n".join(alert_lines), inline=False)
 
-    embed.add_field(name="Смертей в базе", value=f"`{deaths}` (Посл: {last_death})", inline=True)
+    try:
+        from cogs.bridge_views import get_skin_avatar_url
+
+        avatar_url = get_skin_avatar_url(player, None, db)
+        if avatar_url:
+            embed.set_thumbnail(url=avatar_url)
+    except Exception:
+        pass
+
     return embed
 
 

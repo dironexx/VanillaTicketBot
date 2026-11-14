@@ -419,15 +419,18 @@ class MinecraftTextureManager:
 TEXTURE_MGR = MinecraftTextureManager(ASSETS_DIR / "textures")
 
 
-_FONT_CACHE: Dict[int, ImageFont.ImageFont] = {}
+_FONT_CACHE: Dict[Tuple[int, bool], ImageFont.ImageFont] = {}
 
 
-def _get_font(size: int = 12) -> ImageFont.ImageFont:
-    if size in _FONT_CACHE:
-        return _FONT_CACHE[size]
+def _get_font(size: int = 12, bold: bool = False) -> ImageFont.ImageFont:
+    key = (size, bold)
+    if key in _FONT_CACHE:
+        return _FONT_CACHE[key]
 
     font = None
-    local_font = ASSETS_DIR / "fonts" / "font.ttf"
+    local_font = ASSETS_DIR / "fonts" / ("font_bold.ttf" if bold else "font.ttf")
+    if not local_font.is_file():
+        local_font = ASSETS_DIR / "fonts" / "font.ttf"
     if local_font.is_file():
         try:
             font = ImageFont.truetype(str(local_font), size)
@@ -435,7 +438,12 @@ def _get_font(size: int = 12) -> ImageFont.ImageFont:
             font = None
 
     if font is None:
-        for name in ["segoeui.ttf", "arial.ttf", "calibri.ttf", "DejaVuSans.ttf"]:
+        candidates = (
+            ["segoeuib.ttf", "arialbd.ttf", "DejaVuSans-Bold.ttf", "calibrib.ttf"]
+            if bold
+            else ["segoeui.ttf", "arial.ttf", "DejaVuSans.ttf", "calibri.ttf"]
+        )
+        for name in candidates:
             try:
                 font = ImageFont.truetype(name, size)
                 break
@@ -447,7 +455,7 @@ def _get_font(size: int = 12) -> ImageFont.ImageFont:
         except Exception:
             font = ImageFont.load_default()
 
-    _FONT_CACHE[size] = font
+    _FONT_CACHE[key] = font
     return font
 
 
@@ -719,83 +727,143 @@ def render_profile_card(
     """Генерирует графическую карточку профиля игрока (800x420 PNG) в стилистике Vanilla Land"""
     width = 800
     height = 420
-    img = Image.new("RGBA", (width, height), (24, 24, 27, 255))
+    # Фоновый цвет - глубокий обсидиановый графит
+    img = Image.new("RGBA", (width, height), (17, 18, 22, 255))
     draw = ImageDraw.Draw(img)
 
-    # Верхний градиент
-    for i in range(6):
+    # 1. Внешняя рамка карточки со скруглением
+    draw.rounded_rectangle(
+        [(1, 1), (width - 2, height - 2)],
+        radius=14,
+        outline=(38, 40, 50, 255),
+        width=2,
+    )
+
+    # 2. Тонкая акцентная линия сверху (плавный градиент янтарь-оранжевый)
+    for i in range(3):
         r = 255
-        g = int(122 + (174 - 122) * (i / 6))
-        b = int(0 + 25 * (i / 6))
-        draw.line([(0, i), (width, i)], fill=(r, g, b, 255), width=1)
+        g = int(153 + (195 - 153) * (i / 3))
+        b = int(0 + 50 * (i / 3))
+        draw.line([(14, i + 1), (width - 15, i + 1)], fill=(r, g, b, 255), width=1)
 
-    # Рамка карточки
-    draw.rounded_rectangle([(1, 1), (width - 2, height - 2)], radius=12, outline=(39, 39, 42, 255), width=2)
-
-    font_title = _get_font(26)
-    font_sub = _get_font(13)
-    font_badge = _get_font(11)
-    font_stat_title = _get_font(13)
-    font_stat_val = _get_font(15)
-
+    # 3. Левая колонка для скина (200x364)
     left_x = 24
-    left_y = 30
-    skin_box_w = 190
-    skin_box_h = 360
+    left_y = 28
+    skin_box_w = 200
+    skin_box_h = 364
     draw.rounded_rectangle(
         [(left_x, left_y), (left_x + skin_box_w, left_y + skin_box_h)],
-        radius=10,
-        fill=(31, 31, 35, 255),
-        outline=(50, 50, 56, 255),
+        radius=12,
+        fill=(22, 23, 29, 255),
+        outline=(38, 40, 50, 255),
         width=1,
+    )
+
+    # Теневой пьедестал внизу контейнера скина
+    draw.ellipse(
+        [(left_x + 35, left_y + skin_box_h - 38), (left_x + skin_box_w - 35, left_y + skin_box_h - 18)],
+        fill=(12, 12, 16, 220),
     )
 
     if skin_image:
         try:
             skin_copy = skin_image.copy()
-            skin_copy.thumbnail((skin_box_w - 20, skin_box_h - 20), Image.Resampling.LANCZOS)
+            skin_copy.thumbnail((skin_box_w - 24, skin_box_h - 40), Image.Resampling.LANCZOS)
             paste_x = left_x + (skin_box_w - skin_copy.width) // 2
-            paste_y = left_y + (skin_box_h - skin_copy.height) // 2
+            paste_y = left_y + skin_box_h - 26 - skin_copy.height
             img.paste(skin_copy, (paste_x, paste_y), skin_copy if skin_copy.mode == "RGBA" else None)
         except Exception:
-            draw.text((left_x + 35, left_y + 160), "[СКИН ИГРОКА]", fill=(113, 113, 122, 255), font=font_sub)
-    else:
-        draw.text((left_x + 35, left_y + 160), "[СКИН ИГРОКА]", fill=(113, 113, 122, 255), font=font_sub)
+            skin_image = None
 
+    if not skin_image:
+        # Элегантный манекен персонажа Minecraft (контурный силуэт)
+        m_color = (55, 58, 70, 255)
+        # Голова
+        draw.rectangle([(left_x + 75, left_y + 80), (left_x + 125, left_y + 130)], outline=m_color, width=2)
+        # Тело
+        draw.rectangle([(left_x + 70, left_y + 134), (left_x + 130, left_y + 205)], outline=m_color, width=2)
+        # Руки
+        draw.rectangle([(left_x + 48, left_y + 134), (left_x + 66, left_y + 205)], outline=m_color, width=2)
+        draw.rectangle([(left_x + 134, left_y + 134), (left_x + 152, left_y + 205)], outline=m_color, width=2)
+        # Ноги
+        draw.rectangle([(left_x + 72, left_y + 209), (left_x + 97, left_y + 285)], outline=m_color, width=2)
+        draw.rectangle([(left_x + 103, left_y + 209), (left_x + 128, left_y + 285)], outline=m_color, width=2)
+        font_sil = _get_font(11, bold=True)
+        draw.text((left_x + 55, left_y + 305), "СКИН ОФФЛАЙН", fill=(90, 94, 110, 255), font=font_sil)
+
+    # 4. Правая колонка с информацией
     right_x = left_x + skin_box_w + 24
     right_w = width - right_x - 24
 
-    draw.text((right_x, 34), player_name, fill=(255, 255, 255, 255), font=font_title)
+    font_title = _get_font(26, bold=True)
+    draw.text((right_x, 30), player_name, fill=(255, 255, 255, 255), font=font_title)
 
-    badge_x = right_x + int(len(player_name) * 15) + 12
-    badge_x = min(badge_x, width - 120)
-    badge_y = 38
+    # Статус-бейдж с точным расчётом ширины текста
+    name_w = int(draw.textlength(player_name, font=font_title))
+    badge_x = min(right_x + name_w + 14, width - 124)
+    badge_y = 34
+    font_badge = _get_font(11, bold=True)
     if is_online:
-        draw.rounded_rectangle([(badge_x, badge_y), (badge_x + 85, badge_y + 24)], radius=12, fill=(22, 101, 52, 255), outline=(34, 197, 94, 255))
-        draw.text((badge_x + 12, badge_y + 5), "● В СЕТИ", fill=(220, 252, 231, 255), font=font_badge)
+        draw.rounded_rectangle(
+            [(badge_x, badge_y), (badge_x + 86, badge_y + 24)],
+            radius=12,
+            fill=(16, 52, 30, 255),
+            outline=(34, 197, 94, 255),
+        )
+        draw.text((badge_x + 12, badge_y + 5), "● В СЕТИ", fill=(74, 222, 128, 255), font=font_badge)
     else:
-        draw.rounded_rectangle([(badge_x, badge_y), (badge_x + 94, badge_y + 24)], radius=12, fill=(39, 39, 42, 255), outline=(63, 63, 70, 255))
-        draw.text((badge_x + 12, badge_y + 5), "○ ОФФЛАЙН", fill=(161, 161, 170, 255), font=font_badge)
+        draw.rounded_rectangle(
+            [(badge_x, badge_y), (badge_x + 94, badge_y + 24)],
+            radius=12,
+            fill=(30, 31, 38, 255),
+            outline=(63, 63, 70, 255),
+        )
+        draw.text((badge_x + 12, badge_y + 5), "○ ОФФЛАЙН", fill=(156, 163, 175, 255), font=font_badge)
 
-    draw.text((right_x, 70), "Сервер Vanilla Land SMP • Java Edition 26.3", fill=(161, 161, 170, 255), font=font_sub)
+    font_sub = _get_font(13)
+    draw.text((right_x, 68), "Vanilla Land SMP • Java Edition 26.3", fill=(113, 113, 122, 255), font=font_sub)
 
-    card_w = (right_w - 16) // 2
-    card_h = 100
-    grid_y = 105
+    # 5. Сетка бенто-карточек 2x2
+    card_w = (right_w - 14) // 2
+    card_h = 110
+    grid_y = 104
 
-    def _draw_card(cx: int, cy: int, title: str, line1: str, line2: str, icon_col: Tuple[int, int, int]):
-        draw.rounded_rectangle([(cx, cy), (cx + card_w, cy + card_h)], radius=8, fill=(31, 31, 35, 255), outline=(45, 45, 52, 255), width=1)
-        draw.line([(cx, cy + 8), (cx, cy + card_h - 8)], fill=icon_col + (255,), width=3)
-        draw.text((cx + 14, cy + 12), title.upper(), fill=icon_col + (255,), font=font_stat_title)
-        draw.text((cx + 14, cy + 38), line1, fill=(244, 244, 245, 255), font=font_stat_val)
-        draw.text((cx + 14, cy + 64), line2, fill=(161, 161, 170, 255), font=font_sub)
+    font_label = _get_font(11, bold=True)
+    font_val_large = _get_font(20, bold=True)
+    font_val_mid = _get_font(17, bold=True)
+    font_desc = _get_font(12)
 
-    _draw_card(right_x, grid_y, "Время в игре", playtime_str, f"Уровень: {level}", (255, 174, 25))
-    _draw_card(right_x + card_w + 16, grid_y, "Добытые руды", f"Алмазы: {diamonds:,}", f"Обломки: {debris:,}", (56, 189, 248))
-    _draw_card(right_x, grid_y + card_h + 14, "PvP и статистика", f"K/D: {kd_ratio:.2f}", f"Убийств: {kills} / Смертей: {deaths}", (239, 68, 68))
-    _draw_card(right_x + card_w + 16, grid_y + card_h + 14, "Текущее положение", world_name, "vanillaland.ru-mc.ru", (74, 222, 128))
+    def _draw_panel(cx: int, cy: int, label: str, main_text: str, sub_text: str, accent_rgb: Tuple[int, int, int], is_mid: bool = False):
+        draw.rounded_rectangle(
+            [(cx, cy), (cx + card_w, cy + card_h)],
+            radius=10,
+            fill=(23, 24, 30, 255),
+            outline=(40, 42, 53, 255),
+            width=1,
+        )
+        # Вертикальная полоска-индикатор
+        draw.rounded_rectangle(
+            [(cx + 1, cy + 10), (cx + 4, cy + card_h - 10)],
+            radius=2,
+            fill=accent_rgb + (255,),
+        )
+        draw.text((cx + 16, cy + 14), label.upper(), fill=accent_rgb + (255,), font=font_label)
+        f_val = font_val_mid if is_mid else font_val_large
+        draw.text((cx + 16, cy + 40), main_text, fill=(248, 250, 252, 255), font=f_val)
+        draw.text((cx + 16, cy + 74), sub_text, fill=(148, 163, 184, 255), font=font_desc)
 
-    draw.text((right_x, 370), "Vanilla Land • Профиль сгенерирован ботом", fill=(113, 113, 122, 255), font=font_sub)
+    # 1. Время в игре
+    _draw_panel(right_x, grid_y, "Время в игре", playtime_str, f"Уровень опыта: {level}", (245, 158, 11))
+    # 2. Руды
+    _draw_panel(right_x + card_w + 14, grid_y, "Добыча руд", f"Алмазы: {diamonds:,}", f"Древние обломки: {debris:,}", (56, 189, 248), is_mid=True)
+    # 3. PvP
+    _draw_panel(right_x, grid_y + card_h + 14, "PvP статистика", f"K/D {kd_ratio:.2f}", f"Убийств: {kills} • Смертей: {deaths}", (244, 63, 94))
+    # 4. Локация
+    _draw_panel(right_x + card_w + 14, grid_y + card_h + 14, "Текущее положение", world_name, "vanillaland.ru-mc.ru", (52, 211, 153), is_mid=True)
+
+    # 6. Футер
+    font_foot = _get_font(11)
+    draw.text((right_x, 372), "Vanilla Land SMP • Официальная карточка профиля", fill=(82, 82, 91, 255), font=font_foot)
 
     buf = io.BytesIO()
     img.save(buf, format="PNG")
