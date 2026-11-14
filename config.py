@@ -243,7 +243,8 @@ class Config:
     ONLINE_VOICE_CHANNEL_ID: int = _env_int("ONLINE_VOICE_CHANNEL_ID", 0)
     TPS_VOICE_CHANNEL_ID: int = _env_int("TPS_VOICE_CHANNEL_ID", 0)
     IP_VOICE_CHANNEL_ID: int = _env_int("IP_VOICE_CHANNEL_ID", 0)
-    STATS_CATEGORY_ID: int = _env_int("STATS_CATEGORY_ID", 0)
+    STATS_CATEGORY_ID: int = _env_int("STATS_CATEGORY_ID") or _env_int("STATS_VOICE_CATEGORY_ID", 0)
+    STATS_VOICE_CATEGORY_ID: int = STATS_CATEGORY_ID
 
     # Двухфакторная аутентификация (2FA) и сессии IP
     IP_SESSION_HOURS: float = _env_float("IP_SESSION_HOURS", 48.0)

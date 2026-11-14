@@ -1559,12 +1559,20 @@ class BridgeCog(commands.Cog, name="Мост Minecraft"):
         found_ip_vcs: list[discord.VoiceChannel] = []
 
         for ch in guild.voice_channels:
-            low = ch.name.lower()
-            if "онлайн" in low or "online" in low:
+            low = ch.name.lower().strip()
+            if low.startswith("онлайн") or low.startswith("online") or "онлайн:" in low or "online:" in low:
                 found_online_vcs.append(ch)
-            elif "tps" in low:
+            elif low.startswith("tps") or "tps:" in low or "tps -" in low:
                 found_tps_vcs.append(ch)
-            elif "ip" in low or "айпи" in low or "ru-mc" in low or "vanillaland" in low:
+            elif (
+                low.startswith("ip")
+                or low.startswith("айпи")
+                or "ip:" in low
+                or "ip -" in low
+                or "ip •" in low
+                or "ru-mc" in low
+                or "vanillaland" in low
+            ):
                 found_ip_vcs.append(ch)
 
         updated_any = False
@@ -1592,6 +1600,10 @@ class BridgeCog(commands.Cog, name="Мост Minecraft"):
         stats_category: Optional[discord.CategoryChannel] = None
         if target_online and isinstance(target_online.category, discord.CategoryChannel):
             stats_category = target_online.category
+        elif Config.STATS_VOICE_CATEGORY_ID:
+            cat = guild.get_channel(Config.STATS_VOICE_CATEGORY_ID)
+            if isinstance(cat, discord.CategoryChannel):
+                stats_category = cat
 
         # Если канала онлайна вообще нет — создаем единственный
         if not target_online:
@@ -1628,8 +1640,13 @@ class BridgeCog(commands.Cog, name="Мост Minecraft"):
                 except Exception as e:
                     logger.warning(f"Не удалось удалить дубликат TPS {dup.id}: {e}")
 
-        if not stats_category and target_tps and isinstance(target_tps.category, discord.CategoryChannel):
-            stats_category = target_tps.category
+        if not stats_category:
+            if target_tps and isinstance(target_tps.category, discord.CategoryChannel):
+                stats_category = target_tps.category
+            elif Config.STATS_VOICE_CATEGORY_ID:
+                cat = guild.get_channel(Config.STATS_VOICE_CATEGORY_ID)
+                if isinstance(cat, discord.CategoryChannel):
+                    stats_category = cat
 
         # Если канала TPS вообще нет — создаем единственный
         if not target_tps:

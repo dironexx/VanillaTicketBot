@@ -270,15 +270,18 @@ async def close_ticket_process(
             except Exception as e:
                 logger.error(f"Ошибка отправки ЛС {user_id}: {e}")
 
-        # Сначала удаляем канал из Discord, и ТОЛЬКО после успеха удаляем из БД
+        # Сначала удаляем канал из Discord, и только после успешного удаления удаляем из БД
+        deleted = False
         try:
             await channel.delete(reason=f"Тикет закрыт: {closed_by_name} ({reason})")
+            deleted = True
         except discord.NotFound:
-            pass
+            deleted = True
         except Exception as e:
             logger.error(f"Ошибка удаления тикета {channel.id}: {e}")
 
-        db.delete_ticket(channel.id)
+        if deleted:
+            db.delete_ticket(channel.id)
     finally:
         _CLOSING_CHANNELS.discard(channel.id)
 
