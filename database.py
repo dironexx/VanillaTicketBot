@@ -70,10 +70,9 @@ class DatabaseManager:
         for attempt in range(max_retries):
             conn = None
             try:
-                conn = sqlite3.connect(self.db_path, timeout=15.0)
-                conn.execute("PRAGMA journal_mode=WAL;")
+                conn = sqlite3.connect(self.db_path, timeout=30.0)
                 conn.execute("PRAGMA synchronous=NORMAL;")
-                conn.execute("PRAGMA busy_timeout=5000;")
+                conn.execute("PRAGMA busy_timeout=30000;")
                 return conn
             except sqlite3.DatabaseError as err:
                 if conn is not None:
@@ -83,9 +82,10 @@ class DatabaseManager:
                         logger.debug("Failed to close sqlite connection on error: %s", cl_err)
                 if self._is_corrupt_error(err):
                     self._recover_corrupted_db(err)
-                    conn = sqlite3.connect(self.db_path, timeout=15.0)
+                    conn = sqlite3.connect(self.db_path, timeout=30.0)
                     conn.execute("PRAGMA journal_mode=WAL;")
                     conn.execute("PRAGMA synchronous=NORMAL;")
+                    conn.execute("PRAGMA busy_timeout=30000;")
                     self._create_tables(conn)
                     return conn
                 if attempt < max_retries - 1:
@@ -203,13 +203,14 @@ class DatabaseManager:
         """)
         conn.execute("""
             CREATE TABLE IF NOT EXISTS linked_accounts (
-                player_name TEXT PRIMARY KEY,
+                player_name TEXT PRIMARY KEY COLLATE NOCASE,
                 player_uuid TEXT,
                 discord_user_id INTEGER NOT NULL UNIQUE,
                 two_factor_enabled INTEGER NOT NULL DEFAULT 1,
                 linked_at TEXT NOT NULL
             )
         """)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_linked_player_nocase ON linked_accounts(player_name COLLATE NOCASE);")
         conn.execute("""
             CREATE TABLE IF NOT EXISTS trusted_ip_sessions (
                 player_name TEXT NOT NULL,
@@ -319,6 +320,10 @@ class DatabaseManager:
     def init_db(self):
         os.makedirs(self.transcripts_dir, exist_ok=True)
         with self._get_connection() as conn:
+            try:
+                conn.execute("PRAGMA journal_mode=WAL;")
+            except Exception:
+                pass
             self._create_tables(conn)
 
     # --- ТИКЕТЫ ---
@@ -333,8 +338,15 @@ class DatabaseManager:
                     return int(row[0])
             except (sqlite3.OperationalError, Exception) as ret_err:
                 logger.debug("RETURNING clause not available, using fallback transaction: %s", ret_err)
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
 
-            cursor.execute("BEGIN IMMEDIATE")
+            try:
+                cursor.execute("BEGIN IMMEDIATE")
+            except sqlite3.OperationalError:
+                pass
             cursor.execute("UPDATE ticket_counter SET count = count + 1 WHERE id = 1")
             cursor.execute("SELECT count FROM ticket_counter WHERE id = 1")
             row = cursor.fetchone()

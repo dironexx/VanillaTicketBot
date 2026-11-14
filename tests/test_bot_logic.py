@@ -186,6 +186,34 @@ class BridgeLogicTests(unittest.TestCase):
             else:
                 os.environ.pop("MC_SERVER_IP", None)
 
+    def test_get_next_ticket_number_transaction_safe(self):
+        import tempfile
+        from database import DatabaseManager
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            db_file = os.path.join(tmp_dir, "test_tickets.db")
+            db = DatabaseManager(db_file, tmp_dir)
+            n1 = db.get_next_ticket_number()
+            n2 = db.get_next_ticket_number()
+            n3 = db.get_next_ticket_number()
+            self.assertEqual(n1, 1)
+            self.assertEqual(n2, 2)
+            self.assertEqual(n3, 3)
+
+    def test_linked_accounts_case_insensitive(self):
+        import tempfile
+        from database import DatabaseManager
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            db_file = os.path.join(tmp_dir, "test_link.db")
+            db = DatabaseManager(db_file, tmp_dir)
+            # Привязываем Steve
+            self.assertTrue(db.link_account("Steve", "uuid-1", 111111))
+            # Попытка привязать тот же ник в нижнем регистре другому пользователю должна быть отклонена
+            self.assertFalse(db.link_account("steve", "uuid-2", 222222))
+            # Поиск по любому регистру находит правильного владельца
+            acc = db.get_linked_account_by_mc("sTeVe")
+            self.assertIsNotNone(acc)
+            self.assertEqual(acc["discord_user_id"], 111111)
+
 
 if __name__ == "__main__":
     unittest.main()

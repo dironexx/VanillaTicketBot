@@ -306,15 +306,12 @@ class TwoFactorVerifyView(ui.View):
     async def reject_btn(self, interaction: discord.Interaction, button: ui.Button):
         if interaction.user.id != self.discord_user_id:
             return await interaction.response.send_message("❌ Это действие доступно только владельцу аккаунта.", ephemeral=True)
-        if self._session_stale():
-            return await interaction.response.send_message(
-                "⚠️ Это подтверждение устарело. Запросите новый код на сервере.", ephemeral=True
-            )
 
         self.bridge_cog.pending_2fa.pop(self.player.lower(), None)
         self.bridge_cog.db.record_login(self.player, self.ip, status="FAILED")
+        self.bridge_cog.db.clear_ip_sessions(self.player)
 
-        # Отправляем команду кика на сервер Minecraft
+        # Отправляем команду кика на сервер Minecraft даже если сессия устарела (безопасность превыше всего)
         await self.bridge_cog.broadcast_packet({
             "type": "2fa_rejected",
             "player": self.player,

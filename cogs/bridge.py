@@ -136,6 +136,7 @@ class BridgeCog(commands.Cog, name="Мост Minecraft"):
 
         self.active_sockets: Set[web.WebSocketResponse] = set()
         self._sockets_lock: asyncio.Lock = asyncio.Lock()
+        self._webhook_lock: asyncio.Lock = asyncio.Lock()
         self._background_tasks: Set[asyncio.Task] = set()
         self.webhook: Optional[discord.Webhook] = None
 
@@ -347,11 +348,24 @@ class BridgeCog(commands.Cog, name="Мост Minecraft"):
         self.create_tracked_task(self.cleanup())
 
     async def cleanup(self):
-        for ws in list(self.active_sockets):
-            await ws.close()
-        self.active_sockets.clear()
+        async with self._sockets_lock:
+            sockets_to_close = list(self.active_sockets)
+            self.active_sockets.clear()
+        for ws in sockets_to_close:
+            try:
+                await ws.close()
+            except Exception:
+                pass
+        if self.site:
+            try:
+                await self.site.stop()
+            except Exception:
+                pass
         if self.runner:
-            await self.runner.cleanup()
+            try:
+                await self.runner.cleanup()
+            except Exception:
+                pass
 
     async def broadcast_packet(self, payload: dict):
         p_type = str(payload.get("type", ""))
@@ -388,8 +402,9 @@ class BridgeCog(commands.Cog, name="Мост Minecraft"):
             logger.warning("Попытка подключения к мосту с неверным токеном от %s", request.remote)
             return web.Response(status=401, text="Unauthorized: Invalid token")
 
-        # Очищаем только уже закрытые сокеты, позволяя нескольким серверам (main и vps) работать параллельно
-        self.active_sockets = {s for s in self.active_sockets if not s.closed}
+        # Очищаем закрытые сокеты потокобезопасно под блокировкой
+        async with self._sockets_lock:
+            self.active_sockets = {s for s in self.active_sockets if not s.closed}
 
         # heartbeat=25.0 поддерживает постоянную активность в NAT/фаерволе хостинга
         # receive_timeout=None предотвращает обрыв при временном молчании сервера
@@ -400,7 +415,8 @@ class BridgeCog(commands.Cog, name="Мост Minecraft"):
         )
         await ws.prepare(request)
 
-        self.active_sockets.add(ws)
+        async with self._sockets_lock:
+            self.active_sockets.add(ws)
         self.was_connected = True
         client_ip = (
             request.headers.get("CF-Connecting-IP")
@@ -696,11 +712,12 @@ class BridgeCog(commands.Cog, name="Мост Minecraft"):
                     self.db.record_player_skin(player, skin)
                 events_ch = self.get_events_channel()
                 if events_ch:
-                    await events_ch.send(f"**{player}** подключился к серверу.")
+                    clean_player = discord.utils.escape_markdown(str(player))
+                    await events_ch.send(f"**{clean_player}** подключился к серверу.", allowed_mentions=discord.AllowedMentions.none())
 
                     # Проверка медиа/стримера
                     if self.is_streamer_player(events_ch.guild, player):
-                        await events_ch.send(f"Стример **{player}** зашёл на сервер.")
+                        await events_ch.send(f"Стример **{clean_player}** зашёл на сервер.", allowed_mentions=discord.AllowedMentions.none())
 
         # 5. Выход игрока (Идет строго в канал событий 1556209087920873542)
         elif p_type == "quit":
@@ -708,7 +725,8 @@ class BridgeCog(commands.Cog, name="Мост Minecraft"):
             if player:
                 events_ch = self.get_events_channel()
                 if events_ch:
-                    await events_ch.send(f"**{player}** вышел с сервера.")
+                    clean_player = discord.utils.escape_markdown(str(player))
+                    await events_ch.send(f"**{clean_player}** вышел с сервера.", allowed_mentions=discord.AllowedMentions.none())
 
         # 6. Смерть игрока (Идет строго в канал событий 1556209087920873542 + пишется в базу с координатами)
         elif p_type == "death":
@@ -1271,16 +1289,18 @@ class BridgeCog(commands.Cog, name="Мост Minecraft"):
             return
 
         if not self.webhook:
-            try:
-                webhooks = await channel.webhooks()
-                for wh in webhooks:
-                    if wh.name == "VanillaLand Bridge":
-                        self.webhook = wh
-                        break
+            async with self._webhook_lock:
                 if not self.webhook:
-                    self.webhook = await channel.create_webhook(name="VanillaLand Bridge")
-            except Exception as e:
-                logger.error(f"Не удалось получить или создать вебхук: {e}")
+                    try:
+                        webhooks = await channel.webhooks()
+                        for wh in webhooks:
+                            if wh.name == "VanillaLand Bridge":
+                                self.webhook = wh
+                                break
+                        if not self.webhook:
+                            self.webhook = await channel.create_webhook(name="VanillaLand Bridge")
+                    except Exception as e:
+                        logger.error(f"Не удалось получить или создать вебхук: {e}")
 
         avatar_url = get_skin_avatar_url(player_name, skin, self.db)
 
@@ -1419,7 +1439,44 @@ class BridgeCog(commands.Cog, name="Мост Minecraft"):
         # 1. Очистка просроченных 2FA сессий из оперативной памяти
         expired_2fa = [p for p, data in list(self.pending_2fa.items()) if now > data.get("expires_at", 0)]
         for p in expired_2fa:
-            self.pending_2fa.pop(p, None)
+            data = self.pending_2fa.pop(p, None)
+            if data and isinstance(data, dict):
+                view = data.get("view")
+                msg = data.get("message")
+                if view and hasattr(view, "stop"):
+                    view.stop()
+                    for item in getattr(view, "children", []):
+                        if hasattr(item, "disabled"):
+                            item.disabled = True
+                    if msg:
+                        try:
+                            self.create_tracked_task(msg.edit(content="⏳ Время ожидания подтверждения входа истекло (таймаут).", view=view))
+                        except Exception:
+                            pass
+
+        # 1.1. Очистка in-memory кэшей от утечек памяти (LRU sweep)
+        if len(self.cached_player_stats) > 300:
+            stale_stats = [k for k, (t, _) in self.cached_player_stats.items() if now - t > 300.0]
+            for k in stale_stats:
+                self.cached_player_stats.pop(k, None)
+            if len(self.cached_player_stats) > 300:
+                for k in list(self.cached_player_stats.keys())[:100]:
+                    self.cached_player_stats.pop(k, None)
+
+        if len(self.last_stream_alert) > 200:
+            stale_streams = [uid for uid, t in self.last_stream_alert.items() if now - t > 21600.0]
+            for uid in stale_streams:
+                self.last_stream_alert.pop(uid, None)
+
+        if len(self._link_attempts) > 500:
+            stale_link = [uid for uid, atts in self._link_attempts.items() if not atts or now - atts[-1] > self.link_window_sec]
+            for uid in stale_link:
+                self._link_attempts.pop(uid, None)
+
+        if len(self._resend_attempts) > 500:
+            stale_resend = [k for k, atts in self._resend_attempts.items() if not atts or now - atts[-1] > 600.0]
+            for k in stale_resend:
+                self._resend_attempts.pop(k, None)
 
         # 2. Очистка просроченных одноразовых кодов и сессий в SQLite раз в 5 минут
         if int(now) % 300 < 30:

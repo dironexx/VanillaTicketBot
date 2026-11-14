@@ -228,6 +228,9 @@ async def save_transcript_to_file(channel: discord.TextChannel) -> str:
     return filename
 
 
+_CLOSING_CHANNELS: set[int] = set()
+
+
 async def close_ticket_process(
     bot: commands.Bot,
     db: DatabaseManager,
@@ -235,41 +238,49 @@ async def close_ticket_process(
     closed_by_name: str,
     reason: str = "Не указана",
 ):
-    user_id = db.get_ticket_user_id(channel.id)
-
+    if channel.id in _CLOSING_CHANNELS:
+        return
+    _CLOSING_CHANNELS.add(channel.id)
     try:
-        saved_file = await save_transcript_to_file(channel)
-    except Exception as e:
-        logger.error(f"Ошибка создания транскрипта {channel.name}: {e}")
-        saved_file = None
+        user_id = db.get_ticket_user_id(channel.id)
 
-    if user_id:
         try:
-            user = await bot.fetch_user(user_id)
-            if user:
-                embed = AG.embed(
-                    title=f"Обращение закрыто • #{channel.name}",
-                    description=(
-                        f"Ваше обращение закрыто сотрудником **{closed_by_name}**.\n\n"
-                        f"**Причина:** {reason}\n"
-                        f"Лог переписки прикреплен к сообщению."
-                    ),
-                    footer="Vanilla Land • Поддержка",
-                )
-                if saved_file and os.path.exists(saved_file):
-                    await user.send(embed=embed, file=discord.File(saved_file))
-                else:
-                    await user.send(embed=embed)
+            saved_file = await save_transcript_to_file(channel)
         except Exception as e:
-            logger.error(f"Ошибка отправки ЛС {user_id}: {e}")
+            logger.error(f"Ошибка создания транскрипта {channel.name}: {e}")
+            saved_file = None
 
-    db.delete_ticket(channel.id)
-    await asyncio.sleep(1)
+        if user_id:
+            try:
+                user = await bot.fetch_user(user_id)
+                if user:
+                    embed = AG.embed(
+                        title=f"Обращение закрыто • #{channel.name}",
+                        description=(
+                            f"Ваше обращение закрыто сотрудником **{closed_by_name}**.\n\n"
+                            f"**Причина:** {reason}\n"
+                            f"Лог переписки прикреплен к сообщению."
+                        ),
+                        footer="Vanilla Land • Поддержка",
+                    )
+                    if saved_file and os.path.exists(saved_file):
+                        await user.send(embed=embed, file=discord.File(saved_file))
+                    else:
+                        await user.send(embed=embed)
+            except Exception as e:
+                logger.error(f"Ошибка отправки ЛС {user_id}: {e}")
 
-    try:
-        await channel.delete(reason=f"Тикет закрыт: {closed_by_name} ({reason})")
-    except Exception as e:
-        logger.error(f"Ошибка удаления тикета {channel.id}: {e}")
+        # Сначала удаляем канал из Discord, и ТОЛЬКО после успеха удаляем из БД
+        try:
+            await channel.delete(reason=f"Тикет закрыт: {closed_by_name} ({reason})")
+        except discord.NotFound:
+            pass
+        except Exception as e:
+            logger.error(f"Ошибка удаления тикета {channel.id}: {e}")
+
+        db.delete_ticket(channel.id)
+    finally:
+        _CLOSING_CHANNELS.discard(channel.id)
 
 
 class CloseReasonModal(ui.Modal, title="Закрытие обращения"):
@@ -379,12 +390,22 @@ async def create_ticket_channel(
         if not target_category and fallback_channel:
             target_category = fallback_channel.category
 
-        ticket_channel = await guild.create_text_channel(
-            name=channel_name,
-            category=target_category,
-            overwrites=overwrites,
-            topic=f"Игрок: {user.name} ({user.id}) | Создан: {get_msk_now().strftime('%d.%m.%Y %H:%M')}",
-        )
+        # Проверяем лимит 50 каналов в категории
+        if target_category and isinstance(target_category, discord.CategoryChannel) and len(target_category.channels) >= 50:
+            target_category = None
+
+        try:
+            ticket_channel = await guild.create_text_channel(
+                name=channel_name,
+                category=target_category,
+                overwrites=overwrites,
+                topic=f"Игрок: {user.name} ({user.id}) | Создан: {get_msk_now().strftime('%d.%m.%Y %H:%M')}",
+            )
+        except discord.HTTPException as err:
+            logger.error("Не удалось создать канал тикета в Discord: %s (код %s)", err, getattr(err, "code", None))
+            if getattr(err, "code", 0) == 30013:
+                return None, "❌ Категория тикетов переполнена (максимум 50). Обратитесь к администратору."
+            return None, "❌ Ошибка Discord при создании канала тикета. Попробуйте через пару минут."
 
         db.save_ticket(ticket_channel.id, user.id, user.name)
 

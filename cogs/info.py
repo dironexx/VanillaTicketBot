@@ -10,7 +10,7 @@ from design import AG, DonateLinkView, RulesLinkView
 
 
 def format_uptime(start_time: float) -> str:
-    uptime_sec = int(time.time() - start_time)
+    uptime_sec = max(0, int(time.time() - start_time))
     hours, remainder = divmod(uptime_sec, 3600)
     minutes, seconds = divmod(remainder, 60)
     days, hours = divmod(hours, 24)
@@ -436,7 +436,7 @@ class InfoCog(commands.Cog, name="Информация"):
     )
     async def ping_cmd(self, ctx: commands.Context):
         lat = self.bot.latency
-        ping_str = f"{round(lat * 1000)} ms" if lat and not math.isnan(lat) else "Подключение..."
+        ping_str = f"{round(lat * 1000)} ms" if lat and math.isfinite(lat) else "Подключение..."
         uptime_str = format_uptime(getattr(self.bot, "start_time", time.time()))
         guild_icon = ctx.guild.icon.url if ctx.guild and ctx.guild.icon else None
 

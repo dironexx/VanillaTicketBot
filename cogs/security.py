@@ -1281,9 +1281,9 @@ class AltActionView(ui.View):
             return await interaction.response.send_message("Алерт устарел: нет данных игрока.", ephemeral=True)
 
         bridge_cog = get_bridge_cog(interaction.client)
-        clean_k_nick = login_player.strip().split()[0] if login_player else "Игрок"
+        clean_k_nick = re.sub(r"[^a-zA-Z0-9_]", "", login_player.strip()) if login_player else "Игрок"
         kick_reason = f"Обход бана ({banned_nick}): {banned_reason}"
-        clean_k_reason = kick_reason.replace("\n", " ").replace("\n", " ").replace(";", " ").strip()
+        clean_k_reason = re.sub(r"[\r\n;]+", " ", kick_reason).strip()
         if bridge_cog and hasattr(bridge_cog, "broadcast_packet"):
             await bridge_cog.broadcast_packet({"type": "execute_console_command", "command": f"kick {clean_k_nick} {clean_k_reason}"})
             new_view = AltActionView(login_player, banned_nick, banned_reason, self.db, ip)
@@ -1315,9 +1315,9 @@ class AltActionView(ui.View):
             return await interaction.response.send_message("Алерт устарел: нет данных игрока.", ephemeral=True)
 
         bridge_cog = get_bridge_cog(interaction.client)
-        clean_k_nick = login_player.strip().split()[0] if login_player else "Игрок"
+        clean_k_nick = re.sub(r"[^a-zA-Z0-9_]", "", login_player.strip()) if login_player else "Игрок"
         ipban_reason = f"Обход бана ({banned_nick}): {banned_reason}"
-        clean_k_reason = ipban_reason.replace("\n", " ").replace("\n", " ").replace(";", " ").strip()
+        clean_k_reason = re.sub(r"[\r\n;]+", " ", ipban_reason).strip()
         if bridge_cog and hasattr(bridge_cog, "broadcast_packet"):
             await bridge_cog.broadcast_packet({"type": "execute_console_command", "command": f"ban-ip {clean_k_nick} {clean_k_reason}"})
             new_view = AltActionView(login_player, banned_nick, banned_reason, self.db, ip)
