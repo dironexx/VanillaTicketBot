@@ -26,6 +26,7 @@ DEFAULT_KEYS: tuple[tuple[str, str], ...] = (
     ("BRIDGE_ENABLE_ALTS_CHECK", "0"),
     ("BRIDGE_ENABLE_MAINTENANCE_SYNC", "0"),
     ("BRIDGE_ENABLE_STATS_CHANNELS", "1"),
+    ("IP_VOICE_CHANNEL_ID", "0"),
 )
 
 SYNC_MARKER = "# --- Автодобавлено при обновлении (значения можно менять) ---"

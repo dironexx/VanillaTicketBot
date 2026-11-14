@@ -1,3 +1,4 @@
+import ipaddress
 import logging
 import os
 from typing import Optional
@@ -6,6 +7,23 @@ from dotenv import load_dotenv
 
 BASE_DIR = Path(__file__).resolve().parent
 CWD = Path.cwd()
+
+
+def _is_private_or_docker_ip(val: str) -> bool:
+    """Проверяет, является ли хост системным/локальным адресом Docker, Pterodactyl или RFC1918."""
+    if not val:
+        return True
+    val_clean = str(val).strip().lower()
+    if ":" in val_clean:
+        val_clean = val_clean.split(":")[0].strip()
+    if val_clean in ("0.0.0.0", "127.0.0.1", "localhost", "none", "null", "undefined", ""):
+        return True
+    try:
+        ip = ipaddress.ip_address(val_clean)
+        return ip.is_private or ip.is_loopback or ip.is_unspecified or ip.is_reserved or ip.is_link_local
+    except ValueError:
+        # Не IP-адрес (доменное имя, например vanillaland.ru-mc.ru)
+        return False
 
 # 0. Автодобавление новых несекретных ключей (значения не перезаписываются).
 # Отключается переменной VANILLA_ENV_SYNC=0 (используется в тестах).
@@ -47,8 +65,9 @@ for directory in [BASE_DIR, CWD]:
                             k, v = line.split("=", 1)
                             k = k.strip().upper()
                             v = v.strip().strip('"').strip("'")
-                            if k and v and k not in os.environ:
-                                os.environ[k] = v
+                            if k and v:
+                                if k not in os.environ or (k == "SERVER_IP" and _is_private_or_docker_ip(os.environ.get(k, ""))):
+                                    os.environ[k] = v
             except Exception:
                 pass
 
@@ -67,16 +86,42 @@ def _resolve_token() -> str:
 
 
 def _resolve_server_ip() -> str:
-    """Игнорирует системный адрес 0.0.0.0 хостинга Pterodactyl/Docker"""
-    mc_ip = os.getenv("MC_SERVER_IP", "").strip()
-    if mc_ip and mc_ip not in ("0.0.0.0", "127.0.0.1"):
-        return mc_ip
+    """
+    Разрешает публичный IP/домен Minecraft сервера.
+    Игнорирует системные внутренние адреса Docker/Pterodactyl (0.0.0.0, 127.0.0.1, 172.16.0.0/12, 10.0.0.0/8, 192.168.0.0/16).
+    """
+    # 1. Читаем напрямую файл .env (чтобы системный адрес Docker SERVER_IP=172.18.0.1 не перебивал конфиг)
+    for directory in [BASE_DIR, CWD]:
+        for filename in [".env", ".env.txt", "config.env", "bot.env"]:
+            cand = directory / filename
+            if cand.is_file():
+                try:
+                    with open(cand, "r", encoding="utf-8", errors="ignore") as f:
+                        for line in f:
+                            line = line.strip()
+                            if not line or line.startswith("#") or "=" not in line:
+                                continue
+                            k, v = line.split("=", 1)
+                            k = k.strip().upper()
+                            v = v.strip().strip('"').strip("'")
+                            if k in ("PUBLIC_SERVER_IP", "MINECRAFT_PUBLIC_IP", "MC_SERVER_IP", "SERVER_IP"):
+                                if v and not _is_private_or_docker_ip(v):
+                                    os.environ["SERVER_IP"] = v
+                                    return v
+                except Exception:
+                    pass
 
-    srv_ip = os.getenv("SERVER_IP", "").strip()
-    if srv_ip and srv_ip not in ("0.0.0.0", "127.0.0.1"):
-        return srv_ip
+    # 2. Проверяем переменные окружения, фильтруя приватные Docker IP
+    for key in ("PUBLIC_SERVER_IP", "MINECRAFT_PUBLIC_IP", "MC_SERVER_IP", "SERVER_IP"):
+        val = os.getenv(key, "").strip()
+        if val and not _is_private_or_docker_ip(val):
+            os.environ["SERVER_IP"] = val
+            return val
 
-    return "vanillaland.ru-mc.ru"
+    # 3. Публичный адрес по умолчанию для Vanilla Land
+    default_ip = "vanillaland.ru-mc.ru"
+    os.environ["SERVER_IP"] = default_ip
+    return default_ip
 
 
 def _env_int(name: str, default: int = 0) -> int:
@@ -197,6 +242,7 @@ class Config:
     BRIDGE_SECRET: str = os.getenv("BRIDGE_SECRET", "vanillaland_secret_2026").strip()
     ONLINE_VOICE_CHANNEL_ID: int = _env_int("ONLINE_VOICE_CHANNEL_ID", 0)
     TPS_VOICE_CHANNEL_ID: int = _env_int("TPS_VOICE_CHANNEL_ID", 0)
+    IP_VOICE_CHANNEL_ID: int = _env_int("IP_VOICE_CHANNEL_ID", 0)
     STATS_CATEGORY_ID: int = _env_int("STATS_CATEGORY_ID", 0)
 
     # Двухфакторная аутентификация (2FA) и сессии IP

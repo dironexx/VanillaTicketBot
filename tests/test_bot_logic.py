@@ -139,6 +139,53 @@ class BridgeLogicTests(unittest.TestCase):
         self.assertIsInstance(Config.BRIDGE_ENABLE_MAINTENANCE_SYNC, bool)
         self.assertIsInstance(Config.BRIDGE_ENABLE_STATS_CHANNELS, bool)
 
+    def test_is_private_or_docker_ip(self):
+        from config import _is_private_or_docker_ip
+
+        # Системные и приватные адреса Docker / Pterodactyl / LAN
+        self.assertTrue(_is_private_or_docker_ip("172.18.0.1"))
+        self.assertTrue(_is_private_or_docker_ip("172.17.0.1"))
+        self.assertTrue(_is_private_or_docker_ip("172.31.255.255"))
+        self.assertTrue(_is_private_or_docker_ip("10.0.0.1"))
+        self.assertTrue(_is_private_or_docker_ip("192.168.1.1"))
+        self.assertTrue(_is_private_or_docker_ip("127.0.0.1"))
+        self.assertTrue(_is_private_or_docker_ip("0.0.0.0"))
+        self.assertTrue(_is_private_or_docker_ip("localhost"))
+        self.assertTrue(_is_private_or_docker_ip(""))
+        self.assertTrue(_is_private_or_docker_ip("172.18.0.1:25565"))
+
+        # Публичные домены и внешние IP
+        self.assertFalse(_is_private_or_docker_ip("vanillaland.ru-mc.ru"))
+        self.assertFalse(_is_private_or_docker_ip("vanillaland.ru-mc.ru:25565"))
+        self.assertFalse(_is_private_or_docker_ip("play.vanillaland.fun"))
+        self.assertFalse(_is_private_or_docker_ip("95.216.123.45"))
+
+    def test_resolve_server_ip_ignores_docker_private_ips(self):
+        from config import _resolve_server_ip
+
+        old_srv = os.environ.get("SERVER_IP")
+        old_mc = os.environ.get("MC_SERVER_IP")
+        try:
+            # Если Pterodactyl передал Docker IP 172.18.0.1
+            os.environ["SERVER_IP"] = "172.18.0.1"
+            os.environ["MC_SERVER_IP"] = "0.0.0.0"
+            resolved = _resolve_server_ip()
+            self.assertEqual(resolved, "vanillaland.ru-mc.ru")
+
+            # Если задан реальный публичный домен
+            os.environ["MC_SERVER_IP"] = "vanillaland.ru-mc.ru"
+            resolved2 = _resolve_server_ip()
+            self.assertEqual(resolved2, "vanillaland.ru-mc.ru")
+        finally:
+            if old_srv is not None:
+                os.environ["SERVER_IP"] = old_srv
+            else:
+                os.environ.pop("SERVER_IP", None)
+            if old_mc is not None:
+                os.environ["MC_SERVER_IP"] = old_mc
+            else:
+                os.environ.pop("MC_SERVER_IP", None)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1470,8 +1470,9 @@ class BridgeCog(commands.Cog, name="Мост Minecraft"):
 
         online_name = f"Онлайн: {self.mc_online}/{self.mc_max}"
         tps_name = f"TPS: {self.mc_tps:.2f}"
+        ip_name = f"IP: {Config.SERVER_IP}"
 
-        updated_any = await self.cleanup_and_sync_stats_channels(guild, online_name, tps_name)
+        updated_any = await self.cleanup_and_sync_stats_channels(guild, online_name, tps_name, ip_name)
         if updated_any:
             self.last_rename_time = now
             self.pending_channel_update = False
@@ -1483,9 +1484,9 @@ class BridgeCog(commands.Cog, name="Мост Minecraft"):
         return config_val
 
     async def cleanup_and_sync_stats_channels(
-        self, guild: discord.Guild, online_name: str = "", tps_name: str = ""
+        self, guild: discord.Guild, online_name: str = "", tps_name: str = "", ip_name: str = ""
     ) -> bool:
-        """Находит существующие каналы статистики, удаляет дубликаты и обновляет имена"""
+        """Находит существующие каналы статистики (онлайн, TPS, IP), удаляет дубликаты и обновляет имена"""
         if not Config.BRIDGE_ENABLE_STATS_CHANNELS:
             return False
         if not guild or not guild.me.guild_permissions.manage_channels:
@@ -1493,10 +1494,12 @@ class BridgeCog(commands.Cog, name="Мост Minecraft"):
 
         online_vc_id = self.get_or_create_vc_id("online_vc_id", Config.ONLINE_VOICE_CHANNEL_ID)
         tps_vc_id = self.get_or_create_vc_id("tps_vc_id", Config.TPS_VOICE_CHANNEL_ID)
+        ip_vc_id = self.get_or_create_vc_id("ip_vc_id", Config.IP_VOICE_CHANNEL_ID)
 
         # Сканируем все существующие голосовые каналы сервера
         found_online_vcs: list[discord.VoiceChannel] = []
         found_tps_vcs: list[discord.VoiceChannel] = []
+        found_ip_vcs: list[discord.VoiceChannel] = []
 
         for ch in guild.voice_channels:
             low = ch.name.lower()
@@ -1504,6 +1507,8 @@ class BridgeCog(commands.Cog, name="Мост Minecraft"):
                 found_online_vcs.append(ch)
             elif "tps" in low:
                 found_tps_vcs.append(ch)
+            elif "ip" in low or "айпи" in low or "ru-mc" in low or "vanillaland" in low:
+                found_ip_vcs.append(ch)
 
         updated_any = False
 
@@ -1526,12 +1531,19 @@ class BridgeCog(commands.Cog, name="Мост Minecraft"):
                 except Exception as e:
                     logger.warning(f"Не удалось удалить дубликат онлайна {dup.id}: {e}")
 
+        # Категория для новых каналов (берем от существующего или из Config)
+        stats_category: Optional[discord.CategoryChannel] = None
+        if target_online and isinstance(target_online.category, discord.CategoryChannel):
+            stats_category = target_online.category
+
         # Если канала онлайна вообще нет — создаем единственный
         if not target_online:
             initial_name = online_name or f"Онлайн: {self.mc_online}/{self.mc_max}"
-            target_online = await self.create_stats_channel(guild, initial_name)
+            target_online = await self.create_stats_channel(guild, initial_name, category=stats_category)
             if target_online:
                 self.db.set_setting("online_vc_id", str(target_online.id))
+                if target_online.category:
+                    stats_category = target_online.category
                 updated_any = True
         elif online_name and target_online.name != online_name:
             try:
@@ -1559,12 +1571,17 @@ class BridgeCog(commands.Cog, name="Мост Minecraft"):
                 except Exception as e:
                     logger.warning(f"Не удалось удалить дубликат TPS {dup.id}: {e}")
 
+        if not stats_category and target_tps and isinstance(target_tps.category, discord.CategoryChannel):
+            stats_category = target_tps.category
+
         # Если канала TPS вообще нет — создаем единственный
         if not target_tps:
             initial_name = tps_name or f"TPS: {self.mc_tps:.2f}"
-            target_tps = await self.create_stats_channel(guild, initial_name)
+            target_tps = await self.create_stats_channel(guild, initial_name, category=stats_category)
             if target_tps:
                 self.db.set_setting("tps_vc_id", str(target_tps.id))
+                if target_tps.category:
+                    stats_category = target_tps.category
                 updated_any = True
         elif tps_name and target_tps.name != tps_name:
             try:
@@ -1573,18 +1590,52 @@ class BridgeCog(commands.Cog, name="Мост Minecraft"):
             except discord.HTTPException as e:
                 logger.warning(f"Ошибка переименования канала TPS: {e}")
 
+        # --- КАНАЛ IP СЕРВЕРА ---
+        target_ip: Optional[discord.VoiceChannel] = None
+        if ip_vc_id:
+            target_ip = guild.get_channel(ip_vc_id)
+
+        # Если по ID канал не найден, берем первый из найденных на сервере
+        if not target_ip and found_ip_vcs:
+            target_ip = found_ip_vcs[0]
+            self.db.set_setting("ip_vc_id", str(target_ip.id))
+
+        # Удаляем ВСЕ лишние дубликаты каналов IP
+        for dup in found_ip_vcs:
+            if target_ip and dup.id != target_ip.id:
+                try:
+                    await dup.delete(reason="Очистка старого дубликата канала IP")
+                    logger.info(f"Удален лишний дубликат канала IP: {dup.name} ({dup.id})")
+                except Exception as e:
+                    logger.warning(f"Не удалось удалить дубликат IP {dup.id}: {e}")
+
+        expected_ip_name = ip_name or f"IP: {Config.SERVER_IP}"
+        # Если канала IP вообще нет — создаем единственный в той же категории
+        if not target_ip:
+            target_ip = await self.create_stats_channel(guild, expected_ip_name, category=stats_category)
+            if target_ip:
+                self.db.set_setting("ip_vc_id", str(target_ip.id))
+                updated_any = True
+        elif expected_ip_name and target_ip.name != expected_ip_name:
+            try:
+                await target_ip.edit(name=expected_ip_name)
+                updated_any = True
+            except discord.HTTPException as e:
+                logger.warning(f"Ошибка переименования канала IP: {e}")
+
         return updated_any
 
-    async def create_stats_channel(self, guild: discord.Guild, name: str) -> Optional[discord.VoiceChannel]:
+    async def create_stats_channel(
+        self, guild: discord.Guild, name: str, category: Optional[discord.CategoryChannel] = None
+    ) -> Optional[discord.VoiceChannel]:
         try:
             overwrites = {
                 guild.default_role: discord.PermissionOverwrite(connect=False, speak=False)
             }
-            category = None
-            if Config.STATS_CATEGORY_ID:
-                category = guild.get_channel(Config.STATS_CATEGORY_ID)
-                if not isinstance(category, discord.CategoryChannel):
-                    category = None
+            if not category and Config.STATS_CATEGORY_ID:
+                cat = guild.get_channel(Config.STATS_CATEGORY_ID)
+                if isinstance(cat, discord.CategoryChannel):
+                    category = cat
 
             return await guild.create_voice_channel(
                 name=name,
