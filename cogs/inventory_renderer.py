@@ -701,3 +701,103 @@ def render_inventory_image(
     img.save(buffer, format="PNG")
     buffer.seek(0)
     return buffer
+
+
+def render_profile_card(
+    player_name: str,
+    is_online: bool = False,
+    playtime_str: str = "0 ч",
+    diamonds: int = 0,
+    debris: int = 0,
+    kills: int = 0,
+    deaths: int = 0,
+    kd_ratio: float = 0.0,
+    skin_image: Optional[Image.Image] = None,
+    world_name: str = "Верхний мир",
+    level: int = 0,
+) -> io.BytesIO:
+    """Генерирует графическую карточку профиля игрока (800x420 PNG) в стилистике Vanilla Land"""
+    width = 800
+    height = 420
+    img = Image.new("RGBA", (width, height), (24, 24, 27, 255))
+    draw = ImageDraw.Draw(img)
+
+    # Верхний градиент
+    for i in range(6):
+        r = 255
+        g = int(122 + (174 - 122) * (i / 6))
+        b = int(0 + 25 * (i / 6))
+        draw.line([(0, i), (width, i)], fill=(r, g, b, 255), width=1)
+
+    # Рамка карточки
+    draw.rounded_rectangle([(1, 1), (width - 2, height - 2)], radius=12, outline=(39, 39, 42, 255), width=2)
+
+    font_title = _get_font(26)
+    font_sub = _get_font(13)
+    font_badge = _get_font(11)
+    font_stat_title = _get_font(13)
+    font_stat_val = _get_font(15)
+
+    left_x = 24
+    left_y = 30
+    skin_box_w = 190
+    skin_box_h = 360
+    draw.rounded_rectangle(
+        [(left_x, left_y), (left_x + skin_box_w, left_y + skin_box_h)],
+        radius=10,
+        fill=(31, 31, 35, 255),
+        outline=(50, 50, 56, 255),
+        width=1,
+    )
+
+    if skin_image:
+        try:
+            skin_copy = skin_image.copy()
+            skin_copy.thumbnail((skin_box_w - 20, skin_box_h - 20), Image.Resampling.LANCZOS)
+            paste_x = left_x + (skin_box_w - skin_copy.width) // 2
+            paste_y = left_y + (skin_box_h - skin_copy.height) // 2
+            img.paste(skin_copy, (paste_x, paste_y), skin_copy if skin_copy.mode == "RGBA" else None)
+        except Exception:
+            draw.text((left_x + 35, left_y + 160), "[СКИН ИГРОКА]", fill=(113, 113, 122, 255), font=font_sub)
+    else:
+        draw.text((left_x + 35, left_y + 160), "[СКИН ИГРОКА]", fill=(113, 113, 122, 255), font=font_sub)
+
+    right_x = left_x + skin_box_w + 24
+    right_w = width - right_x - 24
+
+    draw.text((right_x, 34), player_name, fill=(255, 255, 255, 255), font=font_title)
+
+    badge_x = right_x + int(len(player_name) * 15) + 12
+    badge_x = min(badge_x, width - 120)
+    badge_y = 38
+    if is_online:
+        draw.rounded_rectangle([(badge_x, badge_y), (badge_x + 85, badge_y + 24)], radius=12, fill=(22, 101, 52, 255), outline=(34, 197, 94, 255))
+        draw.text((badge_x + 12, badge_y + 5), "● В СЕТИ", fill=(220, 252, 231, 255), font=font_badge)
+    else:
+        draw.rounded_rectangle([(badge_x, badge_y), (badge_x + 94, badge_y + 24)], radius=12, fill=(39, 39, 42, 255), outline=(63, 63, 70, 255))
+        draw.text((badge_x + 12, badge_y + 5), "○ ОФФЛАЙН", fill=(161, 161, 170, 255), font=font_badge)
+
+    draw.text((right_x, 70), "Сервер Vanilla Land SMP • Java Edition 26.3", fill=(161, 161, 170, 255), font=font_sub)
+
+    card_w = (right_w - 16) // 2
+    card_h = 100
+    grid_y = 105
+
+    def _draw_card(cx: int, cy: int, title: str, line1: str, line2: str, icon_col: Tuple[int, int, int]):
+        draw.rounded_rectangle([(cx, cy), (cx + card_w, cy + card_h)], radius=8, fill=(31, 31, 35, 255), outline=(45, 45, 52, 255), width=1)
+        draw.line([(cx, cy + 8), (cx, cy + card_h - 8)], fill=icon_col + (255,), width=3)
+        draw.text((cx + 14, cy + 12), title.upper(), fill=icon_col + (255,), font=font_stat_title)
+        draw.text((cx + 14, cy + 38), line1, fill=(244, 244, 245, 255), font=font_stat_val)
+        draw.text((cx + 14, cy + 64), line2, fill=(161, 161, 170, 255), font=font_sub)
+
+    _draw_card(right_x, grid_y, "Время в игре", playtime_str, f"Уровень: {level}", (255, 174, 25))
+    _draw_card(right_x + card_w + 16, grid_y, "Добытые руды", f"Алмазы: {diamonds:,}", f"Обломки: {debris:,}", (56, 189, 248))
+    _draw_card(right_x, grid_y + card_h + 14, "PvP и статистика", f"K/D: {kd_ratio:.2f}", f"Убийств: {kills} / Смертей: {deaths}", (239, 68, 68))
+    _draw_card(right_x + card_w + 16, grid_y + card_h + 14, "Текущее положение", world_name, "vanillaland.ru-mc.ru", (74, 222, 128))
+
+    draw.text((right_x, 370), "Vanilla Land • Профиль сгенерирован ботом", fill=(113, 113, 122, 255), font=font_sub)
+
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    buf.seek(0)
+    return buf

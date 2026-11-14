@@ -312,12 +312,24 @@ class BridgeCog(commands.Cog, name="Мост Minecraft"):
             self.pending_queries.pop(query_id, None)
 
     async def health_handler(self, request: web.Request) -> web.Response:
-        return web.json_response({
-            "status": "online",
+        now = time.time()
+        uptime_sec = int(now - getattr(self.bot, "start_time", self.bot_start_time))
+        bot_latency = round(self.bot.latency * 1000, 1) if (self.bot.latency and math.isfinite(self.bot.latency)) else 0.0
+        is_ready = bool(self.bot.is_ready())
+        payload = {
+            "status": "ok" if is_ready else "starting",
+            "bot_ready": is_ready,
+            "bot_user": str(self.bot.user) if self.bot.user else None,
+            "bot_latency_ms": bot_latency,
+            "uptime_seconds": max(0, uptime_sec),
             "minecraft_connected": len(self.active_sockets) > 0,
+            "active_sockets_count": len(self.active_sockets),
             "online_players": self.mc_online,
-            "tps": self.mc_tps,
-        })
+            "max_players": self.mc_max,
+            "tps": round(self.mc_tps, 2),
+            "server_ip": Config.SERVER_IP,
+        }
+        return web.json_response(payload, headers={"Access-Control-Allow-Origin": "*"})
 
     async def start_web_server(self):
         secret = (Config.BRIDGE_SECRET or "").strip()
@@ -584,11 +596,13 @@ class BridgeCog(commands.Cog, name="Мост Minecraft"):
             player = data.get("player", "Игрок")
             message = data.get("message", "").strip()
             skin = data.get("skin", "").strip()
+            item_data = data.get("item")
             if skin:
                 self.db.record_player_skin(player, skin)
             if message:
                 processed_msg = await self.process_minecraft_mentions(message)
-                await self.send_to_discord_webhook(player, processed_msg, skin)
+                item_emb = self.build_item_preview_embed(item_data) if item_data else None
+                await self.send_to_discord_webhook(player, processed_msg, skin, embed=item_emb)
 
         # 2. Переподключение сокета моста (без перезагрузки сервера)
         elif p_type == "bridge_reconnect":
@@ -1255,6 +1269,62 @@ class BridgeCog(commands.Cog, name="Мост Minecraft"):
             self.was_restarting = False
             await self.update_bot_presence()
 
+        # 18. Внутриигровая почта: отправка письма (/mail send)
+        elif p_type == "send_mail":
+            sender = data.get("sender", "Неизвестный").strip()
+            recipient = data.get("recipient", "").strip()
+            text = data.get("text", "").strip()
+            if sender and recipient and text:
+                mail_id = self.db.send_offline_mail(sender, recipient, text)
+                await self.broadcast_packet({
+                    "type": "mail_result",
+                    "sender": sender,
+                    "recipient": recipient,
+                    "success": True,
+                    "mail_id": mail_id,
+                })
+                # Отправляем уведомление в ЛС Discord, если получатель привязан
+                linked = self.db.get_linked_account_by_mc(recipient)
+                if linked and linked.get("discord_user_id"):
+                    user = self.bot.get_user(linked["discord_user_id"])
+                    if user:
+                        try:
+                            emb = AG.embed(
+                                title="✉️ Новое письмо в игре • Vanilla Land",
+                                description=(
+                                    f"Игрок **`{sender}`** отправил вам письмо на сервере:\n\n"
+                                    f"> {text}\n\n"
+                                    f"*Прочитать и ответить можно в игре: `/mail send {sender} <сообщение>`*"
+                                ),
+                                footer="Vanilla Land • Почта",
+                            )
+                            await user.send(embed=emb)
+                        except Exception:
+                            pass
+
+        # 19. Внутриигровая почта: получение писем (/mail read)
+        elif p_type == "get_mail":
+            player = data.get("player", "").strip()
+            if player:
+                unread = self.db.get_unread_mail(player)
+                self.db.mark_mail_read(player)
+                await self.broadcast_packet({
+                    "type": "mail_inbox",
+                    "player": player,
+                    "mails": unread,
+                })
+
+        # 20. Внутриигровая почта: проверка количества писем при входе
+        elif p_type == "check_mail":
+            player = data.get("player", "").strip()
+            if player:
+                count = self.db.count_unread_mail(player)
+                await self.broadcast_packet({
+                    "type": "mail_notify",
+                    "player": player,
+                    "count": count,
+                })
+
     def is_streamer_player(self, guild: Optional[discord.Guild], player_name: str) -> bool:
         if not guild:
             return False
@@ -1288,8 +1358,48 @@ class BridgeCog(commands.Cog, name="Мост Minecraft"):
             new_words.append(word)
         return " ".join(new_words)
 
+    def build_item_preview_embed(self, item_data: dict) -> Optional[discord.Embed]:
+        """Генерирует карточку предпросмотра предмета в руке игрока ([item])"""
+        if not isinstance(item_data, dict):
+            return None
+        raw_name = item_data.get("name") or item_data.get("type", "Предмет")
+        mat = item_data.get("type", "UNKNOWN")
+        amount = item_data.get("amount", 1)
+        durability = item_data.get("durability")
+        max_durability = item_data.get("max_durability")
+        enchants = item_data.get("enchants", [])
+        lore = item_data.get("lore", [])
+
+        title_qty = f" x{amount}" if amount > 1 else ""
+        embed = discord.Embed(
+            title=f"📦 {raw_name}{title_qty}",
+            color=Colors.GOLD if enchants else Colors.BLUE,
+        )
+
+        desc_lines = []
+        if durability is not None and max_durability:
+            pct = int(round((durability / max_durability) * 100))
+            desc_lines.append(f"• **Прочность:** `{durability} / {max_durability}` ({pct}%)")
+
+        if enchants:
+            ench_str = "\n".join([f"• `{e.get('name', 'Чар')} {e.get('level', 1)}`" for e in enchants])
+            embed.add_field(name="Зачарования", value=ench_str, inline=False)
+
+        if lore:
+            lore_clean = "\n".join([f"*{l}*" for l in lore if l])
+            if lore_clean:
+                embed.add_field(name="Описание", value=lore_clean, inline=False)
+
+        if desc_lines:
+            embed.description = "\n".join(desc_lines)
+
+        embed.set_footer(text=f"Vanilla Land • Предмет из руки • {mat}")
+        return embed
+
     # --- ОТПРАВКА В DISCORD ЧЕРЕЗ ВЕБХУК В ОСНОВНОЙ ЧАТ МОСТА ---
-    async def send_to_discord_webhook(self, player_name: str, content: str, skin: str = ""):
+    async def send_to_discord_webhook(
+        self, player_name: str, content: str, skin: str = "", embed: Optional[discord.Embed] = None
+    ):
         channel = self.bot.get_channel(Config.BRIDGE_CHANNEL_ID)
         if not channel or not isinstance(channel, discord.TextChannel):
             return
@@ -1309,6 +1419,7 @@ class BridgeCog(commands.Cog, name="Мост Minecraft"):
                         logger.error(f"Не удалось получить или создать вебхук: {e}")
 
         avatar_url = get_skin_avatar_url(player_name, skin, self.db)
+        embeds = [embed] if embed else []
 
         try:
             if self.webhook:
@@ -1316,10 +1427,14 @@ class BridgeCog(commands.Cog, name="Мост Minecraft"):
                     content=content,
                     username=player_name,
                     avatar_url=avatar_url,
+                    embeds=embeds,
                     allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False),
                 )
             else:
-                await channel.send(f"**<{player_name}>** {content}")
+                if embed:
+                    await channel.send(f"**<{player_name}>** {content}", embed=embed)
+                else:
+                    await channel.send(f"**<{player_name}>** {content}")
         except discord.NotFound:
             self.webhook = None
             try:
@@ -1328,10 +1443,14 @@ class BridgeCog(commands.Cog, name="Мост Minecraft"):
                     content=content,
                     username=player_name,
                     avatar_url=avatar_url,
+                    embeds=embeds,
                     allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False),
                 )
             except Exception:
-                await channel.send(f"**<{player_name}>** {content}")
+                if embed:
+                    await channel.send(f"**<{player_name}>** {content}", embed=embed)
+                else:
+                    await channel.send(f"**<{player_name}>** {content}")
         except Exception as e:
             logger.error(f"Ошибка отправки сообщения через вебхук: {e}")
 
@@ -3893,6 +4012,47 @@ class ProfileView(ui.View):
             await interaction.response.send_message(embed=embed)
         else:
             await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @ui.button(label="🖼️ Карточка (PNG)", style=discord.ButtonStyle.primary)
+    async def view_card_btn(self, interaction: discord.Interaction, button: ui.Button):
+        await interaction.response.defer(ephemeral=True)
+        from cogs.inventory_renderer import render_profile_card
+
+        cache_key = self.player_name.lower()
+        stats = {}
+        if cache_key in self.bridge_cog.cached_player_stats:
+            _, stats = self.bridge_cog.cached_player_stats[cache_key]
+
+        is_online = stats.get("online", False)
+        ticks = stats.get("playtime", 0)
+        h = ticks // 72000
+        m = (ticks % 72000) // 1200
+        playtime_str = f"{h} ч {m} мин" if ticks > 0 else "0 ч"
+
+        kills = stats.get("kills", 0)
+        deaths = stats.get("deaths", 0)
+        kd = round(kills / max(1, deaths), 2)
+        diamonds = stats.get("diamonds", 0)
+        debris = stats.get("netherite_scrap", stats.get("debris", 0))
+        lvl = stats.get("level", 0)
+        world_raw = stats.get("world", "world")
+        world_map = {"world": "Верхний мир", "world_nether": "Незеp", "world_the_end": "Энд"}
+        world_name = world_map.get(world_raw, "Верхний мир")
+
+        buf = render_profile_card(
+            player_name=self.player_name,
+            is_online=is_online,
+            playtime_str=playtime_str,
+            diamonds=diamonds,
+            debris=debris,
+            kills=kills,
+            deaths=deaths,
+            kd_ratio=kd,
+            world_name=world_name,
+            level=lvl,
+        )
+        file = discord.File(buf, filename=f"profile_{self.player_name}.png")
+        await interaction.followup.send(file=file, ephemeral=True)
 
 
 

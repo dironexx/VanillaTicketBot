@@ -1,6 +1,8 @@
 import asyncio
+import html
 import logging
 import os
+import re
 from datetime import datetime, timedelta
 from typing import Optional
 
@@ -182,6 +184,265 @@ def can_manage_ticket(ctx: commands.Context, db: DatabaseManager) -> bool:
     return ticket_author_id is not None and ctx.author.id == ticket_author_id
 
 
+async def save_transcript_html(
+    channel: discord.TextChannel,
+    closed_by_name: str = "Персонал",
+    reason: str = "Вопрос решен"
+) -> str:
+    """Генерирует автономный HTML-файл переписки тикета в темной теме Discord"""
+    os.makedirs(Config.TRANSCRIPTS_DIR, exist_ok=True)
+    file_time = get_msk_now().strftime("%Y%m%d_%H%M%S")
+    filename = os.path.join(Config.TRANSCRIPTS_DIR, f"{channel.name}_{file_time}.html")
+
+    messages_html = []
+    msg_count = 0
+
+    async for msg in channel.history(limit=None, oldest_first=True):
+        msg_count += 1
+        msg_time = msg.created_at.astimezone(MSK).strftime("%d.%m.%Y %H:%M:%S")
+        author_name = html.escape(msg.author.display_name)
+        author_avatar = msg.author.display_avatar.url if hasattr(msg.author, "display_avatar") else ""
+        role_color = "#99aab5"
+        if isinstance(msg.author, discord.Member) and msg.author.color.value != 0:
+            role_color = f"#{msg.author.color.value:06x}"
+
+        # Markdown форматирование
+        raw_text = html.escape(msg.clean_content or "")
+        raw_text = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", raw_text)
+        raw_text = re.sub(r"\*(.+?)\*", r"<em>\1</em>", raw_text)
+        raw_text = re.sub(r"`(.+?)`", r"<code>\1</code>", raw_text)
+        raw_text = raw_text.replace("\n", "<br>")
+
+        attachments_html = []
+        for att in msg.attachments:
+            att_url = html.escape(att.url)
+            is_image = any(att.filename.lower().endswith(ext) for ext in (".png", ".jpg", ".jpeg", ".webp", ".gif"))
+            if is_image:
+                attachments_html.append(f'<div class="attachment"><a href="{att_url}" target="_blank"><img src="{att_url}" alt="Attachment" class="att-img" /></a></div>')
+            else:
+                att_name = html.escape(att.filename)
+                attachments_html.append(f'<div class="attachment"><a href="{att_url}" target="_blank" class="att-file">📎 {att_name}</a></div>')
+
+        embeds_html = []
+        for emb in msg.embeds:
+            border_color = f"#{emb.color.value:06x}" if emb.color and emb.color.value else "#5865f2"
+            emb_title = f'<div class="embed-title">{html.escape(emb.title)}</div>' if emb.title else ""
+            emb_desc = f'<div class="embed-desc">{html.escape(emb.description or "").replace(chr(10), "<br>")}</div>' if emb.description else ""
+            fields_html = []
+            for f in emb.fields:
+                f_name = html.escape(f.name)
+                f_val = html.escape(f.value).replace("\n", "<br>")
+                fields_html.append(f'<div class="embed-field"><div class="field-name">{f_name}</div><div class="field-val">{f_val}</div></div>')
+            f_block = f'<div class="embed-fields">{"".join(fields_html)}</div>' if fields_html else ""
+            embeds_html.append(f'<div class="embed" style="border-left-color: {border_color};">{emb_title}{emb_desc}{f_block}</div>')
+
+        bot_badge = '<span class="bot-badge">БОТ</span>' if msg.author.bot else ""
+        avatar_img = f'<img src="{author_avatar}" class="avatar" alt="Avatar" />' if author_avatar else '<div class="avatar-placeholder"></div>'
+
+        messages_html.append(f"""
+        <div class="message">
+            {avatar_img}
+            <div class="message-content">
+                <div class="message-header">
+                    <span class="author" style="color: {role_color};">{author_name}</span>
+                    {bot_badge}
+                    <span class="timestamp">{msg_time}</span>
+                </div>
+                <div class="message-body">{raw_text}</div>
+                {"".join(attachments_html)}
+                {"".join(embeds_html)}
+            </div>
+        </div>
+        """)
+
+    guild_name = html.escape(channel.guild.name)
+    ch_name = html.escape(channel.name)
+    closed_by_clean = html.escape(closed_by_name)
+    reason_clean = html.escape(reason)
+    now_date = get_msk_now().strftime("%d.%m.%Y %H:%M:%S")
+
+    html_page = f"""<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Транскрипт #{ch_name} • {guild_name}</title>
+    <style>
+        * {{ box-sizing: border-box; margin: 0; padding: 0; }}
+        body {{
+            background-color: #313338;
+            color: #dbdee1;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            font-size: 15px;
+            line-height: 1.4;
+            padding: 20px;
+        }}
+        .container {{
+            max-width: 960px;
+            margin: 0 auto;
+            background-color: #2b2d31;
+            border-radius: 8px;
+            overflow: hidden;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.4);
+        }}
+        .header {{
+            background-color: #1e1f22;
+            padding: 24px;
+            border-bottom: 2px solid #232428;
+        }}
+        .header h1 {{
+            font-size: 20px;
+            color: #f2f3f5;
+            margin-bottom: 12px;
+        }}
+        .header-grid {{
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 10px;
+            font-size: 13px;
+            color: #949ba4;
+        }}
+        .header-item strong {{ color: #f2f3f5; }}
+        .chat {{
+            padding: 20px 24px;
+            display: flex;
+            flex-direction: column;
+            gap: 14px;
+        }}
+        .message {{
+            display: flex;
+            gap: 16px;
+            padding: 6px 8px;
+            border-radius: 4px;
+            transition: background 0.1s;
+        }}
+        .message:hover {{ background-color: #2e3035; }}
+        .avatar {{
+            width: 40px;
+            height: 40px;
+            border-radius: 50%;
+            flex-shrink: 0;
+        }}
+        .avatar-placeholder {{
+            width: 40px;
+            height: 40px;
+            border-radius: 50%;
+            background-color: #5865f2;
+            flex-shrink: 0;
+        }}
+        .message-content {{ flex-grow: 1; min-width: 0; }}
+        .message-header {{
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-bottom: 4px;
+        }}
+        .author {{ font-weight: 600; font-size: 15px; }}
+        .bot-badge {{
+            background-color: #5865f2;
+            color: #ffffff;
+            font-size: 10px;
+            font-weight: 700;
+            padding: 1px 4px;
+            border-radius: 3px;
+        }}
+        .timestamp {{
+            font-size: 12px;
+            color: #949ba4;
+        }}
+        .message-body {{
+            word-break: break-word;
+            color: #dbdee1;
+        }}
+        .message-body code {{
+            background: #1e1f22;
+            padding: 2px 4px;
+            border-radius: 3px;
+            font-family: monospace;
+            font-size: 13px;
+        }}
+        .attachment {{ margin-top: 8px; }}
+        .att-img {{
+            max-width: 100%;
+            max-height: 380px;
+            border-radius: 6px;
+        }}
+        .att-file {{
+            color: #00a8fc;
+            text-decoration: none;
+            font-size: 13px;
+            background: #1e1f22;
+            padding: 4px 8px;
+            border-radius: 4px;
+            display: inline-block;
+        }}
+        .att-file:hover {{ text-decoration: underline; }}
+        .embed {{
+            margin-top: 8px;
+            background-color: #1e1f22;
+            border-left: 4px solid #5865f2;
+            border-radius: 4px;
+            padding: 12px;
+            max-width: 520px;
+        }}
+        .embed-title {{
+            font-weight: 600;
+            color: #f2f3f5;
+            margin-bottom: 6px;
+        }}
+        .embed-desc {{
+            font-size: 14px;
+            color: #dbdee1;
+            margin-bottom: 8px;
+        }}
+        .embed-fields {{
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+            gap: 8px;
+        }}
+        .field-name {{ font-size: 12px; font-weight: 600; color: #949ba4; }}
+        .field-val {{ font-size: 13px; color: #dbdee1; }}
+        .footer {{
+            padding: 16px 24px;
+            background-color: #1e1f22;
+            border-top: 1px solid #232428;
+            font-size: 12px;
+            color: #949ba4;
+            text-align: center;
+        }}
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>#{ch_name} • Архив обращения</h1>
+            <div class="header-grid">
+                <div class="header-item">Сервер: <strong>{guild_name}</strong></div>
+                <div class="header-item">Дата закрытия: <strong>{now_date}</strong></div>
+                <div class="header-item">Закрыл: <strong>{closed_by_clean}</strong></div>
+                <div class="header-item">Причина: <strong>{reason_clean}</strong></div>
+                <div class="header-item">Сообщений: <strong>{msg_count}</strong></div>
+            </div>
+        </div>
+        <div class="chat">
+            {"".join(messages_html)}
+        </div>
+        <div class="footer">
+            Vanilla Land Support • vanillaland.ru-mc.ru
+        </div>
+    </div>
+</body>
+</html>
+"""
+
+    def _write() -> None:
+        with open(filename, "w", encoding="utf-8") as f:
+            f.write(html_page)
+
+    await asyncio.to_thread(_write)
+    return filename
+
+
 async def save_transcript_to_file(channel: discord.TextChannel) -> str:
     os.makedirs(Config.TRANSCRIPTS_DIR, exist_ok=True)
     file_time = get_msk_now().strftime("%Y%m%d_%H%M%S")
@@ -228,6 +489,54 @@ async def save_transcript_to_file(channel: discord.TextChannel) -> str:
     return filename
 
 
+# --- КАРТОЧКА НАРУШИТЕЛЯ (SUSPECT SUMMARY ДЛЯ ПЕРСОНАЛА) ---
+def build_suspect_embed(bot: commands.Bot, db: DatabaseManager, suspect_nick: str) -> discord.Embed:
+    summary = db.get_suspect_summary(suspect_nick)
+    player = summary["player_name"]
+    linked = summary.get("linked")
+    alts = summary.get("alts", [])
+    ips = summary.get("ips", [])
+    alerts = summary.get("alerts", [])
+    deaths = summary.get("death_count", 0)
+    last_death = summary.get("last_death", "Нет записей")
+
+    bridge_cog = bot.get_cog("Мост Minecraft")
+    is_online = False
+    if bridge_cog and hasattr(bridge_cog, "mc_players"):
+        is_online = any(p.lower() == player.lower() for p in bridge_cog.mc_players)
+
+    status_str = "🟢 В сети на сервере" if is_online else "⚫ Не в сети"
+    embed = AG.embed(
+        title=f"Досье игрока • {player}",
+        description="Оперативная сводка для модерации сервера.",
+        footer="Vanilla Land • Безопасность",
+    )
+    embed.add_field(name="Статус", value=status_str, inline=True)
+    if linked:
+        embed.add_field(name="Discord", value=f"<@{linked['discord_user_id']}> (`{linked['discord_user_id']}`)", inline=True)
+    else:
+        embed.add_field(name="Discord", value="*Не привязан*", inline=True)
+
+    if ips:
+        masked_ips = [f"`{ip[:ip.rfind('.')] + '.***' if '.' in ip else ip}`" for ip in ips[:3]]
+        embed.add_field(name="Известные IP", value=", ".join(masked_ips), inline=True)
+    else:
+        embed.add_field(name="Известные IP", value="*Нет записей*", inline=True)
+
+    if alts:
+        alt_names = [f"• `{a['player_name']}` ({a['last_seen']})" for a in alts[:6]]
+        embed.add_field(name=f"⚠️ Обнаруженные твинки ({len(alts)})", value="\n".join(alt_names), inline=False)
+    else:
+        embed.add_field(name="Связанные аккаунты", value="*Твинков по IP не обнаружено*", inline=False)
+
+    if alerts:
+        alert_lines = [f"• Забаненный твинк `{al['banned_nick']}`: {al['reason']}" for al in alerts[:3]]
+        embed.add_field(name="Алерты безопасности", value="\n".join(alert_lines), inline=False)
+
+    embed.add_field(name="Смертей в базе", value=f"`{deaths}` (Посл: {last_death})", inline=True)
+    return embed
+
+
 _CLOSING_CHANNELS: set[int] = set()
 
 
@@ -244,11 +553,15 @@ async def close_ticket_process(
     try:
         user_id = db.get_ticket_user_id(channel.id)
 
+        saved_file = None
         try:
-            saved_file = await save_transcript_to_file(channel)
+            saved_file = await save_transcript_html(channel, closed_by_name, reason)
         except Exception as e:
-            logger.error(f"Ошибка создания транскрипта {channel.name}: {e}")
-            saved_file = None
+            logger.error(f"Ошибка создания HTML-транскрипта {channel.name}: {e}")
+            try:
+                saved_file = await save_transcript_to_file(channel)
+            except Exception as e2:
+                logger.error(f"Ошибка создания txt-транскрипта {channel.name}: {e2}")
 
         if user_id:
             try:
@@ -259,7 +572,7 @@ async def close_ticket_process(
                         description=(
                             f"Ваше обращение закрыто сотрудником **{closed_by_name}**.\n\n"
                             f"**Причина:** {reason}\n"
-                            f"Лог переписки прикреплен к сообщению."
+                            f"HTML-лог переписки прикреплен к сообщению."
                         ),
                         footer="Vanilla Land • Поддержка",
                     )
@@ -269,6 +582,27 @@ async def close_ticket_process(
                         await user.send(embed=embed)
             except Exception as e:
                 logger.error(f"Ошибка отправки ЛС {user_id}: {e}")
+
+        # Отправка транскрипта в канал логов
+        if Config.LOG_CHANNEL_ID:
+            log_ch = bot.get_channel(Config.LOG_CHANNEL_ID)
+            if isinstance(log_ch, discord.TextChannel):
+                embed_log = AG.embed(
+                    title=f"Тикет закрыт • #{channel.name}",
+                    description=(
+                        f"**Пользователь:** <@{user_id}> (`{user_id}`)\n"
+                        f"**Закрыл:** **{closed_by_name}**\n"
+                        f"**Причина:** {reason}"
+                    ),
+                    footer="Vanilla Land • Архив тикетов",
+                )
+                try:
+                    if saved_file and os.path.exists(saved_file):
+                        await log_ch.send(embed=embed_log, file=discord.File(saved_file))
+                    else:
+                        await log_ch.send(embed=embed_log)
+                except Exception as log_err:
+                    logger.warning(f"Не удалось отправить транскрипт в лог-канал: {log_err}")
 
         # Сначала удаляем канал из Discord, и только после успешного удаления удаляем из БД
         deleted = False
@@ -301,9 +635,27 @@ class CloseReasonModal(ui.Modal, title="Закрытие обращения"):
 
     async def on_submit(self, interaction: discord.Interaction):
         reason = self.reason_input.value.strip() or "Вопрос решен"
-        await interaction.response.send_message("Закрываем обращение и сохраняем лог...", ephemeral=True)
+        await interaction.response.send_message("Закрываем обращение и сохраняем HTML-лог...", ephemeral=True)
         if isinstance(interaction.channel, discord.TextChannel):
             await close_ticket_process(interaction.client, self.db, interaction.channel, interaction.user.name, reason)
+
+
+class SuspectCheckModal(ui.Modal, title="Проверка игрока"):
+    nick_input = ui.TextInput(
+        label="Никнейм игрока",
+        placeholder="Введите никнейм для проверки...",
+        max_length=32,
+        required=True,
+    )
+
+    def __init__(self, db: DatabaseManager):
+        super().__init__()
+        self.db = db
+
+    async def on_submit(self, interaction: discord.Interaction):
+        nick = self.nick_input.value.strip()
+        embed = build_suspect_embed(interaction.client, self.db, nick)
+        await interaction.response.send_message(embed=embed)
 
 
 class InsideTicketView(ui.View):
@@ -314,6 +666,12 @@ class InsideTicketView(ui.View):
     @ui.button(label="Закрыть обращение", style=discord.ButtonStyle.danger, custom_id="persistent_close_btn")
     async def request_close(self, interaction: discord.Interaction, button: ui.Button):
         await interaction.response.send_modal(CloseReasonModal(self.db))
+
+    @ui.button(label="🔍 Досье игрока", style=discord.ButtonStyle.secondary, custom_id="persistent_suspect_btn")
+    async def request_suspect(self, interaction: discord.Interaction, button: ui.Button):
+        if not is_mod_or_admin(interaction):
+            return await interaction.response.send_message("Эта функция доступна только персоналу.", ephemeral=True)
+        await interaction.response.send_modal(SuspectCheckModal(self.db))
 
 
 _CREATING_TICKETS: set[int] = set()
@@ -849,6 +1207,20 @@ class TicketsCog(commands.Cog, name="Тикеты"):
             ),
             color=Colors.BLUE,
         )
+        await ctx.send(embed=embed, ephemeral=True)
+
+    @commands.hybrid_command(
+        name="suspect",
+        aliases=["досье", "проверить_игрока", "check_player"],
+        description="Оперативное досье игрока (твинки, IP, баны, статистика) для персонала",
+    )
+    @app_commands.describe(player_name="Никнейм игрока для проверки")
+    async def suspect_cmd(self, ctx: commands.Context, player_name: str):
+        if not is_mod_or_admin(ctx):
+            return await ctx.send("Эта команда доступна только персоналу сервера.", ephemeral=True)
+        if ctx.interaction:
+            await ctx.defer(ephemeral=True)
+        embed = build_suspect_embed(self.bot, self.db, player_name.strip())
         await ctx.send(embed=embed, ephemeral=True)
 
 

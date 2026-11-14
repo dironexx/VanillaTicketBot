@@ -13,6 +13,10 @@ commands:
     description: Ответить на личное сообщение из Discord
     aliases: [rdc, replyd, dcr]
     usage: /rd [сообщение]
+  mail:
+    description: Внутриигровая почта игрокам сервера
+    aliases: [почта, письмо]
+    usage: /mail [send|read|help]
   link:
     description: Привязать свой аккаунт Minecraft к Discord
     aliases: [привязать, linkaccount]

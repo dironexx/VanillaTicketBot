@@ -214,6 +214,80 @@ class BridgeLogicTests(unittest.TestCase):
             self.assertIsNotNone(acc)
             self.assertEqual(acc["discord_user_id"], 111111)
 
+    def test_offline_mail_flow(self):
+        import tempfile
+        from database import DatabaseManager
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            db_file = os.path.join(tmp_dir, "test_mail.db")
+            db = DatabaseManager(db_file, tmp_dir)
+            
+            # Начальное состояние: 0 писем
+            self.assertEqual(db.count_unread_mail("Alex"), 0)
+            
+            # Отправка писем
+            id1 = db.send_offline_mail("Steve", "Alex", "Привет! Нужна помощь на спавне.")
+            id2 = db.send_offline_mail("Bob", "ALEX", "Забери алмазы из сундука.")
+            self.assertGreater(id1, 0)
+            self.assertGreater(id2, 0)
+
+            # Проверка количества
+            self.assertEqual(db.count_unread_mail("alex"), 2)
+
+            # Чтение
+            mails = db.get_unread_mail("alex")
+            self.assertEqual(len(mails), 2)
+            self.assertEqual(mails[0]["sender"], "Steve")
+            self.assertEqual(mails[1]["sender"], "Bob")
+
+            # Отметка о прочтении
+            read_cnt = db.mark_mail_read("alex")
+            self.assertEqual(read_cnt, 2)
+            self.assertEqual(db.count_unread_mail("alex"), 0)
+
+    def test_suspect_summary(self):
+        import tempfile
+        from database import DatabaseManager
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            db_file = os.path.join(tmp_dir, "test_suspect.db")
+            db = DatabaseManager(db_file, tmp_dir)
+            
+            # Фиксируем IP для подозреваемого и его твинка
+            db.record_player_ip("Griefer", "198.51.100.15")
+            db.record_player_ip("AltGriefer", "198.51.100.15")
+            db.save_security_alert(1001, "Griefer", "BannedUser", "Griefing", "198.51.100.15")
+
+            summary = db.get_suspect_summary("griefer")
+            self.assertEqual(summary["player_name"], "griefer")
+            self.assertIn("198.51.100.15", summary["ips"])
+            
+            # Должен обнаружить твинк AltGriefer
+            alt_names = [a["player_name"] for a in summary["alts"]]
+            self.assertIn("AltGriefer", alt_names)
+            
+            # Должен подтянуть алерт
+            self.assertEqual(len(summary["alerts"]), 1)
+            self.assertEqual(summary["alerts"][0]["banned_nick"], "BannedUser")
+
+    def test_profile_card_renderer(self):
+        from cogs.inventory_renderer import render_profile_card
+        buf = render_profile_card(
+            player_name="Steve",
+            is_online=True,
+            playtime_str="120 ч",
+            diamonds=540,
+            debris=18,
+            kills=42,
+            deaths=12,
+            kd_ratio=3.5,
+            world_name="Верхний мир",
+            level=30,
+        )
+        self.assertIsNotNone(buf)
+        data = buf.getvalue()
+        # Проверяем сигнатуру PNG (8 байт: 89 50 4E 47 0D 0A 1A 0A)
+        self.assertTrue(data.startswith(b"\x89PNG\r\n\x1a\n"))
+        self.assertGreater(len(data), 5000)
+
 
 if __name__ == "__main__":
     unittest.main()

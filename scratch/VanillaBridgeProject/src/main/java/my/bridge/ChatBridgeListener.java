@@ -54,6 +54,10 @@ import org.bukkit.event.player.PlayerJoinEvent;
 import org.bukkit.event.player.PlayerQuitEvent;
 import org.bukkit.event.server.ServerCommandEvent;
 import org.bukkit.plugin.Plugin;
+import org.bukkit.inventory.ItemStack;
+import org.bukkit.inventory.meta.ItemMeta;
+import org.bukkit.inventory.meta.Damageable;
+import org.bukkit.enchantments.Enchantment;
 
 public class ChatBridgeListener
 implements Listener {
@@ -237,8 +241,62 @@ implements Listener {
         } else {
             this.plugin.cachePlayerSkin(player.getName(), skinHash);
         }
-        String payload = "{\"type\":\"chat\",\"player\":\"" + this.escapeJson(player.getName()) + "\",\"skin\":\"" + this.escapeJson(skinHash) + "\",\"message\":\"" + this.escapeJson(text) + "\"}";
+
+        String itemJson = "";
+        String lowerText = text.toLowerCase(Locale.ROOT);
+        if (lowerText.contains("[item]") || lowerText.contains("[i]")) {
+            ItemStack item = player.getInventory().getItemInMainHand();
+            if (item != null && !item.getType().isAir()) {
+                itemJson = this.serializeItemJson(item);
+            }
+        }
+
+        String payload = "{\"type\":\"chat\",\"player\":\"" + this.escapeJson(player.getName()) + "\",\"skin\":\"" + this.escapeJson(skinHash) + "\",\"message\":\"" + this.escapeJson(text) + "\"" + (itemJson.isEmpty() ? "" : ",\"item\":" + itemJson) + "}";
         this.sendToBridge(payload);
+    }
+
+    private String serializeItemJson(ItemStack item) {
+        StringBuilder sb = new StringBuilder("{");
+        sb.append("\"type\":\"").append(escapeJson(item.getType().name())).append("\"");
+        sb.append(",\"amount\":").append(item.getAmount());
+
+        if (item.hasItemMeta()) {
+            ItemMeta meta = item.getItemMeta();
+            if (meta.hasDisplayName()) {
+                sb.append(",\"name\":\"").append(escapeJson(meta.getDisplayName())).append("\"");
+            }
+            if (meta instanceof Damageable) {
+                Damageable dmg = (Damageable) meta;
+                int max = item.getType().getMaxDurability();
+                if (max > 0) {
+                    sb.append(",\"durability\":").append(max - dmg.getDamage());
+                    sb.append(",\"max_durability\":").append(max);
+                }
+            }
+            if (meta.hasEnchants()) {
+                sb.append(",\"enchants\":[");
+                boolean first = true;
+                for (Map.Entry<Enchantment, Integer> entry : meta.getEnchants().entrySet()) {
+                    if (!first) sb.append(",");
+                    first = false;
+                    String enchName = entry.getKey().getKey().getKey();
+                    sb.append("{\"name\":\"").append(escapeJson(enchName)).append("\",\"level\":").append(entry.getValue()).append("}");
+                }
+                sb.append("]");
+            }
+            if (meta.hasLore() && meta.getLore() != null) {
+                sb.append(",\"lore\":[");
+                boolean first = true;
+                for (String l : meta.getLore()) {
+                    if (!first) sb.append(",");
+                    first = false;
+                    sb.append("\"").append(escapeJson(l)).append("\"");
+                }
+                sb.append("]");
+            }
+        }
+        sb.append("}");
+        return sb.toString();
     }
 
     @EventHandler(priority=EventPriority.LOW, ignoreCancelled=false)
@@ -352,6 +410,11 @@ implements Listener {
         }
         String payload = "{\"type\":\"join\",\"player\":\"" + this.escapeJson(player.getName()) + "\",\"ip\":\"" + this.escapeJson(ip) + "\",\"skin\":\"" + this.escapeJson(skinHash) + "\"}";
         this.sendToBridge(payload);
+        Bukkit.getScheduler().runTaskLater((Plugin)this.plugin, () -> {
+            if (player.isOnline()) {
+                this.sendToBridge("{\"type\":\"check_mail\",\"player\":\"" + this.escapeJson(player.getName()) + "\"}");
+            }
+        }, 40L);
         if (this.plugin.getAuthMeHook() == null || !this.plugin.getAuthMeHook().isAuthMeAvailable()) {
             Bukkit.getScheduler().runTaskLater((Plugin)this.plugin, () -> {
                 if (player.isOnline()) {

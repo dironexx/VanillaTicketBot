@@ -272,6 +272,17 @@ class DatabaseManager:
                 target_player TEXT NOT NULL
             )
         """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS offline_mail (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                sender TEXT NOT NULL,
+                recipient TEXT NOT NULL COLLATE NOCASE,
+                message TEXT NOT NULL,
+                sent_at TEXT NOT NULL,
+                is_read INTEGER NOT NULL DEFAULT 0
+            )
+        """)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_mail_recipient ON offline_mail(recipient COLLATE NOCASE, is_read);")
         conn.execute("INSERT OR IGNORE INTO ticket_counter (id, count) VALUES (1, 0)")
         conn.commit()
 
@@ -1303,4 +1314,85 @@ class DatabaseManager:
                 }
                 for r in cursor.fetchall()
             ]
+
+    # --- ВНУТРИИГРОВАЯ ПОЧТА (OFFLINE MAIL) ---
+    def send_offline_mail(self, sender: str, recipient: str, message: str) -> int:
+        now_str = get_msk_now_str()
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "INSERT INTO offline_mail (sender, recipient, message, sent_at, is_read) VALUES (?, ?, ?, ?, 0)",
+                (sender.strip(), recipient.strip(), message.strip(), now_str),
+            )
+            conn.commit()
+            return cursor.lastrowid or 0
+
+    def get_unread_mail(self, recipient: str) -> list[dict]:
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT id, sender, message, sent_at FROM offline_mail WHERE recipient = ? COLLATE NOCASE AND is_read = 0 ORDER BY id ASC",
+                (recipient.strip(),),
+            )
+            return [
+                {"id": r[0], "sender": r[1], "message": r[2], "sent_at": r[3]}
+                for r in cursor.fetchall()
+            ]
+
+    def count_unread_mail(self, recipient: str) -> int:
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT COUNT(*) FROM offline_mail WHERE recipient = ? COLLATE NOCASE AND is_read = 0",
+                (recipient.strip(),),
+            )
+            row = cursor.fetchone()
+            return int(row[0]) if row else 0
+
+    def mark_mail_read(self, recipient: str) -> int:
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "UPDATE offline_mail SET is_read = 1 WHERE recipient = ? COLLATE NOCASE AND is_read = 0",
+                (recipient.strip(),),
+            )
+            conn.commit()
+            return cursor.rowcount
+
+    # --- КАРТОЧКА НАРУШИТЕЛЯ (SUSPECT SUMMARY) ---
+    def get_suspect_summary(self, suspect_nick: str) -> dict:
+        clean_nick = suspect_nick.strip()
+        linked = self.get_linked_account_by_mc(clean_nick)
+        ips = [x["ip"] for x in self.get_player_ips(clean_nick, limit=10)]
+        
+        # Поиск твинков по известным IP
+        alts_map: dict[str, str] = {}
+        for ip in ips:
+            for alt in self.get_alts_by_ip(ip):
+                alt_name = alt["player_name"]
+                if alt_name.lower() != clean_nick.lower() and alt_name not in alts_map:
+                    alts_map[alt_name] = alt["last_seen"]
+
+        deaths_count, last_death = self.get_player_deaths(clean_nick)
+
+        # Проверка алертов безопасности
+        alerts = []
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT banned_nick, banned_reason, ip FROM security_alerts WHERE lower(player) = lower(?)",
+                (clean_nick,),
+            )
+            for r in cursor.fetchall():
+                alerts.append({"banned_nick": r[0], "reason": r[1], "ip": r[2]})
+
+        return {
+            "player_name": clean_nick,
+            "linked": linked,
+            "ips": ips,
+            "alts": [{"player_name": k, "last_seen": v} for k, v in alts_map.items()],
+            "death_count": deaths_count,
+            "last_death": last_death,
+            "alerts": alerts,
+        }
 

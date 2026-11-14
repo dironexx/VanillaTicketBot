@@ -635,6 +635,61 @@ implements CommandExecutor {
                 return true;
             });
         }
+        if (this.getCommand("mail") != null) {
+            this.getCommand("mail").setExecutor((sender, command, label, args) -> {
+                if (!(sender instanceof Player)) {
+                    sender.sendMessage("Команда доступна только игрокам.");
+                    return true;
+                }
+                Player player = (Player) sender;
+                if (args.length == 0 || args[0].equalsIgnoreCase("help")) {
+                    player.sendMessage(MiniMessage.miniMessage().deserialize(
+                        "<gradient:#ff7a00:#ffae19><bold>Почта Vanilla Land</bold></gradient>\n" +
+                        "<gray>• <white>/mail send <ник> <текст></white> — отправить письмо игроку\n" +
+                        "• <white>/mail read</white> — прочитать новые письма</gray>"
+                    ));
+                    return true;
+                }
+                if (args[0].equalsIgnoreCase("send") || args[0].equalsIgnoreCase("написать")) {
+                    if (args.length < 3) {
+                        player.sendMessage(MiniMessage.miniMessage().deserialize("<red>Использование: /mail send <ник> <сообщение></red>"));
+                        return true;
+                    }
+                    String recipient = args[1];
+                    String[] textParts = new String[args.length - 2];
+                    System.arraycopy(args, 2, textParts, 0, textParts.length);
+                    String text = String.join(" ", textParts);
+                    String payload = String.format(Locale.US,
+                        "{\"type\":\"send_mail\",\"sender\":\"%s\",\"recipient\":\"%s\",\"text\":\"%s\"}",
+                        VanillaBridge.escapeJson(player.getName()),
+                        VanillaBridge.escapeJson(recipient),
+                        VanillaBridge.escapeJson(text)
+                    );
+                    if (this.bridgeClient != null && this.bridgeClient.isConnected()) {
+                        this.bridgeClient.send(payload);
+                        player.sendMessage(MiniMessage.miniMessage().deserialize(
+                            "<green>✔ Письмо отправлено игроку <white>" + MiniMessage.miniMessage().escapeTags(recipient) + "</white>!</green>"
+                        ));
+                    } else {
+                        player.sendMessage(MiniMessage.miniMessage().deserialize("<red>Ошибка: мост с ботом временно недоступен.</red>"));
+                    }
+                    return true;
+                }
+                if (args[0].equalsIgnoreCase("read") || args[0].equalsIgnoreCase("читать")) {
+                    String payload = String.format(Locale.US,
+                        "{\"type\":\"get_mail\",\"player\":\"%s\"}",
+                        VanillaBridge.escapeJson(player.getName())
+                    );
+                    if (this.bridgeClient != null && this.bridgeClient.isConnected()) {
+                        this.bridgeClient.send(payload);
+                    } else {
+                        player.sendMessage(MiniMessage.miniMessage().deserialize("<red>Ошибка: мост с ботом временно недоступен.</red>"));
+                    }
+                    return true;
+                }
+                return true;
+            });
+        }
         this.statsTask = Bukkit.getScheduler().runTaskTimerAsynchronously((Plugin)this, this::sendServerStats, 100L, 100L);
         Bukkit.getScheduler().runTaskTimerAsynchronously((Plugin)this, () -> {
             try {
@@ -915,6 +970,36 @@ implements CommandExecutor {
                 author = "Discord";
             }
             this.broadcastAnnouncement(text, author, false);
+            return;
+        }
+        if ("mail_notify".equalsIgnoreCase(type)) {
+            String target = this.extractField(rawJson, "player");
+            String countStr = this.extractField(rawJson, "count");
+            int count = 0;
+            try { count = Integer.parseInt(countStr); } catch (Exception ignored) {}
+            if (count > 0) {
+                Player p = Bukkit.getPlayerExact(target);
+                if (p != null && p.isOnline()) {
+                    p.sendMessage(MiniMessage.miniMessage().deserialize(
+                        "<gradient:#ff7a00:#ffae19>✉ Почта</gradient> <dark_gray>│</dark_gray> <gray>У вас <white>" + count + "</white> непрочитанных писем! Напишите <yellow>/mail read</yellow></gray>"
+                    ));
+                    try {
+                        p.playSound(p.getLocation(), Sound.BLOCK_NOTE_BLOCK_BELL, 1.0f, 1.2f);
+                    } catch (Exception ignored) {}
+                }
+            }
+            return;
+        }
+        if ("mail_inbox".equalsIgnoreCase(type)) {
+            String target = this.extractField(rawJson, "player");
+            Player p = Bukkit.getPlayerExact(target);
+            if (p != null && p.isOnline()) {
+                p.sendMessage(MiniMessage.miniMessage().deserialize("<gradient:#ff7a00:#ffae19><bold>Ваши письма:</bold></gradient>"));
+                p.sendMessage(MiniMessage.miniMessage().deserialize("<gray>Письма прочитаны и продублированы вам в ЛС Discord.</gray>"));
+                try {
+                    p.playSound(p.getLocation(), Sound.BLOCK_NOTE_BLOCK_PLING, 1.0f, 1.5f);
+                } catch (Exception ignored) {}
+            }
             return;
         }
         if ("query_world".equalsIgnoreCase(type)) {
