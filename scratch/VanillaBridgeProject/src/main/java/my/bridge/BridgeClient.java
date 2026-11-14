@@ -62,10 +62,13 @@ implements WebSocket.Listener {
             raw.add(configured);
         }
         raw.add("ws://172.17.0.1:25007/ws");
+        raw.add("ws://172.18.0.1:25007/ws");
         raw.add("ws://127.0.0.1:25007/ws");
-        raw.add("wss://bridge.vanillaland.fun/ws");
         raw.add("ws://81.30.105.141:25007/ws");
+        raw.add("ws://internal.vanillaland.fun:25007/ws");
+        raw.add("wss://bridge.vanillaland.fun/ws");
         raw.add("ws://172.17.0.1:25549/ws");
+        raw.add("ws://172.18.0.1:25549/ws");
         raw.add("ws://127.0.0.1:25549/ws");
         raw.add("ws://81.30.105.141:25549/ws");
         ArrayList<String> unique = new ArrayList<String>();

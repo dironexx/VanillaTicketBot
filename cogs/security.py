@@ -1521,7 +1521,7 @@ class HealthcheckAdminView(ui.View):
         )
 
         # Модуль 1: Сеть и веб-сервисы (inline=True)
-        bridge_status_str = "🟢 Активен (25549)" if bridge_connected else "🔴 Разорван"
+        bridge_status_str = f"🟢 Активен ({Config.BRIDGE_PORT})" if bridge_connected else "🔴 Разорван"
         embed.add_field(
             name="🌐 Сеть & Веб-сервисы",
             value=(

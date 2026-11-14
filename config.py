@@ -193,7 +193,7 @@ class Config:
     BRIDGE_CHANNEL_ID: int = _env_int("BRIDGE_CHANNEL_ID", 1556015782566297830)
     EVENTS_CHANNEL_ID: int = _env_int("EVENTS_CHANNEL_ID", 1556209087920873542)
     COMMANDS_CHANNEL_ID: int = _env_int("COMMANDS_CHANNEL_ID", 1555483142578770030)
-    BRIDGE_PORT: int = _env_int("BRIDGE_PORT", 0) or _env_int("SERVER_PORT", 25549)
+    BRIDGE_PORT: int = _env_int("BRIDGE_PORT", 0) or _env_int("SERVER_PORT", 25007)
     BRIDGE_SECRET: str = os.getenv("BRIDGE_SECRET", "vanillaland_secret_2026").strip()
     ONLINE_VOICE_CHANNEL_ID: int = _env_int("ONLINE_VOICE_CHANNEL_ID", 0)
     TPS_VOICE_CHANNEL_ID: int = _env_int("TPS_VOICE_CHANNEL_ID", 0)

@@ -13,8 +13,8 @@ server-id: "main"
 bridge:
   # Включение подключения к мосту (true - включено, false - выключено)
   enabled: true
-  ws-url: "wss://bridge.vanillaland.fun/ws"
-  token: "CHANGE_ME_BRIDGE_SECRET"
+  ws-url: "ws://172.17.0.1:25007/ws"
+  token: "R6rU8Y9nNpZRC8w-X0J6EFwvkPTOi-BdGlhADYrrwPs"
   reconnect-delay-seconds: 5
 
 # ------------------------------------------------------------------------------
