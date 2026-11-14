@@ -990,6 +990,12 @@ class BridgeCog(commands.Cog, name="Мост Minecraft"):
             if not player:
                 return
 
+            # Если 2FA отключена в боте (авторизация выполняется прокси Victime / Selene)
+            if not Config.ENABLE_LOGIN_2FA:
+                self.db.record_login(player, ip, status="SUCCESS")
+                await self.broadcast_packet({"type": "login_verdict", "player": player, "status": "2fa_disabled"})
+                return
+
             linked = self.db.get_linked_account_by_mc(player)
             if not linked:
                 # Аккаунт не привязан к Discord — свободный вход без 2FA

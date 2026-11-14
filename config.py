@@ -246,7 +246,8 @@ class Config:
     STATS_CATEGORY_ID: int = _env_int("STATS_CATEGORY_ID") or _env_int("STATS_VOICE_CATEGORY_ID", 0)
     STATS_VOICE_CATEGORY_ID: int = STATS_CATEGORY_ID
 
-    # Двухфакторная аутентификация (2FA) и сессии IP
+    # Двухфакторная аутентификация (2FA) и сессии IP (отключена по умолчанию, если используется Victime на Velocity)
+    ENABLE_LOGIN_2FA: bool = _env_bool("ENABLE_LOGIN_2FA", False)
     IP_SESSION_HOURS: float = _env_float("IP_SESSION_HOURS", 48.0)
     LOGIN_2FA_TIMEOUT_SEC: int = _env_int("LOGIN_2FA_TIMEOUT_SEC", 180)
     LINK_PANEL_CHANNEL_ID: int = _env_int("LINK_PANEL_CHANNEL_ID", 0)
