@@ -3,8 +3,10 @@ import html
 import logging
 import os
 import re
+import sqlite3
+import time
 from datetime import datetime, timedelta
-from typing import Optional
+from typing import Any, Callable, Optional, TypeVar
 
 import discord
 from discord import ui, app_commands
@@ -16,7 +18,100 @@ from design import AG, Colors
 
 logger = logging.getLogger("VanillaBot.Tickets")
 
+T = TypeVar("T")
+
 SPEC_ROLE_NAMES = ("спек", "спектатор", "spectator", "наблюдатель", "спек тикеты", "тикет спек")
+
+
+def _is_sqlite_busy(err: BaseException) -> bool:
+    if not isinstance(err, sqlite3.OperationalError):
+        return False
+    msg = str(err).lower()
+    return "locked" in msg or "busy" in msg
+
+
+def _db_call(func: Callable[..., T], *args: Any, retries: int = 3, delay: float = 0.04, **kwargs: Any) -> T:
+    """Синхронный вызов БД с коротким backoff при конкурентной блокировке SQLite WAL."""
+    attempt = 0
+    while True:
+        try:
+            return func(*args, **kwargs)
+        except sqlite3.OperationalError as err:
+            if not _is_sqlite_busy(err) or attempt >= retries:
+                raise
+            attempt += 1
+            time.sleep(delay * attempt)
+
+
+async def _async_db_call(func: Callable[..., T], *args: Any, retries: int = 3, delay: float = 0.04, **kwargs: Any) -> T:
+    """Неблокирующий event loop вызов БД с асинхронным ожиданием при занятости SQLite WAL."""
+    attempt = 0
+    while True:
+        try:
+            return func(*args, **kwargs)
+        except sqlite3.OperationalError as err:
+            if not _is_sqlite_busy(err) or attempt >= retries:
+                raise
+            attempt += 1
+            await asyncio.sleep(delay * attempt)
+
+
+async def _safe_defer(interaction: discord.Interaction, *, ephemeral: bool = True) -> bool:
+    """Безопасный defer интеракции с защитой от повторных кликов и таймаутов."""
+    if interaction.response.is_done():
+        return True
+    try:
+        await interaction.response.defer(ephemeral=ephemeral)
+        return True
+    except discord.InteractionResponded:
+        return True
+    except (discord.NotFound, discord.HTTPException) as err:
+        logger.debug("Не удалось выполнить defer интеракции %s: %s", interaction.id, err)
+        return False
+
+
+async def _safe_send_interaction(
+    interaction: discord.Interaction,
+    content: Optional[str] = None,
+    *,
+    embed: Optional[discord.Embed] = None,
+    ephemeral: bool = True,
+) -> bool:
+    """Универсальная отправка ответа на интеракцию (response -> followup) без Unhandled Exceptions."""
+    kwargs: dict[str, Any] = {"ephemeral": ephemeral}
+    if content is not None:
+        kwargs["content"] = content
+    if embed is not None:
+        kwargs["embed"] = embed
+
+    if not interaction.response.is_done():
+        try:
+            await interaction.response.send_message(**kwargs)
+            return True
+        except discord.InteractionResponded:
+            pass
+        except (discord.NotFound, discord.HTTPException) as err:
+            logger.debug("Ошибка первичного ответа на интеракцию %s: %s", interaction.id, err)
+            return False
+
+    try:
+        await interaction.followup.send(**kwargs)
+        return True
+    except (discord.NotFound, discord.HTTPException) as err:
+        logger.debug("Ошибка followup-ответа на интеракцию %s: %s", interaction.id, err)
+        return False
+
+
+async def _safe_send_modal(interaction: discord.Interaction, modal: ui.Modal) -> bool:
+    """Безопасный вызов модального окна с защитой от double-click."""
+    if interaction.response.is_done():
+        return False
+    try:
+        await interaction.response.send_modal(modal)
+        return True
+    except (discord.InteractionResponded, discord.NotFound, discord.HTTPException) as err:
+        logger.debug("Не удалось открыть модальное окно для интеракции %s: %s", interaction.id, err)
+        return False
 
 
 def get_spec_role(guild: Optional[discord.Guild], db: Optional[DatabaseManager] = None) -> Optional[discord.Role]:
@@ -31,7 +126,11 @@ def get_spec_role(guild: Optional[discord.Guild], db: Optional[DatabaseManager] 
 
     # 2. По сохраненному ID в базе данных
     if db:
-        saved = db.get_setting("spec_role_id")
+        try:
+            saved = _db_call(db.get_setting, "spec_role_id")
+        except sqlite3.Error as err:
+            logger.warning("Ошибка чтения spec_role_id из БД: %s", err)
+            saved = None
         if saved and saved.isdigit() and int(saved) != 0:
             r = guild.get_role(int(saved))
             if r:
@@ -54,11 +153,11 @@ async def get_or_create_spec_role(guild: Optional[discord.Guild], db: Optional[D
     role = get_spec_role(guild, db)
     if role:
         if db:
-            db.set_setting("spec_role_id", str(role.id))
+            await _async_db_call(db.set_setting, "spec_role_id", str(role.id))
         Config.SPEC_ROLE_ID = role.id
         return role
 
-    if guild.me.guild_permissions.manage_roles:
+    if guild.me and guild.me.guild_permissions.manage_roles:
         try:
             role = await guild.create_role(
                 name="Спек",
@@ -66,9 +165,9 @@ async def get_or_create_spec_role(guild: Optional[discord.Guild], db: Optional[D
                 mentionable=False,
                 reason="Создание роли спека для доступа к тикетам",
             )
-            logger.info(f"Создана роль спека: '{role.name}' ({role.id})")
+            logger.info("Создана роль спека: '%s' (%s)", role.name, role.id)
             if db:
-                db.set_setting("spec_role_id", str(role.id))
+                await _async_db_call(db.set_setting, "spec_role_id", str(role.id))
             Config.SPEC_ROLE_ID = role.id
             return role
         except discord.Forbidden:
@@ -104,7 +203,7 @@ async def sync_spec_role_to_tickets(guild: Optional[discord.Guild], spec_role: O
                 logger.error(f"Ошибка настройки категории тикетов для спека: {e}")
 
     # 2. Права во всех активных тикет-каналах
-    active_tickets = db.get_all_active_tickets()
+    active_tickets = await _async_db_call(db.get_all_active_tickets)
     
     # Ограничиваем конкурентность для избежания рейтов
     sem = asyncio.Semaphore(5)
@@ -189,8 +288,7 @@ async def save_transcript_html(
     closed_by_name: str = "Персонал",
     reason: str = "Вопрос решен"
 ) -> str:
-    """Генерирует автономный HTML-файл переписки тикета в темной теме Discord"""
-    os.makedirs(Config.TRANSCRIPTS_DIR, exist_ok=True)
+    """Генерирует автономный HTML-файл переписки тикета в темной теме Obsidian / Linear"""
     file_time = get_msk_now().strftime("%Y%m%d_%H%M%S")
     filename = os.path.join(Config.TRANSCRIPTS_DIR, f"{channel.name}_{file_time}.html")
 
@@ -221,7 +319,7 @@ async def save_transcript_html(
                 attachments_html.append(f'<div class="attachment"><a href="{att_url}" target="_blank"><img src="{att_url}" alt="Attachment" class="att-img" /></a></div>')
             else:
                 att_name = html.escape(att.filename)
-                attachments_html.append(f'<div class="attachment"><a href="{att_url}" target="_blank" class="att-file">📎 {att_name}</a></div>')
+                attachments_html.append(f'<div class="attachment"><a href="{att_url}" target="_blank" class="att-file">[Файл] {att_name}</a></div>')
 
         embeds_html = []
         for emb in msg.embeds:
@@ -436,6 +534,7 @@ async def save_transcript_html(
 """
 
     def _write() -> None:
+        os.makedirs(Config.TRANSCRIPTS_DIR, exist_ok=True)
         with open(filename, "w", encoding="utf-8") as f:
             f.write(html_page)
 
@@ -444,7 +543,6 @@ async def save_transcript_html(
 
 
 async def save_transcript_to_file(channel: discord.TextChannel) -> str:
-    os.makedirs(Config.TRANSCRIPTS_DIR, exist_ok=True)
     file_time = get_msk_now().strftime("%Y%m%d_%H%M%S")
     filename = os.path.join(Config.TRANSCRIPTS_DIR, f"{channel.name}_{file_time}.txt")
 
@@ -482,6 +580,7 @@ async def save_transcript_to_file(channel: discord.TextChannel) -> str:
     payload = "\n".join(lines)
 
     def _write_transcript() -> None:
+        os.makedirs(Config.TRANSCRIPTS_DIR, exist_ok=True)
         with open(filename, "w", encoding="utf-8") as f:
             f.write(payload)
 
@@ -491,7 +590,7 @@ async def save_transcript_to_file(channel: discord.TextChannel) -> str:
 
 # --- КАРТОЧКА НАРУШИТЕЛЯ (SUSPECT SUMMARY ДЛЯ ПЕРСОНАЛА) ---
 def build_suspect_embed(bot: commands.Bot, db: DatabaseManager, suspect_nick: str) -> discord.Embed:
-    summary = db.get_suspect_summary(suspect_nick)
+    summary = _db_call(db.get_suspect_summary, suspect_nick)
     player = summary["player_name"]
     linked = summary.get("linked")
     alts = summary.get("alts", [])
@@ -503,7 +602,7 @@ def build_suspect_embed(bot: commands.Bot, db: DatabaseManager, suspect_nick: st
     if bridge_cog and hasattr(bridge_cog, "mc_players"):
         is_online = any(p.lower() == player.lower() for p in bridge_cog.mc_players)
 
-    status_str = "🟢 В сети" if is_online else "⚫ Оффлайн"
+    status_str = "В сети" if is_online else "Оффлайн"
     embed = AG.embed(
         title=f"Досье игрока • {player}",
         footer="Vanilla Land • Безопасность",
@@ -522,7 +621,7 @@ def build_suspect_embed(bot: commands.Bot, db: DatabaseManager, suspect_nick: st
 
     if alts:
         alt_names = [f"• `{a['player_name']}` ({a['last_seen']})" for a in alts[:6]]
-        embed.add_field(name=f"⚠️ Обнаруженные твинки ({len(alts)})", value="\n".join(alt_names), inline=False)
+        embed.add_field(name=f"Обнаруженные твинки ({len(alts)})", value="\n".join(alt_names), inline=False)
     else:
         embed.add_field(name="Связанные аккаунты", value="*Твинков по IP не обнаружено*", inline=False)
 
@@ -556,21 +655,29 @@ async def close_ticket_process(
         return
     _CLOSING_CHANNELS.add(channel.id)
     try:
-        user_id = db.get_ticket_user_id(channel.id)
+        user_id = await _async_db_call(db.get_ticket_user_id, channel.id)
 
-        saved_file = None
+        saved_file: Optional[str] = None
+        channel_already_deleted = False
         try:
             saved_file = await save_transcript_html(channel, closed_by_name, reason)
+        except discord.NotFound:
+            channel_already_deleted = True
+            logger.info("Канал тикета %s (%s) уже удален до сохранения транскрипта.", channel.name, channel.id)
         except Exception as e:
-            logger.error(f"Ошибка создания HTML-транскрипта {channel.name}: {e}")
+            logger.error("Ошибка создания HTML-транскрипта %s: %s", channel.name, e)
             try:
                 saved_file = await save_transcript_to_file(channel)
+            except discord.NotFound:
+                channel_already_deleted = True
             except Exception as e2:
-                logger.error(f"Ошибка создания txt-транскрипта {channel.name}: {e2}")
+                logger.error("Ошибка создания txt-транскрипта %s: %s", channel.name, e2)
+
+        file_exists = bool(saved_file and await asyncio.to_thread(os.path.exists, saved_file))
 
         if user_id:
             try:
-                user = await bot.fetch_user(user_id)
+                user = bot.get_user(user_id) or await bot.fetch_user(user_id)
                 if user:
                     embed = AG.embed(
                         title=f"Обращение закрыто • #{channel.name}",
@@ -581,46 +688,52 @@ async def close_ticket_process(
                         ),
                         footer="Vanilla Land • Поддержка",
                     )
-                    if saved_file and os.path.exists(saved_file):
+                    if file_exists and saved_file:
                         await user.send(embed=embed, file=discord.File(saved_file))
                     else:
                         await user.send(embed=embed)
+            except (discord.Forbidden, discord.NotFound):
+                logger.info("Не удалось отправить транскрипт в ЛС пользователю %s (закрыты ЛС или покинул сервер).", user_id)
             except Exception as e:
-                logger.error(f"Ошибка отправки ЛС {user_id}: {e}")
+                logger.warning("Ошибка отправки ЛС %s: %s", user_id, e)
 
         # Отправка транскрипта в канал логов
         if Config.LOG_CHANNEL_ID:
             log_ch = bot.get_channel(Config.LOG_CHANNEL_ID)
             if isinstance(log_ch, discord.TextChannel):
+                user_display = f"<@{user_id}> (`{user_id}`)" if user_id else "*Неизвестен*"
                 embed_log = AG.embed(
                     title=f"Тикет закрыт • #{channel.name}",
                     description=(
-                        f"**Пользователь:** <@{user_id}> (`{user_id}`)\n"
+                        f"**Пользователь:** {user_display}\n"
                         f"**Закрыл:** **{closed_by_name}**\n"
                         f"**Причина:** {reason}"
                     ),
                     footer="Vanilla Land • Архив тикетов",
                 )
                 try:
-                    if saved_file and os.path.exists(saved_file):
+                    if file_exists and saved_file:
                         await log_ch.send(embed=embed_log, file=discord.File(saved_file))
                     else:
                         await log_ch.send(embed=embed_log)
                 except Exception as log_err:
-                    logger.warning(f"Не удалось отправить транскрипт в лог-канал: {log_err}")
+                    logger.warning("Не удалось отправить транскрипт в лог-канал: %s", log_err)
 
-        # Сначала удаляем канал из Discord, и только после успешного удаления удаляем из БД
-        deleted = False
-        try:
-            await channel.delete(reason=f"Тикет закрыт: {closed_by_name} ({reason})")
-            deleted = True
-        except discord.NotFound:
-            deleted = True
-        except Exception as e:
-            logger.error(f"Ошибка удаления тикета {channel.id}: {e}")
+        # Сначала удаляем канал из Discord, и только после подтверждения удаления очищаем БД
+        deleted = channel_already_deleted
+        if not deleted:
+            try:
+                await channel.delete(reason=f"Тикет закрыт: {closed_by_name} ({reason})")
+                deleted = True
+            except discord.NotFound:
+                deleted = True
+            except discord.Forbidden:
+                logger.error("Нет прав (Forbidden) на удаление канала тикета %s", channel.id)
+            except Exception as e:
+                logger.error("Ошибка удаления тикета %s: %s", channel.id, e)
 
         if deleted:
-            db.delete_ticket(channel.id)
+            await _async_db_call(db.delete_ticket, channel.id)
     finally:
         _CLOSING_CHANNELS.discard(channel.id)
 
@@ -639,10 +752,20 @@ class CloseReasonModal(ui.Modal, title="Закрытие обращения"):
         self.db = db
 
     async def on_submit(self, interaction: discord.Interaction):
-        reason = self.reason_input.value.strip() or "Вопрос решен"
-        await interaction.response.send_message("Закрываем обращение и сохраняем HTML-лог...", ephemeral=True)
-        if isinstance(interaction.channel, discord.TextChannel):
-            await close_ticket_process(interaction.client, self.db, interaction.channel, interaction.user.name, reason)
+        reason = (self.reason_input.value or "").strip() or "Вопрос решен"
+        if not isinstance(interaction.channel, discord.TextChannel):
+            await _safe_send_interaction(interaction, "Канал обращения не найден.", ephemeral=True)
+            return
+        if interaction.channel.id in _CLOSING_CHANNELS:
+            await _safe_send_interaction(interaction, "Обращение уже закрывается.", ephemeral=True)
+            return
+
+        await _safe_send_interaction(interaction, "Закрываем обращение и сохраняем HTML-лог...", ephemeral=True)
+        await close_ticket_process(interaction.client, self.db, interaction.channel, interaction.user.name, reason)
+
+    async def on_error(self, interaction: discord.Interaction, error: Exception) -> None:
+        logger.error("Ошибка в модальном окне CloseReasonModal: %s", error, exc_info=error)
+        await _safe_send_interaction(interaction, "Не удалось обработать закрытие обращения.", ephemeral=True)
 
 
 class SuspectCheckModal(ui.Modal, title="Проверка игрока"):
@@ -658,9 +781,21 @@ class SuspectCheckModal(ui.Modal, title="Проверка игрока"):
         self.db = db
 
     async def on_submit(self, interaction: discord.Interaction):
-        nick = self.nick_input.value.strip()
+        if not is_mod_or_admin(interaction):
+            await _safe_send_interaction(interaction, "Эта функция доступна только персоналу.", ephemeral=True)
+            return
+        nick = (self.nick_input.value or "").strip()
+        if not nick:
+            await _safe_send_interaction(interaction, "Укажите никнейм игрока.", ephemeral=True)
+            return
+
+        await _safe_defer(interaction, ephemeral=True)
         embed = build_suspect_embed(interaction.client, self.db, nick)
-        await interaction.response.send_message(embed=embed)
+        await _safe_send_interaction(interaction, embed=embed, ephemeral=True)
+
+    async def on_error(self, interaction: discord.Interaction, error: Exception) -> None:
+        logger.error("Ошибка в модальном окне SuspectCheckModal: %s", error, exc_info=error)
+        await _safe_send_interaction(interaction, "Не удалось сформировать досье игрока.", ephemeral=True)
 
 
 class InsideTicketView(ui.View):
@@ -670,16 +805,29 @@ class InsideTicketView(ui.View):
 
     @ui.button(label="Закрыть обращение", style=discord.ButtonStyle.danger, custom_id="persistent_close_btn")
     async def request_close(self, interaction: discord.Interaction, button: ui.Button):
-        await interaction.response.send_modal(CloseReasonModal(self.db))
+        if isinstance(interaction.channel, discord.TextChannel) and interaction.channel.id in _CLOSING_CHANNELS:
+            await _safe_send_interaction(interaction, "Обращение уже закрывается.", ephemeral=True)
+            return
+        opened = await _safe_send_modal(interaction, CloseReasonModal(self.db))
+        if not opened:
+            await _safe_send_interaction(interaction, "Не удалось открыть форму закрытия. Попробуйте снова.", ephemeral=True)
 
-    @ui.button(label="🔍 Досье игрока", style=discord.ButtonStyle.secondary, custom_id="persistent_suspect_btn")
+    @ui.button(label="Досье игрока", style=discord.ButtonStyle.secondary, custom_id="persistent_suspect_btn")
     async def request_suspect(self, interaction: discord.Interaction, button: ui.Button):
         if not is_mod_or_admin(interaction):
-            return await interaction.response.send_message("Эта функция доступна только персоналу.", ephemeral=True)
-        await interaction.response.send_modal(SuspectCheckModal(self.db))
+            await _safe_send_interaction(interaction, "Эта функция доступна только персоналу.", ephemeral=True)
+            return
+        opened = await _safe_send_modal(interaction, SuspectCheckModal(self.db))
+        if not opened:
+            await _safe_send_interaction(interaction, "Не удалось открыть форму проверки. Попробуйте снова.", ephemeral=True)
+
+    async def on_error(self, interaction: discord.Interaction, error: Exception, item: ui.Item[Any]) -> None:
+        logger.error("Ошибка в InsideTicketView (%s): %s", getattr(item, "custom_id", item), error, exc_info=error)
+        await _safe_send_interaction(interaction, "Произошла ошибка при обработке кнопки.", ephemeral=True)
 
 
 _CREATING_TICKETS: set[int] = set()
+_TICKET_CREATE_LOCK = asyncio.Lock()
 
 
 async def create_ticket_channel(
@@ -693,13 +841,31 @@ async def create_ticket_channel(
     _CREATING_TICKETS.add(user.id)
     try:
         # Проверка на черный список тикетов
-        bl_reason = db.is_ticket_blacklisted(user.id)
+        bl_reason = await _async_db_call(db.is_ticket_blacklisted, user.id)
         if bl_reason is not None:
             reason_text = bl_reason or "Не указана"
             return None, f"Вам заблокирован доступ к созданию обращений.\n**Причина:** {reason_text}"
 
-        if db.user_has_open_ticket(user.id):
-            return None, "У вас уже есть активное обращение."
+        if await _async_db_call(db.user_has_open_ticket, user.id):
+            # Проверяем, не был ли канал тикета удалён вручную без /close
+            active_rows = await _async_db_call(db.get_all_active_tickets)
+            existing_channel: Optional[discord.TextChannel] = None
+            stale_channel_ids: list[int] = []
+            for row in active_rows:
+                row_ch_id, row_user_id = row[0], row[1]
+                if row_user_id != user.id:
+                    continue
+                ch = guild.get_channel(row_ch_id)
+                if isinstance(ch, discord.TextChannel):
+                    existing_channel = ch
+                else:
+                    stale_channel_ids.append(row_ch_id)
+
+            for stale_id in stale_channel_ids:
+                await _async_db_call(db.delete_ticket, stale_id)
+
+            if existing_channel is not None:
+                return None, f"У вас уже есть активное обращение: {existing_channel.mention}."
 
         overwrites = {
             guild.default_role: discord.PermissionOverwrite(view_channel=False),
@@ -747,9 +913,6 @@ async def create_ticket_channel(
                 embed_links=True,
             )
 
-        ticket_num = db.get_next_ticket_number()
-        channel_name = f"тикет-{ticket_num:03d}"
-
         target_category = None
         if Config.TICKETS_CATEGORY_ID:
             target_category = guild.get_channel(Config.TICKETS_CATEGORY_ID)
@@ -760,20 +923,24 @@ async def create_ticket_channel(
         if target_category and isinstance(target_category, discord.CategoryChannel) and len(target_category.channels) >= 50:
             target_category = None
 
-        try:
-            ticket_channel = await guild.create_text_channel(
-                name=channel_name,
-                category=target_category,
-                overwrites=overwrites,
-                topic=f"Игрок: {user.name} ({user.id}) | Создан: {get_msk_now().strftime('%d.%m.%Y %H:%M')}",
-            )
-        except discord.HTTPException as err:
-            logger.error("Не удалось создать канал тикета в Discord: %s (код %s)", err, getattr(err, "code", None))
-            if getattr(err, "code", 0) == 30013:
-                return None, "❌ Категория тикетов переполнена (максимум 50). Обратитесь к администратору."
-            return None, "❌ Ошибка Discord при создании канала тикета. Попробуйте через пару минут."
+        async with _TICKET_CREATE_LOCK:
+            ticket_num = await _async_db_call(db.get_next_ticket_number)
+            channel_name = f"тикет-{ticket_num:03d}"
 
-        db.save_ticket(ticket_channel.id, user.id, user.name)
+            try:
+                ticket_channel = await guild.create_text_channel(
+                    name=channel_name,
+                    category=target_category,
+                    overwrites=overwrites,
+                    topic=f"Игрок: {user.name} ({user.id}) | Создан: {get_msk_now().strftime('%d.%m.%Y %H:%M')}",
+                )
+            except discord.HTTPException as err:
+                logger.error("Не удалось создать канал тикета в Discord: %s (код %s)", err, getattr(err, "code", None))
+                if getattr(err, "code", 0) == 30013:
+                    return None, "Категория тикетов переполнена (максимум 50). Обратитесь к администратору."
+                return None, "Ошибка Discord при создании канала тикета. Попробуйте через пару минут."
+
+            await _async_db_call(db.save_ticket, ticket_channel.id, user.id, user.name)
 
         embed = AG.embed(
             title=f"Обращение #{ticket_num:03d}",
@@ -788,7 +955,11 @@ async def create_ticket_channel(
             footer="Vanilla Land • Поддержка | Команды: !add, !remove, !rename, !close",
         )
 
-        await ticket_channel.send(content=" ".join(mentions_list), embed=embed, view=InsideTicketView(db))
+        try:
+            await ticket_channel.send(content=" ".join(mentions_list), embed=embed, view=InsideTicketView(db))
+        except discord.HTTPException as err:
+            logger.warning("Не удалось отправить стартовое сообщение в %s: %s", ticket_channel.id, err)
+
         return ticket_channel, f"Обращение создано: {ticket_channel.mention}"
     finally:
         _CREATING_TICKETS.discard(user.id)
@@ -805,23 +976,33 @@ class TicketPanel(ui.View):
         guild = interaction.guild
 
         if not guild or not isinstance(user, discord.Member):
-            return await interaction.response.send_message("Только на сервере.", ephemeral=True)
+            await _safe_send_interaction(interaction, "Команда доступна только на сервере.", ephemeral=True)
+            return
 
-        await interaction.response.defer(ephemeral=True)
+        if not await _safe_defer(interaction, ephemeral=True):
+            return
+
         fallback = interaction.channel if isinstance(interaction.channel, discord.TextChannel) else None
-        ticket_channel, msg = await create_ticket_channel(guild, user, self.db, fallback)
-        await interaction.followup.send(msg, ephemeral=True)
+        _ticket_channel, msg = await create_ticket_channel(guild, user, self.db, fallback)
+        await _safe_send_interaction(interaction, msg, ephemeral=True)
+
+    async def on_error(self, interaction: discord.Interaction, error: Exception, item: ui.Item[Any]) -> None:
+        logger.error("Ошибка в TicketPanel (%s): %s", getattr(item, "custom_id", item), error, exc_info=error)
+        await _safe_send_interaction(interaction, "Не удалось обработать запрос. Попробуйте через пару секунд.", ephemeral=True)
 
 
 class TicketsCog(commands.Cog, name="Тикеты"):
     def __init__(self, bot: commands.Bot, db: DatabaseManager):
         self.bot = bot
         self.db = db
+        self._non_ticket_cache: dict[int, float] = {}
         self.auto_close_task.start()
-        asyncio.create_task(self.init_spec_role_on_start())
+        self._init_spec_task: Optional[asyncio.Task[None]] = asyncio.create_task(self.init_spec_role_on_start())
 
     def cog_unload(self):
         self.auto_close_task.cancel()
+        if self._init_spec_task and not self._init_spec_task.done():
+            self._init_spec_task.cancel()
 
     async def init_spec_role_on_start(self):
         """Автоматическая инициализация роли спека и синхронизация тикетов при старте"""
@@ -833,36 +1014,70 @@ class TicketsCog(commands.Cog, name="Тикеты"):
                 if spec_role:
                     await sync_spec_role_to_tickets(guild, spec_role, self.db)
             except Exception as e:
-                logger.debug(f"Ошибка авто-инициализации роли спека в {guild.name}: {e}")
+                logger.debug("Ошибка авто-инициализации роли спека в %s: %s", guild.name, e)
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
-        if message.author.bot:
+        if message.author.bot or not message.guild or not isinstance(message.channel, discord.TextChannel):
             return
-        if self.db.is_ticket_channel(message.channel.id):
-            self.db.update_ticket_activity(message.channel.id)
+
+        ch_id = message.channel.id
+        now_mono = time.monotonic()
+        cached_until = self._non_ticket_cache.get(ch_id)
+        if cached_until is not None and now_mono < cached_until:
+            return
+
+        try:
+            if await _async_db_call(self.db.is_ticket_channel, ch_id):
+                self._non_ticket_cache.pop(ch_id, None)
+                await _async_db_call(self.db.update_ticket_activity, ch_id)
+            else:
+                if len(self._non_ticket_cache) >= 2048:
+                    self._non_ticket_cache.clear()
+                self._non_ticket_cache[ch_id] = now_mono + 60.0
+        except sqlite3.Error as err:
+            logger.warning("Ошибка SQLite при обновлении активности канала %s: %s", ch_id, err)
 
     @tasks.loop(hours=1)
     async def auto_close_task(self):
-        tickets = self.db.get_all_active_tickets()
+        try:
+            tickets = await _async_db_call(self.db.get_all_active_tickets)
+        except sqlite3.Error as err:
+            logger.error("Ошибка чтения активных тикетов в auto_close_task: %s", err)
+            return
+
         now = get_msk_now()
         timeout = timedelta(hours=Config.AUTO_CLOSE_HOURS)
 
         for row in tickets:
             ch_id, user_id, user_name, last_act_str, created = row
             try:
+                channel = self.bot.get_channel(ch_id)
+                if not isinstance(channel, discord.TextChannel):
+                    await _async_db_call(self.db.delete_ticket, ch_id)
+                    continue
+
                 target_time_str = last_act_str or created
                 if target_time_str:
                     last_act = datetime.strptime(target_time_str, "%Y-%m-%d %H:%M:%S").replace(tzinfo=MSK)
                     if now - last_act > timeout:
-                        channel = self.bot.get_channel(ch_id)
-                        if channel and isinstance(channel, discord.TextChannel):
+                        try:
                             await channel.send(f"Обращение закрывается из-за неактивности более {Config.AUTO_CLOSE_HOURS}ч.")
-                            await close_ticket_process(self.bot, self.db, channel, "Авто-закрытие", f"Неактивность более {Config.AUTO_CLOSE_HOURS}ч")
-                        else:
-                            self.db.delete_ticket(ch_id)
+                        except discord.NotFound:
+                            await _async_db_call(self.db.delete_ticket, ch_id)
+                            continue
+                        except discord.HTTPException as send_err:
+                            logger.warning("Не удалось отправить предупреждение об авто-закрытии в %s: %s", ch_id, send_err)
+
+                        await close_ticket_process(
+                            self.bot,
+                            self.db,
+                            channel,
+                            "Авто-закрытие",
+                            f"Неактивность более {Config.AUTO_CLOSE_HOURS}ч",
+                        )
             except Exception as e:
-                logger.error(f"Ошибка авто-закрытия {ch_id}: {e}")
+                logger.error("Ошибка авто-закрытия %s: %s", ch_id, e)
 
     @auto_close_task.before_loop
     async def before_auto_close_task(self):
@@ -892,11 +1107,20 @@ class TicketsCog(commands.Cog, name="Тикеты"):
     @commands.hybrid_command(name="close", aliases=["закрыть", "клоз"], description="Закрыть текущее обращение")
     @app_commands.describe(reason="Причина закрытия тикета")
     async def close_cmd(self, ctx: commands.Context, *, reason: Optional[str] = "Не указана"):
-        if not self.db.is_ticket_channel(ctx.channel.id):
+        if not await _async_db_call(self.db.is_ticket_channel, ctx.channel.id):
             return await ctx.send("Эта команда доступна только внутри активного тикета.", ephemeral=True, delete_after=5)
 
+        if ctx.channel.id in _CLOSING_CHANNELS:
+            return await ctx.send("Обращение уже закрывается.", ephemeral=True)
+
+        if ctx.interaction:
+            await ctx.defer(ephemeral=True)
+
         actual_reason = reason or "Не указана"
-        await ctx.send(f"Закрытие обращения сотрудником **{ctx.author.name}**...")
+        try:
+            await ctx.send(f"Закрытие обращения сотрудником **{ctx.author.name}**...", ephemeral=bool(ctx.interaction))
+        except discord.HTTPException:
+            pass
         if isinstance(ctx.channel, discord.TextChannel):
             await close_ticket_process(self.bot, self.db, ctx.channel, ctx.author.name, actual_reason)
 
@@ -904,34 +1128,49 @@ class TicketsCog(commands.Cog, name="Тикеты"):
     @commands.hybrid_command(name="add", aliases=["добавить"], description="Добавить пользователя в текущий тикет")
     @app_commands.describe(member="Пользователь для добавления")
     async def add_user_cmd(self, ctx: commands.Context, member: discord.Member):
-        if not self.db.is_ticket_channel(ctx.channel.id):
+        if not await _async_db_call(self.db.is_ticket_channel, ctx.channel.id):
             return await ctx.send("Команда доступна только внутри активного тикета.", ephemeral=True, delete_after=5)
 
         if not can_manage_ticket(ctx, self.db):
             return await ctx.send("Управлять участниками тикета может только его создатель или персонал.", ephemeral=True)
 
         if isinstance(ctx.channel, discord.TextChannel):
-            await ctx.channel.set_permissions(member, view_channel=True, send_messages=True, attach_files=True, read_message_history=True)
-            await ctx.send(f"Пользователь {member.mention} добавлен в обращение.")
+            try:
+                await ctx.channel.set_permissions(member, view_channel=True, send_messages=True, attach_files=True, read_message_history=True)
+                await ctx.send(f"Пользователь {member.mention} добавлен в обращение.")
+            except discord.Forbidden:
+                await ctx.send("Недостаточно прав для изменения доступа в этом канале.", ephemeral=True)
+            except discord.HTTPException as err:
+                logger.warning("Ошибка добавления участника в тикет %s: %s", ctx.channel.id, err)
+                await ctx.send("Не удалось добавить пользователя в обращение.", ephemeral=True)
 
     # --- ИСКЛЮЧИТЬ УЧАСТНИКА ИЗ ТИКЕТА (МОЖЕТ И АВТОР ТИКЕТА) ---
     @commands.hybrid_command(name="remove", aliases=["удалить", "исключить"], description="Исключить пользователя из текущего тикета")
     @app_commands.describe(member="Пользователь для удаления")
     async def remove_user_cmd(self, ctx: commands.Context, member: discord.Member):
-        if not self.db.is_ticket_channel(ctx.channel.id):
+        if not await _async_db_call(self.db.is_ticket_channel, ctx.channel.id):
             return await ctx.send("Команда доступна только внутри активного тикета.", ephemeral=True, delete_after=5)
 
         if not can_manage_ticket(ctx, self.db):
             return await ctx.send("Управлять участниками тикета может только его создатель или персонал.", ephemeral=True)
 
+        if ctx.guild and ctx.guild.me and member.id == ctx.guild.me.id:
+            return await ctx.send("Нельзя исключить бота из обращения.", ephemeral=True)
+
         # Нельзя удалить создателя тикета
-        creator_id = self.db.get_ticket_user_id(ctx.channel.id)
+        creator_id = await _async_db_call(self.db.get_ticket_user_id, ctx.channel.id)
         if member.id == creator_id:
             return await ctx.send("Нельзя исключить автора тикета.", ephemeral=True)
 
         if isinstance(ctx.channel, discord.TextChannel):
-            await ctx.channel.set_permissions(member, overwrite=None)
-            await ctx.send(f"Пользователь {member.mention} исключен из обращения.")
+            try:
+                await ctx.channel.set_permissions(member, overwrite=None)
+                await ctx.send(f"Пользователь {member.mention} исключен из обращения.")
+            except discord.Forbidden:
+                await ctx.send("Недостаточно прав для изменения доступа в этом канале.", ephemeral=True)
+            except discord.HTTPException as err:
+                logger.warning("Ошибка исключения участника из тикета %s: %s", ctx.channel.id, err)
+                await ctx.send("Не удалось исключить пользователя из обращения.", ephemeral=True)
 
     # --- ПЕРЕИМЕНОВАНИЕ ТИКЕТА ---
     @commands.hybrid_command(name="rename", aliases=["переименовать"], description="Переименовать текущий тикет")
