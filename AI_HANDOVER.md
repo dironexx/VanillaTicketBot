@@ -84,6 +84,12 @@ VanilaTicketBOT/
 
 ## 📦 4. Недавно внедрённый функционал (v1.2.2+)
 
+- **Defensive UI & SQLite WAL Retry в тикетах (`cogs/tickets.py`)**:
+  - Защита от Double-Click и сетевых таймаутов: хелперы `_safe_defer`, `_safe_send_interaction`, `_safe_send_modal` и обработчики `on_error` для кнопок и модалок (исключена ошибка Discord 10062 `Unknown interaction`).
+  - SQLite WAL Retry: функции `_db_call` и `_async_db_call` с экспоненциальным backoff при конкурентной записи моста и Discord (`database is locked`).
+  - Разгрузка Event Loop: вынос операций с диском (`os.makedirs`) в отдельный поток и TTL-кэш `_non_ticket_cache` в `on_message` на 60 сек (разгрузка БД от сообщений в обычных чатах).
+  - Атомарность создания обращений: `_TICKET_CREATE_LOCK = asyncio.Lock()` против коллизий номеров и автоматическая очистка записей при ручном удалении каналов.
+  - Защита бота: блокировка исключения бота через `!remove @Bot` и безопасная отмена фоновой задачи `_init_spec_task` в `cog_unload`.
 - **Предпросмотр предметов `[item]`**: отправка предмета из рук в чат Minecraft автоматически генерирует в Discord красивый Embed с названием, количеством, чарами и описанием предмета.
 - **Внутриигровая почта `/mail`**:
   - `/mail send <ник> <текст>` — отправка письма даже офлайн-игроку.
