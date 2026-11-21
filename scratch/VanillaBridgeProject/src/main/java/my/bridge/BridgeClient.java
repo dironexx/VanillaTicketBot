@@ -61,6 +61,10 @@ implements WebSocket.Listener {
         if (!configured.isEmpty()) {
             raw.add(configured);
         }
+        raw.add("ws://play.vanillaland.fun:25007/ws");
+        raw.add("ws://play.vanillaland.fun:25549/ws");
+        raw.add("ws://81.30.105.141:25007/ws");
+        raw.add("ws://81.30.105.141:25549/ws");
         raw.add("ws://172.17.0.1:25007/ws");
         raw.add("ws://172.18.0.1:25007/ws");
         raw.add("ws://127.0.0.1:25007/ws");

@@ -1,9 +1,9 @@
 name: VanillaBridge
 version: '1.0'
 main: my.bridge.VanillaBridge
-api-version: '1.21'
+api-version: '26.3'
 softdepend: [CustomInteractiveChat, AuthMe, VanillaChat]
-description: Discord Bridge for Vanilla Land (Paper 1.21+)
+description: Discord Bridge for Vanilla Land (Paper 26.3)
 commands:
   bridge:
     description: Управление мостом Vanilla Land
