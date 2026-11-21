@@ -52,7 +52,7 @@ implements WebSocket.Listener {
 
     public BridgeClient(VanillaBridge plugin) {
         this.plugin = plugin;
-        this.httpClient = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(6L)).build();
+        this.httpClient = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(15L)).build();
     }
 
     public List<String> buildCandidates() {
@@ -61,14 +61,14 @@ implements WebSocket.Listener {
         if (!configured.isEmpty()) {
             raw.add(configured);
         }
-        raw.add("ws://play.vanillaland.fun:25007/ws");
-        raw.add("ws://play.vanillaland.fun:25549/ws");
-        raw.add("ws://81.30.105.141:25007/ws");
-        raw.add("ws://81.30.105.141:25549/ws");
+        raw.add("ws://127.0.0.1:25007/ws");
         raw.add("ws://172.17.0.1:25007/ws");
         raw.add("ws://172.18.0.1:25007/ws");
-        raw.add("ws://127.0.0.1:25007/ws");
-        raw.add("ws://internal.vanillaland.fun:25007/ws");
+        raw.add("ws://81.30.105.141:25007/ws");
+        raw.add("ws://127.0.0.1:25549/ws");
+        raw.add("ws://172.17.0.1:25549/ws");
+        raw.add("ws://81.30.105.141:25549/ws");
+        raw.add("ws://play.vanillaland.fun:25007/ws");
         raw.add("wss://bridge.vanillaland.fun/ws");
         ArrayList<String> unique = new ArrayList<String>();
         for (String url : raw) {
@@ -103,7 +103,7 @@ implements WebSocket.Listener {
         this.plugin.getLogger().info("[\u041c\u043e\u0441\u0442] \u041f\u043e\u043f\u044b\u0442\u043a\u0430 \u043f\u043e\u0434\u043a\u043b\u044e\u0447\u0435\u043d\u0438\u044f (" + (idx + 1) + "/" + candidates.size() + "): " + targetWsUrl);
         Bukkit.getScheduler().runTaskAsynchronously((Plugin)this.plugin, () -> {
             try {
-                this.httpClient.newWebSocketBuilder().connectTimeout(Duration.ofSeconds(6L)).header("User-Agent", "Mozilla/5.0 VanillaBridge/1.0 (Minecraft Server)").header("Origin", "https://vanillaland.fun").buildAsync(URI.create(fullUrl), this).whenComplete((ws, throwable) -> {
+                this.httpClient.newWebSocketBuilder().connectTimeout(Duration.ofSeconds(15L)).header("User-Agent", "Mozilla/5.0 VanillaBridge/1.0 (Minecraft Server)").header("Origin", "https://vanillaland.fun").buildAsync(URI.create(fullUrl), this).whenComplete((ws, throwable) -> {
                     this.isConnecting.set(false);
                     if (throwable != null) {
                         this.plugin.getLogger().warning("[\u041c\u043e\u0441\u0442] \u041d\u0435 \u0443\u0434\u0430\u043b\u043e\u0441\u044c \u043f\u043e\u0434\u043a\u043b\u044e\u0447\u0438\u0442\u044c\u0441\u044f \u043a " + targetWsUrl + ": " + throwable.getMessage());
