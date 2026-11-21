@@ -705,7 +705,7 @@ implements CommandExecutor {
                 // empty catch block
             }
         }, 60L, 3000L);
-        this.getLogger().info("VanillaBridge 1.0 успешно включен!");
+        this.getLogger().info("VanillaBridge 1.3 успешно включен!");
     }
 
     public void sendServerStats() {

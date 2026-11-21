@@ -1,7 +1,7 @@
-# Vanilla Land • Discord Bot
+# Vanilla Land • Discord Bot & Bridge v1.3
 
-Discord-бот службы поддержки, модерации и моста с Minecraft-сервером **Vanilla Land**.
-Работает как отдельный процесс: Discord (discord.py) + WebSocket-мост с Paper-плагином `VanillaBridge`.
+Discord-бот службы поддержки, модерации и моста с Minecraft-сервером **Vanilla Land** (версия 1.3).
+Работает как отдельный процесс: Discord (discord.py) + WebSocket-мост с плагином `VanillaBridge` (поддержка Leaf 26.3, Folia и Paper).
 
 > 💡 **Для AI-агентов и разработчиков:** Полный архитектурный контекст, подводные камни (Docker IP, 2FA, Selene) и инструкции собраны в [AI_HANDOVER.md](AI_HANDOVER.md).
 
@@ -12,8 +12,8 @@ Discord-бот службы поддержки, модерации и моста
 - **Тикеты**: панель с кнопкой, каналы `тикет-NNN`, транскрипт в автономном HTML (`.html`) и `.txt` в ЛС и архив, досье подозреваемого `/suspect`, авто-закрытие по неактивности, `!add/!remove/!rename/!close`, ЧС на тикеты.
 - **Модерация**: `!mute/!unmute/!kick/!ban/!unban/!clear/!slowmode/!lock/!unlock/!lockall/!unlockall/!vckick/!vcban`, мут = роль + Discord timeout + запись в БД + авто-снятие.
 - **Мост Minecraft**: чат в обе стороны, предпросмотр предметов `[item]`, внутриигровая офлайн-почта `/mail [send|read]`, входы/выходы/смерти, статистика (TPS/MSPT/ОЗУ), авто-синхронизация голосовых каналов (Онлайн, TPS, IP `play.vanillaland.fun`), `/online`, `/top`, `/profile` (PNG-карточка), `/tps`, `/world`, `/time`, `/skin`, `/coords`, `/bc`, `/check`, `/invsee`, `/endersee`, `/chunks`, ЛС игроку (`/msg_mc`), техработы и рестарт, эндпоинт `/health` для Uptime Kuma.
-- **Привязка и 2FA**: одноразовые 6-значные коды, `1 Discord = 1 ник`, доверенные IP с настраиваемым сроком, пуш-уведомления, экстренный сброс (2FA по умолчанию отключён в пользу Victime на Proxy).
-- **Безопасность**: детект твинков по точному IP, сверка с LiteBans, режимы `alert/autokick/autoban`, `!whois`, `!alts`, `!alts_scan`, `!alts_history`, белый список, журнал инцидентов, `!healthcheck`.
+- **Привязка аккаунтов**: одноразовые 6-значные коды привязки (`/link`), синхронизация ролей `1 Discord = 1 ник`. Защита 2FA полностью делегирована плагину **Victim** на Proxy-сервере (Velocity/Limbo), поэтому встроенный 2FA в боте отключен и не вмешивается во вход игроков.
+- **Безопасность**: детекция твинков и мультиаккаунтов по истории IP-адресов, `!whois`, `!alts`, `!alts_scan`, `!alts_history`, белый список, журнал инцидентов, `!healthcheck`. Интеграция с LiteBans и баны удалены из моста для устранения тяжелых SQL-запросов и лагов.
 - **Верификация**: роль «Неверифицирован», панель, изоляция каналов, локдаун от рейдов, `!sync_roles`, настройка ролей.
 - **Автомод и логи**: анти-реклама (Discord/Telegram/паттерны) — удаление + мут 1 ч + кнопки решения для персонала; логи удаления/редактирования/входов/выходов.
 - **Рендер графики**: `/profile` (800×420 PNG в стиле Obsidian/Linear), `/invsee`, `/endersee`, шалкеры — картинки на основе `assets/textures` и Pillow.
@@ -35,7 +35,7 @@ cogs/
   info.py               # справка по командам
   utility.py            # user/avatar/server/say/poll/roll/remind
   logs.py               # логи и автомод
-  security.py           # LiteBans Guard, whois, твинки, healthcheck
+  security.py           # детекция твинков по IP, whois, мультиаккаунты, healthcheck
   bridge.py             # WebSocket-мост с Minecraft (основной модуль)
   bridge_views.py       # UI моста: 2FA, безопасность, привязка (вспомогательный)
   inventory_renderer.py # рендер инвентаря на Pillow (вспомогательный)
@@ -140,17 +140,15 @@ pip install -r requirements.txt
 
 ---
 
-## Мост с Minecraft (плагин VanillaBridge 26.3)
+## Мост с Minecraft (плагин VanillaBridge v1.3)
 
-- Плагин подключается к боту по `ws://`/`wss://` и передаёт секрет в query/заголовке.
+- Плагин поддерживает **Leaf 26.3**, **Folia** и **Paper** через кросс-платформенный модуль `UniversalScheduler`.
+- Подключается к боту по `ws://`/`wss://` и передаёт секрет в query/заголовке.
 - В `config.yml` плагина: `server-id` (`main`/`vps`), `bridge.ws-url`, `bridge.token`.
-- `security.trust-duration-hours` (по умолчанию 48) — резервный срок доверия к IP. Бот передаёт `trust_hours` в `login_verdict`/`2fa_verified`; `0` = строгий режим (IP не запоминается).
-- Плагин проверяет `session_id` у `2fa_verified`/`2fa_rejected`, чтобы старое подтверждение не сработало повторно.
+- Аутентификация и 2FA на сервере возложены на плагин **Victim** (на прокси/Velocity/Limbo), поэтому внутренний 2FA моста отключён (`ENABLE_LOGIN_2FA: false`).
 - Бот принимает несколько серверов одновременно (main + vps): сокеты хранятся множеством,
   широковещательные пакеты уходят всем.
-- Пакеты: `join/quit/death/chat/stats/lifecycle`, `check_alts_bans` → `alts_bans_result`,
-  `check_login` → `login_verdict`, `2fa_verified/2fa_rejected/clear_sessions`,
-  `dm_request` → `dm_reply`, `execute_console_command`, `maintenance*`.
+- Пакеты: `join/quit/death/chat/stats/lifecycle`, `dm_request` → `dm_reply`, `execute_console_command`, `maintenance*`, `announcement`.
 
 ### Секрет моста
 
@@ -211,10 +209,8 @@ python -X utf8 -m unittest discover -s tests -t . -v
 
 - Не коммитьте `.env`, `tickets.db`, `transcripts/`, `scratch/` — они в `.gitignore`.
 - Ротируйте `BRIDGE_SECRET` и не используйте дефолт.
-- 2FA: срок доверия IP задаётся в Discord (`/security`), значение передаётся плагину;
-  при `0` подтверждение запрашивается при каждом входе.
-- Автобаны за обход — только по результатам собственных запросов бота (anti-spoof),
-  ручные `!whois`/`!alts` автосанкций не вызывают.
+- 2FA: двухфакторная аутентификация работает через плагин **Victim** на Proxy-сервере.
+- Безопасность: мониторинг твинков и мультиаккаунтов по IP через базу данных бота.
 
 ---
 
