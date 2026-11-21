@@ -27,8 +27,14 @@ public final class LinkComponents {
         return MiniMessage.miniMessage().deserialize(msg);
     }
 
+    public static Component buildIpComponent() {
+        String msg = "<gradient:#FFA500:#FF5500>🎮 Сервер для подключения:</gradient> <white><hover:show_text:'&eКлик: скопировать IP в буфер'><click:copy_to_clipboard:'play.vanillaland.fun'><u>play.vanillaland.fun</u></click></hover></white>";
+        return MiniMessage.miniMessage().deserialize(msg);
+    }
+
     public static Component buildLinksComponent() {
         String msg = "\n<gradient:#FFA500:#FF7700>✧ ───────────── [ Vanilla Land ] ───────────── ✧</gradient>\n"
+            + "<gradient:#FFA500:#FF5500>🎮 Сервер / IP:</gradient> <white><hover:show_text:'&eКлик: скопировать IP в буфер'><click:copy_to_clipboard:'play.vanillaland.fun'><u>play.vanillaland.fun</u></click></hover></white>\n"
             + "<gradient:#00AAFF:#0055FF>🛒 Донат / Магазин:</gradient> <white><hover:show_text:'&eКлик: открыть магазин vanillaland.store'><click:open_url:'https://vanillaland.store'><u>vanillaland.store</u></click></hover></white>\n"
             + "<gradient:#FFA500:#FF5500>🌐 Наш сайт:</gradient> <white><hover:show_text:'&eКлик: перейти на сайт vanillaland.fun'><click:open_url:'https://vanillaland.fun'><u>vanillaland.fun</u></click></hover></white>\n"
             + "<gradient:#5865F2:#7289DA>💬 Discord:</gradient> <white><hover:show_text:'&eКлик: зайти в Discord сервер'><click:open_url:'https://discord.gg/Ba5cMK7F6a'><u>discord.gg/Ba5cMK7F6a</u></click></hover></white>\n"

@@ -410,13 +410,25 @@ public class SecurityIpManager {
         }
     }
 
+    public void cleanUpOnDisable() {
+        for (PendingAuthSession session : this.pendingSessions.values()) {
+            if (session != null) {
+                session.cancelTasks();
+            }
+        }
+        this.pendingSessions.clear();
+        this.saveSessions();
+    }
+
     public static class PendingAuthSession {
         private final UUID uuid;
         private final String playerName;
         private final String ip;
         private final String code;
         private final long expiresAt;
-        private final Location freezeLocation;
+        private final String worldName;
+        private final double x, y, z;
+        private final float yaw, pitch;
         private final int trustHours;
         private final String sessionId;
         private int attempts = 0;
@@ -433,7 +445,18 @@ public class SecurityIpManager {
             this.ip = ip;
             this.code = code;
             this.expiresAt = expiresAt;
-            this.freezeLocation = freezeLocation;
+            if (freezeLocation != null) {
+                this.worldName = freezeLocation.getWorld() != null ? freezeLocation.getWorld().getName() : "world";
+                this.x = freezeLocation.getX();
+                this.y = freezeLocation.getY();
+                this.z = freezeLocation.getZ();
+                this.yaw = freezeLocation.getYaw();
+                this.pitch = freezeLocation.getPitch();
+            } else {
+                this.worldName = "world";
+                this.x = 0; this.y = 0; this.z = 0;
+                this.yaw = 0; this.pitch = 0;
+            }
             this.trustHours = trustHours;
             this.sessionId = sessionId != null ? sessionId : "";
         }
@@ -459,7 +482,11 @@ public class SecurityIpManager {
         }
 
         public Location getFreezeLocation() {
-            return this.freezeLocation;
+            org.bukkit.World w = Bukkit.getWorld(this.worldName);
+            if (w == null) {
+                return null;
+            }
+            return new Location(w, this.x, this.y, this.z, this.yaw, this.pitch);
         }
 
         public int getTrustHours() {

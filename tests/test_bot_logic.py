@@ -155,9 +155,9 @@ class BridgeLogicTests(unittest.TestCase):
         self.assertTrue(_is_private_or_docker_ip("172.18.0.1:25565"))
 
         # Публичные домены и внешние IP
-        self.assertFalse(_is_private_or_docker_ip("vanillaland.ru-mc.ru"))
-        self.assertFalse(_is_private_or_docker_ip("vanillaland.ru-mc.ru:25565"))
         self.assertFalse(_is_private_or_docker_ip("play.vanillaland.fun"))
+        self.assertFalse(_is_private_or_docker_ip("play.vanillaland.fun:25565"))
+        self.assertFalse(_is_private_or_docker_ip("vanillaland.fun"))
         self.assertFalse(_is_private_or_docker_ip("95.216.123.45"))
 
     def test_resolve_server_ip_ignores_docker_private_ips(self):
@@ -170,12 +170,12 @@ class BridgeLogicTests(unittest.TestCase):
             os.environ["SERVER_IP"] = "172.18.0.1"
             os.environ["MC_SERVER_IP"] = "0.0.0.0"
             resolved = _resolve_server_ip()
-            self.assertEqual(resolved, "vanillaland.ru-mc.ru")
+            self.assertEqual(resolved, "play.vanillaland.fun")
 
             # Если задан реальный публичный домен
-            os.environ["MC_SERVER_IP"] = "vanillaland.ru-mc.ru"
+            os.environ["MC_SERVER_IP"] = "play.vanillaland.fun"
             resolved2 = _resolve_server_ip()
-            self.assertEqual(resolved2, "vanillaland.ru-mc.ru")
+            self.assertEqual(resolved2, "play.vanillaland.fun")
         finally:
             if old_srv is not None:
                 os.environ["SERVER_IP"] = old_srv

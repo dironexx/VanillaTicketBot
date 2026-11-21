@@ -22,7 +22,7 @@ def _is_private_or_docker_ip(val: str) -> bool:
         ip = ipaddress.ip_address(val_clean)
         return ip.is_private or ip.is_loopback or ip.is_unspecified or ip.is_reserved or ip.is_link_local
     except ValueError:
-        # Не IP-адрес (доменное имя, например vanillaland.ru-mc.ru)
+        # Не IP-адрес (доменное имя, например play.vanillaland.fun)
         return False
 
 # 0. Автодобавление новых несекретных ключей (значения не перезаписываются).
@@ -119,7 +119,7 @@ def _resolve_server_ip() -> str:
             return val
 
     # 3. Публичный адрес по умолчанию для Vanilla Land
-    default_ip = "vanillaland.ru-mc.ru"
+    default_ip = "play.vanillaland.fun"
     os.environ["SERVER_IP"] = default_ip
     return default_ip
 

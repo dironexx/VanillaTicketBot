@@ -1456,7 +1456,7 @@ class HealthcheckAdminView(ui.View):
             disk_str = "Штатный"
 
         # 6. Живые сетевые замеры: TCP порт и Web-сервисы (asyncio.gather)
-        ip_display = Config.SERVER_IP or "vanillaland.ru-mc.ru"
+        ip_display = Config.SERVER_IP or "play.vanillaland.fun"
         try:
             tcp_task = ping_tcp_port(ip_display, 25565, timeout_sec=2.0)
             site_task = ping_http_url(Config.SITE_URL, timeout_sec=2.0)

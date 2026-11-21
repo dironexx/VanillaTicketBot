@@ -426,6 +426,7 @@ implements Listener {
 
     @EventHandler
     public void onQuit(PlayerQuitEvent event) {
+        this.plugin.cleanupPlayer(event.getPlayer().getUniqueId());
         if (!this.plugin.getConfig().getBoolean("events.send-quit", true)) {
             return;
         }

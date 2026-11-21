@@ -526,7 +526,7 @@ async def save_transcript_html(
             {"".join(messages_html)}
         </div>
         <div class="footer">
-            Vanilla Land Support • vanillaland.ru-mc.ru
+            Vanilla Land Support • play.vanillaland.fun
         </div>
     </div>
 </body>

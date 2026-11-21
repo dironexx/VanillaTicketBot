@@ -487,7 +487,7 @@ implements CommandExecutor {
                     this.maintenance = true;
                     this.maintenanceReason = reason;
                     String safeReason = MiniMessage.miniMessage().escapeTags(reason);
-                    Component kickComp = MiniMessage.miniMessage().deserialize(("<gradient:#FFA500:#FF7700><bold>Vanilla Land</bold></gradient> <dark_gray>\u2502</dark_gray> <red>\u0422\u0435\u0445\u043d\u0438\u0447\u0435\u0441\u043a\u0438\u0435 \u0440\u0430\u0431\u043e\u0442\u044b</red>\n\n<gray>\u0421\u0435\u0440\u0432\u0435\u0440 \u0432\u0440\u0435\u043c\u0435\u043d\u043d\u043e \u0437\u0430\u043a\u0440\u044b\u0442 \u043d\u0430 \u043e\u0431\u0441\u043b\u0443\u0436\u0438\u0432\u0430\u043d\u0438\u0435:\n<white>" + safeReason + "</white>\n\n<gradient:#00AAFF:#0055FF>\ud83d\uded2 \u0414\u043e\u043d\u0430\u0442:</gradient> <white>vanillaland.store</white>\n<gradient:#FFA500:#FF5500>\ud83c\udf10 \u0421\u0430\u0439\u0442:</gradient> <white>vanillaland.fun</white>\n<gradient:#0088cc:#29b6f6>\u2708 Telegram:</gradient> <white>t.me/vanilandes</white>\n<gradient:#ff7a00:#ffae19>\ud83d\udcac Discord:</gradient> <white>discord.gg/Ba5cMK7F6a</white>"));
+                    Component kickComp = MiniMessage.miniMessage().deserialize(("<gradient:#FFA500:#FF7700><bold>Vanilla Land</bold></gradient> <dark_gray>\u2502</dark_gray> <red>\u0422\u0435\u0445\u043d\u0438\u0447\u0435\u0441\u043a\u0438\u0435 \u0440\u0430\u0431\u043e\u0442\u044b</red>\n\n<gray>\u0421\u0435\u0440\u0432\u0435\u0440 \u0432\u0440\u0435\u043c\u0435\u043d\u043d\u043e \u0437\u0430\u043a\u0440\u044b\u0442 \u043d\u0430 \u043e\u0431\u0441\u043b\u0443\u0436\u0438\u0432\u0430\u043d\u0438\u0435:\n<white>" + safeReason + "</white>\n\n<gradient:#FFA500:#FF5500>\ud83c\udfae \u0421\u0435\u0440\u0432\u0435\u0440:</gradient> <white>play.vanillaland.fun</white>\n<gradient:#00AAFF:#0055FF>\ud83d\uded2 \u0414\u043e\u043d\u0430\u0442:</gradient> <white>vanillaland.store</white>\n<gradient:#FFA500:#FF5500>\ud83c\udf10 \u0421\u0430\u0439\u0442:</gradient> <white>vanillaland.fun</white>\n<gradient:#0088cc:#29b6f6>\u2708 Telegram:</gradient> <white>t.me/vanilandes</white>\n<gradient:#ff7a00:#ffae19>\ud83d\udcac Discord:</gradient> <white>discord.gg/Ba5cMK7F6a</white>"));
                     for (Player p : Bukkit.getOnlinePlayers()) {
                         if (p.isOp() || p.hasPermission("vanillabridge.admin") || this.isStaff(p.getName())) continue;
                         p.kick(kickComp);
@@ -635,6 +635,12 @@ implements CommandExecutor {
                 return true;
             });
         }
+        if (this.getCommand("ip") != null) {
+            this.getCommand("ip").setExecutor((sender, command, label, args) -> {
+                sender.sendMessage(this.buildIpComponent());
+                return true;
+            });
+        }
         if (this.getCommand("mail") != null) {
             this.getCommand("mail").setExecutor((sender, command, label, args) -> {
                 if (!(sender instanceof Player)) {
@@ -738,20 +744,28 @@ implements CommandExecutor {
         if (this.statsTask != null) {
             this.statsTask.cancel();
         }
+        if (this.maintenanceCountdownTask != null) {
+            this.maintenanceCountdownTask.cancel();
+            this.maintenanceCountdownTask = null;
+        }
+        if (this.securityIpManager != null) {
+            this.securityIpManager.cleanUpOnDisable();
+        }
         if (this.bridgeClient != null) {
             if (this.bridgeClient.isConnected()) {
                 this.bridgeClient.send("{\"type\":\"lifecycle\",\"event\":\"stop\"}");
-                try {
-                    Thread.sleep(150L);
-                }
-                catch (InterruptedException interruptedException) {
-                    // empty catch block
-                }
             }
             this.bridgeClient.disconnect();
         }
         this.hasSentStartup.set(false);
         this.getLogger().info("VanillaBridge 1.0 \u0432\u044b\u043a\u043b\u044e\u0447\u0435\u043d.");
+    }
+
+    public void cleanupPlayer(UUID uuid) {
+        if (uuid != null) {
+            this.lastDiscordDmSender.remove(uuid);
+            this.lastDiscordDmAuthor.remove(uuid);
+        }
     }
 
     public void onBridgeConnected() {
@@ -867,7 +881,7 @@ implements CommandExecutor {
                             p.sendTitle("\u00a7a\u00a7l\u041f\u0415\u0420\u0415\u0417\u0410\u0413\u0420\u0423\u0417\u041a\u0410", "\u00a7f\u0421\u043e\u0445\u0440\u0430\u043d\u0435\u043d\u0438\u0435 \u043c\u0438\u0440\u0430...", 0, 40, 20);
                         }
                         Bukkit.dispatchCommand((CommandSender)Bukkit.getConsoleSender(), (String)"save-all");
-                        Component kickComp = MiniMessage.miniMessage().deserialize("<gradient:#ff7a00:#ffae19><bold>Vanilla Land</bold></gradient> <dark_gray>\u2502</dark_gray> <green>\u041f\u0435\u0440\u0435\u0437\u0430\u0433\u0440\u0443\u0437\u043a\u0430 \u0441\u0435\u0440\u0432\u0435\u0440\u0430</green>\n\n<gray>\u0421\u0435\u0440\u0432\u0435\u0440 \u043f\u0435\u0440\u0435\u0437\u0430\u0433\u0440\u0443\u0436\u0430\u0435\u0442\u0441\u044f \u0434\u043b\u044f \u043f\u0440\u0438\u043c\u0435\u043d\u0435\u043d\u0438\u044f \u043e\u0431\u043d\u043e\u0432\u043b\u0435\u043d\u0438\u0439.\n<white>\u0412\u044b \u0441\u043c\u043e\u0436\u0435\u0442\u0435 \u0437\u0430\u0439\u0442\u0438 \u043e\u0431\u0440\u0430\u0442\u043d\u043e \u0447\u0435\u0440\u0435\u0437 1-2 \u043c\u0438\u043d\u0443\u0442\u044b!</white>\n\n<gradient:#00AAFF:#0055FF>\ud83d\uded2 \u0414\u043e\u043d\u0430\u0442:</gradient> <white>vanillaland.store</white>\n<gradient:#FFA500:#FF5500>\ud83c\udf10 \u0421\u0430\u0439\u0442:</gradient> <white>vanillaland.fun</white>\n<gradient:#0088cc:#29b6f6>\u2708 Telegram:</gradient> <white>t.me/vanilandes</white>\n<gradient:#ff7a00:#ffae19>\ud83d\udcac Discord:</gradient> <white>discord.gg/Ba5cMK7F6a</white>");
+                        Component kickComp = MiniMessage.miniMessage().deserialize("<gradient:#ff7a00:#ffae19><bold>Vanilla Land</bold></gradient> <dark_gray>\u2502</dark_gray> <green>\u041f\u0435\u0440\u0435\u0437\u0430\u0433\u0440\u0443\u0437\u043a\u0430 \u0441\u0435\u0440\u0432\u0435\u0440\u0430</green>\n\n<gray>\u0421\u0435\u0440\u0432\u0435\u0440 \u043f\u0435\u0440\u0435\u0437\u0430\u0433\u0440\u0443\u0436\u0430\u0435\u0442\u0441\u044f \u0434\u043b\u044f \u043f\u0440\u0438\u043c\u0435\u043d\u0435\u043d\u0438\u044f \u043e\u0431\u043d\u043e\u0432\u043b\u0435\u043d\u0438\u0439.\n<white>\u0412\u044b \u0441\u043c\u043e\u0436\u0435\u0442\u0435 \u0437\u0430\u0439\u0442\u0438 \u043e\u0431\u0440\u0430\u0442\u043d\u043e \u0447\u0435\u0440\u0435\u0437 1-2 \u043c\u0438\u043d\u0443\u0442\u044b!</white>\n\n<gradient:#FFA500:#FF5500>\ud83c\udfae \u0421\u0435\u0440\u0432\u0435\u0440:</gradient> <white>play.vanillaland.fun</white>\n<gradient:#00AAFF:#0055FF>\ud83d\uded2 \u0414\u043e\u043d\u0430\u0442:</gradient> <white>vanillaland.store</white>\n<gradient:#FFA500:#FF5500>\ud83c\udf10 \u0421\u0430\u0439\u0442:</gradient> <white>vanillaland.fun</white>\n<gradient:#0088cc:#29b6f6>\u2708 Telegram:</gradient> <white>t.me/vanilandes</white>\n<gradient:#ff7a00:#ffae19>\ud83d\udcac Discord:</gradient> <white>discord.gg/Ba5cMK7F6a</white>");
                         for (Player p : Bukkit.getOnlinePlayers()) {
                             p.kick(kickComp);
                         }
@@ -882,7 +896,7 @@ implements CommandExecutor {
                     } else {
                         this.this$0.maintenance = true;
                         this.this$0.maintenanceReason = this.this$0.countdownReason;
-                        Component kickComp = MiniMessage.miniMessage().deserialize(("<gradient:#FFA500:#FF7700><bold>Vanilla Land</bold></gradient> <dark_gray>\u2502</dark_gray> <red>\u0422\u0435\u0445\u043d\u0438\u0447\u0435\u0441\u043a\u0438\u0435 \u0440\u0430\u0431\u043e\u0442\u044b</red>\n\n<gray>\u0421\u0435\u0440\u0432\u0435\u0440 \u0432\u0440\u0435\u043c\u0435\u043d\u043d\u043e \u0437\u0430\u043a\u0440\u044b\u0442 \u043d\u0430 \u043e\u0431\u0441\u043b\u0443\u0436\u0438\u0432\u0430\u043d\u0438\u0435:\n<white>" + safeReason + "</white>\n\n<gradient:#00AAFF:#0055FF>\ud83d\uded2 \u0414\u043e\u043d\u0430\u0442:</gradient> <white>vanillaland.store</white>\n<gradient:#FFA500:#FF5500>\ud83c\udf10 \u0421\u0430\u0439\u0442:</gradient> <white>vanillaland.fun</white>\n<gradient:#0088cc:#29b6f6>\u2708 Telegram:</gradient> <white>t.me/vanilandes</white>\n<gradient:#ff7a00:#ffae19>\ud83d\udcac Discord:</gradient> <white>discord.gg/Ba5cMK7F6a</white>"));
+                        Component kickComp = MiniMessage.miniMessage().deserialize(("<gradient:#FFA500:#FF7700><bold>Vanilla Land</bold></gradient> <dark_gray>\u2502</dark_gray> <red>\u0422\u0435\u0445\u043d\u0438\u0447\u0435\u0441\u043a\u0438\u0435 \u0440\u0430\u0431\u043e\u0442\u044b</red>\n\n<gray>\u0421\u0435\u0440\u0432\u0435\u0440 \u0432\u0440\u0435\u043c\u0435\u043d\u043d\u043e \u0437\u0430\u043a\u0440\u044b\u0442 \u043d\u0430 \u043e\u0431\u0441\u043b\u0443\u0436\u0438\u0432\u0430\u043d\u0438\u0435:\n<white>" + safeReason + "</white>\n\n<gradient:#FFA500:#FF5500>\ud83c\udfae \u0421\u0435\u0440\u0432\u0435\u0440:</gradient> <white>play.vanillaland.fun</white>\n<gradient:#00AAFF:#0055FF>\ud83d\uded2 \u0414\u043e\u043d\u0430\u0442:</gradient> <white>vanillaland.store</white>\n<gradient:#FFA500:#FF5500>\ud83c\udf10 \u0421\u0430\u0439\u0442:</gradient> <white>vanillaland.fun</white>\n<gradient:#0088cc:#29b6f6>\u2708 Telegram:</gradient> <white>t.me/vanilandes</white>\n<gradient:#ff7a00:#ffae19>\ud83d\udcac Discord:</gradient> <white>discord.gg/Ba5cMK7F6a</white>"));
                         for (Player p : Bukkit.getOnlinePlayers()) {
                             if (p.isOp() || p.hasPermission("vanillabridge.admin") || this.this$0.isStaff(p.getName())) continue;
                             p.kick(kickComp);
@@ -1321,7 +1335,7 @@ implements CommandExecutor {
             this.maintenanceReason = reason;
             if (enabled) {
                 String safeReason = MiniMessage.miniMessage().escapeTags(reason);
-                Component kickComp = MiniMessage.miniMessage().deserialize(("<gradient:#FFA500:#FF7700><bold>Vanilla Land</bold></gradient> <dark_gray>\u2502</dark_gray> <red>\u0422\u0435\u0445\u043d\u0438\u0447\u0435\u0441\u043a\u0438\u0435 \u0440\u0430\u0431\u043e\u0442\u044b</red>\n\n<gray>\u0421\u0435\u0440\u0432\u0435\u0440 \u0432\u0440\u0435\u043c\u0435\u043d\u043d\u043e \u0437\u0430\u043a\u0440\u044b\u0442 \u043d\u0430 \u043e\u0431\u0441\u043b\u0443\u0436\u0438\u0432\u0430\u043d\u0438\u0435:\n<white>" + safeReason + "</white>\n\n<gradient:#00AAFF:#0055FF>\ud83d\uded2 \u0414\u043e\u043d\u0430\u0442:</gradient> <white>vanillaland.store</white>\n<gradient:#FFA500:#FF5500>\ud83c\udf10 \u0421\u0430\u0439\u0442:</gradient> <white>vanillaland.fun</white>\n<gradient:#0088cc:#29b6f6>\u2708 Telegram:</gradient> <white>t.me/vanilandes</white>\n<gradient:#ff7a00:#ffae19>\ud83d\udcac Discord:</gradient> <white>discord.gg/Ba5cMK7F6a</white>"));
+                Component kickComp = MiniMessage.miniMessage().deserialize(("<gradient:#FFA500:#FF7700><bold>Vanilla Land</bold></gradient> <dark_gray>\u2502</dark_gray> <red>\u0422\u0435\u0445\u043d\u0438\u0447\u0435\u0441\u043a\u0438\u0435 \u0440\u0430\u0431\u043e\u0442\u044b</red>\n\n<gray>\u0421\u0435\u0440\u0432\u0435\u0440 \u0432\u0440\u0435\u043c\u0435\u043d\u043d\u043e \u0437\u0430\u043a\u0440\u044b\u0442 \u043d\u0430 \u043e\u0431\u0441\u043b\u0443\u0436\u0438\u0432\u0430\u043d\u0438\u0435:\n<white>" + safeReason + "</white>\n\n<gradient:#FFA500:#FF5500>\ud83c\udfae \u0421\u0435\u0440\u0432\u0435\u0440:</gradient> <white>play.vanillaland.fun</white>\n<gradient:#00AAFF:#0055FF>\ud83d\uded2 \u0414\u043e\u043d\u0430\u0442:</gradient> <white>vanillaland.store</white>\n<gradient:#FFA500:#FF5500>\ud83c\udf10 \u0421\u0430\u0439\u0442:</gradient> <white>vanillaland.fun</white>\n<gradient:#0088cc:#29b6f6>\u2708 Telegram:</gradient> <white>t.me/vanilandes</white>\n<gradient:#ff7a00:#ffae19>\ud83d\udcac Discord:</gradient> <white>discord.gg/Ba5cMK7F6a</white>"));
                 for (Player p : Bukkit.getOnlinePlayers()) {
                     if (p.isOp() || p.hasPermission("vanillabridge.admin") || this.isStaff(p.getName())) continue;
                     p.kick(kickComp);
@@ -2210,6 +2224,10 @@ implements CommandExecutor {
 
     public Component buildLinksComponent() {
         return LinkComponents.buildLinksComponent();
+    }
+
+    public Component buildIpComponent() {
+        return LinkComponents.buildIpComponent();
     }
 
     public synchronized void updateTopCache() {

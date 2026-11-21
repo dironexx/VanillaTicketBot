@@ -64,13 +64,8 @@ implements WebSocket.Listener {
         raw.add("ws://172.17.0.1:25007/ws");
         raw.add("ws://172.18.0.1:25007/ws");
         raw.add("ws://127.0.0.1:25007/ws");
-        raw.add("ws://81.30.105.141:25007/ws");
         raw.add("ws://internal.vanillaland.fun:25007/ws");
         raw.add("wss://bridge.vanillaland.fun/ws");
-        raw.add("ws://172.17.0.1:25549/ws");
-        raw.add("ws://172.18.0.1:25549/ws");
-        raw.add("ws://127.0.0.1:25549/ws");
-        raw.add("ws://81.30.105.141:25549/ws");
         ArrayList<String> unique = new ArrayList<String>();
         for (String url : raw) {
             if (url == null || url.trim().isEmpty() || unique.contains(url.trim())) continue;
@@ -287,12 +282,14 @@ implements WebSocket.Listener {
         if (last) {
             String fullMessage = this.messageBuffer.toString();
             this.messageBuffer.setLength(0);
-            try {
-                this.plugin.handleIncomingMessage(fullMessage);
-            }
-            catch (Exception e) {
-                this.plugin.getLogger().log(Level.WARNING, "\u041e\u0448\u0438\u0431\u043a\u0430 \u043e\u0431\u0440\u0430\u0431\u043e\u0442\u043a\u0438 \u0441\u043e\u043e\u0431\u0449\u0435\u043d\u0438\u044f \u043e\u0442 Discord: " + e.getMessage(), e);
-            }
+            Bukkit.getScheduler().runTask((Plugin)this.plugin, () -> {
+                try {
+                    this.plugin.handleIncomingMessage(fullMessage);
+                }
+                catch (Exception e) {
+                    this.plugin.getLogger().log(Level.WARNING, "Ошибка обработки сообщения от Discord: " + e.getMessage(), e);
+                }
+            });
         }
         webSocket.request(1L);
         return WebSocket.Listener.super.onText(webSocket, data, last);

@@ -243,6 +243,34 @@ implements Listener {
     }
 
     @EventHandler(priority=EventPriority.HIGHEST, ignoreCancelled=true)
+    public void onBlockBreak(org.bukkit.event.block.BlockBreakEvent event) {
+        if (this.manager.isPending2FA(event.getPlayer().getUniqueId())) {
+            event.setCancelled(true);
+        }
+    }
+
+    @EventHandler(priority=EventPriority.HIGHEST, ignoreCancelled=true)
+    public void onBlockPlace(org.bukkit.event.block.BlockPlaceEvent event) {
+        if (this.manager.isPending2FA(event.getPlayer().getUniqueId())) {
+            event.setCancelled(true);
+        }
+    }
+
+    @EventHandler(priority=EventPriority.HIGHEST, ignoreCancelled=true)
+    public void onBucketEmpty(org.bukkit.event.player.PlayerBucketEmptyEvent event) {
+        if (this.manager.isPending2FA(event.getPlayer().getUniqueId())) {
+            event.setCancelled(true);
+        }
+    }
+
+    @EventHandler(priority=EventPriority.HIGHEST, ignoreCancelled=true)
+    public void onBucketFill(org.bukkit.event.player.PlayerBucketFillEvent event) {
+        if (this.manager.isPending2FA(event.getPlayer().getUniqueId())) {
+            event.setCancelled(true);
+        }
+    }
+
+    @EventHandler(priority=EventPriority.HIGHEST, ignoreCancelled=true)
     public void onTeleport(PlayerTeleportEvent event) {
         if (this.manager.isPending2FA(event.getPlayer().getUniqueId()) && (event.getCause() == PlayerTeleportEvent.TeleportCause.NETHER_PORTAL || event.getCause() == PlayerTeleportEvent.TeleportCause.END_PORTAL || event.getCause() == PlayerTeleportEvent.TeleportCause.ENDER_PEARL || event.getCause() == PlayerTeleportEvent.TeleportCause.CHORUS_FRUIT)) {
             event.setCancelled(true);

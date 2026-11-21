@@ -1,14 +1,17 @@
 name: VanillaBridge
 version: '1.0'
 main: my.bridge.VanillaBridge
-api-version: '26.3'
+api-version: '1.21'
 softdepend: [CustomInteractiveChat, AuthMe, VanillaChat]
-description: Discord Bridge for Vanilla Land (Paper 26.3)
+description: Discord Bridge for Vanilla Land (Paper 1.21+)
 commands:
   bridge:
     description: Управление мостом Vanilla Land
     permission: vanillabridge.admin
     usage: /bridge [reload|status]
+  ip:
+    description: Официальный IP-адрес сервера (play.vanillaland.fun)
+    aliases: [айпи, server, address, host]
   rd:
     description: Ответить на личное сообщение из Discord
     aliases: [rdc, replyd, dcr]
@@ -31,7 +34,7 @@ commands:
     permission: vanillabridge.admin
     usage: /vbc [текст]
   links:
-    description: Полезные ссылки проекта (сайт, дискорд, тг)
+    description: Полезные ссылки проекта (сайт, дискорд, тг, ip)
     aliases: [ссылки, linki, webs]
   discord:
     description: Ссылка на Discord сервер

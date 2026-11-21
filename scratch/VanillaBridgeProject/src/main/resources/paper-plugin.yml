@@ -1,0 +1,16 @@
+name: VanillaBridge
+version: '1.0'
+main: my.bridge.VanillaBridge
+api-version: '1.21'
+description: Discord Bridge for Vanilla Land (Paper 1.21+)
+dependencies:
+  server:
+    CustomInteractiveChat:
+      load: BEFORE
+      required: false
+    AuthMe:
+      load: BEFORE
+      required: false
+    VanillaChat:
+      load: BEFORE
+      required: false

@@ -585,7 +585,7 @@ def render_slots_grid(
 
     draw.text(
         (margin_x, total_h - margin_y - 10),
-        "Vanilla Land Staff Inspection • vanillaland.ru-mc.ru",
+        "Vanilla Land Staff Inspection • play.vanillaland.fun",
         fill=(114, 118, 125, 220),
         font=font_idx,
     )
@@ -859,7 +859,7 @@ def render_profile_card(
     # 3. PvP
     _draw_panel(right_x, grid_y + card_h + 14, "PvP статистика", f"K/D {kd_ratio:.2f}", f"Убийств: {kills} • Смертей: {deaths}", (244, 63, 94))
     # 4. Локация
-    _draw_panel(right_x + card_w + 14, grid_y + card_h + 14, "Текущее положение", world_name, "vanillaland.ru-mc.ru", (52, 211, 153), is_mid=True)
+    _draw_panel(right_x + card_w + 14, grid_y + card_h + 14, "Текущее положение", world_name, "play.vanillaland.fun", (52, 211, 153), is_mid=True)
 
     # 6. Футер
     font_foot = _get_font(11)

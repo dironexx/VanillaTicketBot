@@ -1697,6 +1697,7 @@ class BridgeCog(commands.Cog, name="Мост Minecraft"):
                 or "ip •" in low
                 or "ru-mc" in low
                 or "vanillaland" in low
+                or "play." in low
             ):
                 found_ip_vcs.append(ch)
 
@@ -1876,7 +1877,7 @@ class BridgeCog(commands.Cog, name="Мост Minecraft"):
                 description="Сервер сейчас недоступен или перезагружается. Попробуйте чуть позже.",
                 color=Colors.RED,
             )
-            embed.set_footer(text="Vanilla Land • vanillaland.ru-mc.ru")
+            embed.set_footer(text=f"Vanilla Land • {Config.SERVER_IP}")
             return embed
 
         if self.mc_online == 0:
