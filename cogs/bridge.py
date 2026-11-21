@@ -561,9 +561,22 @@ class BridgeCog(commands.Cog, name="Мост Minecraft"):
             logger.debug(f"Не удалось отправить пуш-уведомление о входе пользователю {discord_id}: {e}")
 
     def get_events_channel(self) -> Optional[discord.TextChannel]:
+        saved_id = self.db.get_setting("events_channel_id")
+        if saved_id and saved_id.isdigit():
+            ch = self.bot.get_channel(int(saved_id))
+            if isinstance(ch, discord.TextChannel):
+                return ch
+
         ch = self.bot.get_channel(Config.EVENTS_CHANNEL_ID)
         if ch and isinstance(ch, discord.TextChannel):
             return ch
+
+        for guild in self.bot.guilds:
+            for c in guild.text_channels:
+                low = c.name.lower().strip()
+                if any(k in low for k in ("событи", "events", "входы", "сервер-лог", "игровой-лог")):
+                    return c
+
         # Fallback на bridge channel
         fb = self.bot.get_channel(Config.BRIDGE_CHANNEL_ID)
         return fb if isinstance(fb, discord.TextChannel) else None
@@ -1259,9 +1272,19 @@ class BridgeCog(commands.Cog, name="Мост Minecraft"):
         elif p_type == "maintenance_countdown":
             mode = data.get("mode", "lock")
             reason = data.get("reason", "Плановые работы на сервере")
+            seconds = int(data.get("seconds", 0))
             self.maintenance_reason = reason
             if mode == "restart":
                 self.was_restarting = True
+                events_ch = self.get_events_channel()
+                if events_ch:
+                    if seconds == 5:
+                        await events_ch.send("🔴 **РЕСТАРТ через 5 секунд!** Возвращайтесь — станет лучше!")
+                    elif seconds > 0:
+                        mins = seconds // 60
+                        secs = seconds % 60
+                        time_str = f"{mins} мин. {secs} сек." if mins > 0 else f"{secs} сек."
+                        await events_ch.send(f"⚠️ **Запланирован рестарт сервера через {time_str}!** Причина: `{reason}`")
 
         # 17. Синхронизация отмены техработ/рестарта из Minecraft
         elif p_type == "maintenance_countdown_cancel":
@@ -2409,26 +2432,8 @@ class BridgeCog(commands.Cog, name="Мост Minecraft"):
                 )
                 return await ctx.send(embed=embed)
 
-            # Опрос LiteBans по всем аккаунтам на этом IP
+            # Баны отключены
             banned_map = {}
-            if Config.BRIDGE_ENABLE_ALTS_CHECK and self.active_sockets and alts_on_ip:
-                check_names = list(set(a["player_name"] for a in alts_on_ip))
-                check_str = ",".join(check_names)
-                def check_packet_ip(p_type, p_data):
-                    return p_type == "alts_bans_result" and p_data.get("player") == clean_target
-                try:
-                    self.register_alt_check(clean_target, ttl=10.0, manual=True)
-                    await self.broadcast_packet({
-                        "type": "check_alts_bans",
-                        "player": clean_target,
-                        "ip": clean_target,
-                        "alts": check_str,
-                    })
-                    _, res_data = await self.bot.wait_for("bridge_packet", check=check_packet_ip, timeout=2.5)
-                    for b_item in res_data.get("banned", []):
-                        banned_map[b_item.get("player", "").lower()] = b_item
-                except Exception as suppressed_exc:
-                    logger.debug("Bridge non-fatal operation suppressed: %s", suppressed_exc)
 
             has_banned_on_ip = len(banned_map) > 0
             lines = []
@@ -2479,26 +2484,8 @@ class BridgeCog(commands.Cog, name="Мост Minecraft"):
             embed.set_footer(text="Vanilla Land • Модерация")
             return await ctx.send(embed=embed)
 
-        # Опрос LiteBans по целевому игроку и всем его твинкам
+        # Баны отключены
         banned_map = {}
-        if Config.BRIDGE_ENABLE_ALTS_CHECK and self.active_sockets and (known_ips or alts):
-            check_names = list(set([clean_target] + [a["player_name"] for a in alts]))
-            check_str = ",".join(check_names)
-            def check_packet_player(p_type, p_data):
-                return p_type == "alts_bans_result" and p_data.get("player") == clean_target
-            try:
-                self.register_alt_check(clean_target, ttl=10.0, manual=True)
-                await self.broadcast_packet({
-                    "type": "check_alts_bans",
-                    "player": clean_target,
-                    "ip": known_ips[0] if known_ips else "",
-                    "alts": check_str,
-                })
-                _, res_data = await self.bot.wait_for("bridge_packet", check=check_packet_player, timeout=2.5)
-                for b_item in res_data.get("banned", []):
-                    banned_map[b_item.get("player", "").lower()] = b_item
-            except Exception as suppressed_exc:
-                logger.debug("Bridge non-fatal operation suppressed: %s", suppressed_exc)
 
         target_banned = clean_target.lower() in banned_map
         has_banned_alts = any(k != clean_target.lower() for k in banned_map.keys())

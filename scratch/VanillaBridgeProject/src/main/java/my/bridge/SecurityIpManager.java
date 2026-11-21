@@ -172,7 +172,7 @@ public class SecurityIpManager {
             return;
         }
         if (!Bukkit.isPrimaryThread()) {
-            Bukkit.getScheduler().runTask((Plugin)this.plugin, () -> this.start2FA(player, code, ip, timeoutSeconds, dmClosed, trustHours, sessionId));
+            UniversalScheduler.runEntity(this.plugin, player, () -> this.start2FA(player, code, ip, timeoutSeconds, dmClosed, trustHours, sessionId));
             return;
         }
         UUID uuid = player.getUniqueId();
@@ -194,17 +194,17 @@ public class SecurityIpManager {
         String dmWarning = dmClosed ? "  <red><bold>\u26a0\ufe0f \u0412\u041d\u0418\u041c\u0410\u041d\u0418\u0415: \u0411\u043e\u0442 \u043d\u0435 \u0441\u043c\u043e\u0433 \u043e\u0442\u043f\u0440\u0430\u0432\u0438\u0442\u044c \u0432\u0430\u043c \u043a\u043e\u0434 \u0432 Discord!</bold></red>\n  <red>\u0423 \u0432\u0430\u0441 \u0437\u0430\u043a\u0440\u044b\u0442\u044b \u043b\u0438\u0447\u043d\u044b\u0435 \u0441\u043e\u043e\u0431\u0449\u0435\u043d\u0438\u044f \u043e\u0442 \u0443\u0447\u0430\u0441\u0442\u043d\u0438\u043a\u043e\u0432 \u0441\u0435\u0440\u0432\u0435\u0440\u0430 \u0432 Discord.</red>\n  <yellow>\u0420\u0430\u0437\u0440\u0435\u0448\u0438\u0442\u0435 \u0432\u0445\u043e\u0434\u044f\u0449\u0438\u0435 \u0441\u043e\u043e\u0431\u0449\u0435\u043d\u0438\u044f \u0432 \u043d\u0430\u0441\u0442\u0440\u043e\u0439\u043a\u0430\u0445 \u043a\u043e\u043d\u0444\u0438\u0434\u0435\u043d\u0446\u0438\u0430\u043b\u044c\u043d\u043e\u0441\u0442\u0438 Discord \u0438 \u043f\u043e\u0432\u0442\u043e\u0440\u0438\u0442\u0435 \u0432\u0445\u043e\u0434.</yellow>\n\n" : "";
         String trustLabel = trustHours > 0 ? trustHours + "\u0447" : "\u0441\u0442\u0440\u043e\u0433\u0438\u0439 \u0440\u0435\u0436\u0438\u043c";
         player.sendMessage(MiniMessage.miniMessage().deserialize(("\n<gradient:#FF416C:#FF4B2B><bold>\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501 \u2726 \u0411\u0415\u0417\u041e\u041f\u0410\u0421\u041d\u041e\u0421\u0422\u042c \u2726 \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501</bold></gradient>\n  <red><bold>\u0412\u043d\u0438\u043c\u0430\u043d\u0438\u0435! \u0414\u043b\u044f \u0432\u0445\u043e\u0434\u0430 \u0442\u0440\u0435\u0431\u0443\u0435\u0442\u0441\u044f \u043f\u043e\u0434\u0442\u0432\u0435\u0440\u0436\u0434\u0435\u043d\u0438\u0435 \u0430\u043a\u043a\u0430\u0443\u043d\u0442\u0430.</bold></red>\n  <gray>\u041e\u0431\u043d\u0430\u0440\u0443\u0436\u0435\u043d \u043d\u043e\u0432\u044b\u0439 IP \u0430\u0434\u0440\u0435\u0441 \u0438\u043b\u0438 \u0438\u0441\u0442\u0435\u043a\u043b\u0430 \u0434\u043e\u0432\u0435\u0440\u0435\u043d\u043d\u0430\u044f \u0441\u0435\u0441\u0441\u0438\u044f (" + trustLabel + "): <white>" + ip + "</white></gray>\n\n" + dmWarning + "  <yellow>\u2022 \u0421\u043f\u043e\u0441\u043e\u0431 1:</yellow> <white>\u041d\u0430\u0436\u043c\u0438\u0442\u0435 \u0437\u0435\u043b\u0451\u043d\u0443\u044e \u043a\u043d\u043e\u043f\u043a\u0443 \u0432 \u041b\u0421 \u0431\u043e\u0442\u0430 \u0432 Discord</white>\n  <yellow>\u2022 \u0421\u043f\u043e\u0441\u043e\u0431 2:</yellow> <white>\u0412\u0432\u0435\u0434\u0438\u0442\u0435 \u043a\u043e\u043c\u0430\u043d\u0434\u0443 <yellow><click:suggest_command:'/code '>/code [6 \u0446\u0438\u0444\u0440 \u0438\u0437 Discord]</click></yellow> \u0438\u043b\u0438 \u043d\u0430\u043f\u0438\u0448\u0438\u0442\u0435 6 \u0446\u0438\u0444\u0440 \u0432 \u0447\u0430\u0442</white>\n  <dark_gray>\u0421\u0440\u043e\u043a \u0434\u0435\u0439\u0441\u0442\u0432\u0438\u044f \u043a\u043e\u0434\u0430: " + safeTimeout / 60 + " \u043c\u0438\u043d. \u041f\u0435\u0440\u0435\u0434\u0432\u0438\u0436\u0435\u043d\u0438\u0435 \u0438 \u043a\u043e\u043c\u0430\u043d\u0434\u044b \u043e\u0433\u0440\u0430\u043d\u0438\u0447\u0435\u043d\u044b.</dark_gray>\n<gradient:#FF416C:#FF4B2B><bold>\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501</bold></gradient>\n")));
-        session.reminderTask = Bukkit.getScheduler().runTaskTimer((Plugin)this.plugin, () -> {
+        session.reminderTask = UniversalScheduler.runGlobalTimer(this.plugin, () -> {
             Player p = Bukkit.getPlayer((UUID)uuid);
             if (p != null && p.isOnline()) {
-                p.sendActionBar(MiniMessage.miniMessage().deserialize(("<gradient:#FF416C:#FF4B2B><bold>\ud83d\udd12 2FA</bold></gradient> <dark_gray>\u2502</dark_gray> " + (dmClosed ? "<red>\u041e\u0442\u043a\u0440\u043e\u0439\u0442\u0435 \u041b\u0421 \u0432 Discord!</red>" : "<gray>\u041a\u043e\u0434 \u0432 Discord \u0438\u043b\u0438: <yellow>/code [\u043a\u043e\u0434]</yellow></gray>"))));
+                p.sendActionBar(MiniMessage.miniMessage().deserialize(("<gradient:#FF416C:#FF4B2B><bold>🔒 2FA</bold></gradient> <dark_gray>│</dark_gray> " + (dmClosed ? "<red>Откройте ЛС в Discord!</red>" : "<gray>Код в Discord или: <yellow>/code [код]</yellow></gray>"))));
             }
         }, 40L, 40L);
-        session.timeoutTask = Bukkit.getScheduler().runTaskLater((Plugin)this.plugin, () -> {
+        session.timeoutTask = UniversalScheduler.runGlobalLater(this.plugin, () -> {
             Player p = Bukkit.getPlayer((UUID)uuid);
             if (p != null && p.isOnline() && this.isPending2FA(uuid)) {
                 this.cancel(uuid);
-                p.kick(MiniMessage.miniMessage().deserialize("<gradient:#FF416C:#FF4B2B><bold>Vanilla Land</bold></gradient> <dark_gray>\u2502</dark_gray> <red>\u0411\u0435\u0437\u043e\u043f\u0430\u0441\u043d\u043e\u0441\u0442\u044c 2FA</red>\n\n<gray>\u0412\u0440\u0435\u043c\u044f \u043d\u0430 \u043f\u043e\u0434\u0442\u0432\u0435\u0440\u0436\u0434\u0435\u043d\u0438\u0435 \u0432\u0445\u043e\u0434\u0430 \u0438\u0441\u0442\u0435\u043a\u043b\u043e (3 \u043c\u0438\u043d\u0443\u0442\u044b).\n<white>\u041f\u043e\u0434\u0442\u0432\u0435\u0440\u0434\u0438\u0442\u0435 \u0432\u0445\u043e\u0434 \u0432 Discord \u043f\u0435\u0440\u0435\u0434 \u0441\u043b\u0435\u0434\u0443\u044e\u0449\u0438\u043c \u0432\u0445\u043e\u0434\u043e\u043c \u043d\u0430 \u0441\u0435\u0440\u0432\u0435\u0440.</white>"));
+                p.kick(MiniMessage.miniMessage().deserialize("<gradient:#FF416C:#FF4B2B><bold>Vanilla Land</bold></gradient> <dark_gray>│</dark_gray> <red>Безопасность 2FA</red>\n\n<gray>Время на подтверждение входа истекло (3 минуты).\n<white>Подтвердите вход в Discord перед следующим входом на сервер.</white>"));
             }
         }, (long)safeTimeout * 20L);
         this.pendingSessions.put(uuid, session);
@@ -251,7 +251,7 @@ public class SecurityIpManager {
             return;
         }
         if (!Bukkit.isPrimaryThread()) {
-            Bukkit.getScheduler().runTask((Plugin)this.plugin, () -> this.completeVerification(player, notifyDiscord, trustHours));
+            UniversalScheduler.runEntity(this.plugin, player, () -> this.completeVerification(player, notifyDiscord, trustHours));
             return;
         }
         UUID uuid = player.getUniqueId();
@@ -281,7 +281,7 @@ public class SecurityIpManager {
             this.plugin.getBridgeClient().send(payload);
         }
         String finalIp = ip;
-        Bukkit.getScheduler().runTask((Plugin)this.plugin, () -> {
+        UniversalScheduler.runEntity(this.plugin, player, () -> {
             if (player.isOnline()) {
                 Title title = Title.title((Component)MiniMessage.miniMessage().deserialize("<gradient:#00F0FF:#5865F2><bold>VANILLA LAND</bold></gradient>"), (Component)MiniMessage.miniMessage().deserialize("<green>\u2714 \u0412\u0445\u043e\u0434 \u0443\u0441\u043f\u0435\u0448\u043d\u043e \u043f\u043e\u0434\u0442\u0432\u0435\u0440\u0436\u0434\u0451\u043d!</green>"), (Title.Times)Title.Times.times((Duration)Duration.ofMillis(200L), (Duration)Duration.ofMillis(2500L), (Duration)Duration.ofMillis(400L)));
                 player.showTitle(title);
@@ -296,12 +296,12 @@ public class SecurityIpManager {
             return;
         }
         if (!Bukkit.isPrimaryThread()) {
-            Bukkit.getScheduler().runTask((Plugin)this.plugin, () -> this.rejectVerification(player, reason));
+            UniversalScheduler.runEntity(this.plugin, player, () -> this.rejectVerification(player, reason));
             return;
         }
         this.cancel(player.getUniqueId());
         String safeReason = reason != null && !reason.isEmpty() ? reason : "\u0412\u0445\u043e\u0434 \u043e\u0442\u043a\u043b\u043e\u043d\u0451\u043d \u0432\u043b\u0430\u0434\u0435\u043b\u044c\u0446\u0435\u043c \u0430\u043a\u043a\u0430\u0443\u043d\u0442\u0430 \u0447\u0435\u0440\u0435\u0437 Discord!";
-        Bukkit.getScheduler().runTask((Plugin)this.plugin, () -> {
+        UniversalScheduler.runEntity(this.plugin, player, () -> {
             if (player.isOnline()) {
                 player.kick(MiniMessage.miniMessage().deserialize(("<gradient:#FF416C:#FF4B2B><bold>Vanilla Land</bold></gradient> <dark_gray>\u2502</dark_gray> <red>\u0414\u043e\u0441\u0442\u0443\u043f \u0437\u0430\u0431\u043b\u043e\u043a\u0438\u0440\u043e\u0432\u0430\u043d</red>\n\n<red><bold>\u274c " + safeReason + "</bold></red>\n\n<gray>\u0421\u0435\u0441\u0441\u0438\u044f \u043d\u0435 \u0431\u044b\u043b\u0430 \u043f\u043e\u0434\u0442\u0432\u0435\u0440\u0436\u0434\u0435\u043d\u0430 \u0447\u0435\u0440\u0435\u0437 Discord 2FA.\n\u0415\u0441\u043b\u0438 \u044d\u0442\u043e \u0432\u0430\u0448 \u0430\u043a\u043a\u0430\u0443\u043d\u0442 \u2014 \u0441\u043c\u0435\u043d\u0438\u0442\u0435 \u043f\u0430\u0440\u043e\u043b\u044c (/changepassword) \u0438 \u043f\u043e\u0432\u0442\u043e\u0440\u0438\u0442\u0435 \u0432\u0445\u043e\u0434.</gray>")));
             }
@@ -368,7 +368,7 @@ public class SecurityIpManager {
     }
 
     private void saveSessionsAsync() {
-        Bukkit.getScheduler().runTaskAsynchronously((Plugin)this.plugin, this::saveSessions);
+        UniversalScheduler.runAsync(this.plugin, this::saveSessions);
     }
 
     public synchronized void saveSessions() {
@@ -432,8 +432,8 @@ public class SecurityIpManager {
         private final int trustHours;
         private final String sessionId;
         private int attempts = 0;
-        private BukkitTask reminderTask;
-        private BukkitTask timeoutTask;
+        private UniversalScheduler.TaskHandle reminderTask;
+        private UniversalScheduler.TaskHandle timeoutTask;
 
         public PendingAuthSession(UUID uuid, String playerName, String ip, String code, long expiresAt, Location freezeLocation, int trustHours) {
             this(uuid, playerName, ip, code, expiresAt, freezeLocation, trustHours, "");

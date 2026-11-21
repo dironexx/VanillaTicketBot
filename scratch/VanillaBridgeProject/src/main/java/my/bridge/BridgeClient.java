@@ -44,8 +44,8 @@ implements WebSocket.Listener {
     private final AtomicInteger reconnectAttempts = new AtomicInteger(0);
     private final AtomicInteger candidateIndex = new AtomicInteger(0);
     private final StringBuilder messageBuffer = new StringBuilder();
-    private BukkitTask reconnectTask = null;
-    private BukkitTask heartbeatTask = null;
+    private UniversalScheduler.TaskHandle reconnectTask = null;
+    private UniversalScheduler.TaskHandle heartbeatTask = null;
     private final Queue<String> sendQueue = new ConcurrentLinkedQueue<String>();
     private final AtomicBoolean isSending = new AtomicBoolean(false);
     private volatile long lastHeartbeatTime = System.currentTimeMillis();
@@ -101,7 +101,7 @@ implements WebSocket.Listener {
         String token = this.plugin.getConfig().getString("bridge.token", "vanillaland_secret_2026");
         String fullUrl = targetWsUrl + (targetWsUrl.contains("?") ? "&" : "?") + "token=" + token;
         this.plugin.getLogger().info("[\u041c\u043e\u0441\u0442] \u041f\u043e\u043f\u044b\u0442\u043a\u0430 \u043f\u043e\u0434\u043a\u043b\u044e\u0447\u0435\u043d\u0438\u044f (" + (idx + 1) + "/" + candidates.size() + "): " + targetWsUrl);
-        Bukkit.getScheduler().runTaskAsynchronously((Plugin)this.plugin, () -> {
+        UniversalScheduler.runAsync(this.plugin, () -> {
             try {
                 this.httpClient.newWebSocketBuilder().connectTimeout(Duration.ofSeconds(15L)).header("User-Agent", "Mozilla/5.0 VanillaBridge/1.0 (Minecraft Server)").header("Origin", "https://vanillaland.fun").buildAsync(URI.create(fullUrl), this).whenComplete((ws, throwable) -> {
                     this.isConnecting.set(false);
@@ -219,7 +219,7 @@ implements WebSocket.Listener {
     private void startHeartbeat() {
         this.stopHeartbeat();
         this.lastHeartbeatTime = System.currentTimeMillis();
-        this.heartbeatTask = Bukkit.getScheduler().runTaskTimerAsynchronously((Plugin)this.plugin, () -> {
+        this.heartbeatTask = UniversalScheduler.runAsyncTimer(this.plugin, () -> {
             if (!this.isConnected.get() || this.webSocket == null) {
                 return;
             }
@@ -286,7 +286,7 @@ implements WebSocket.Listener {
         if (last) {
             String fullMessage = this.messageBuffer.toString();
             this.messageBuffer.setLength(0);
-            Bukkit.getScheduler().runTask((Plugin)this.plugin, () -> {
+            UniversalScheduler.runGlobal(this.plugin, () -> {
                 try {
                     this.plugin.handleIncomingMessage(fullMessage);
                 }
@@ -347,7 +347,7 @@ implements WebSocket.Listener {
             delaySec = Math.min(10, Math.max(3, 3 + attempt * 2));
         }
         this.plugin.getLogger().info("[\u041c\u043e\u0441\u0442] \u041f\u043e\u0432\u0442\u043e\u0440\u043d\u043e\u0435 \u043f\u043e\u0434\u043a\u043b\u044e\u0447\u0435\u043d\u0438\u0435 \u0437\u0430\u043f\u043b\u0430\u043d\u0438\u0440\u043e\u0432\u0430\u043d\u043e \u0447\u0435\u0440\u0435\u0437 " + delaySec + " \u0441\u0435\u043a...");
-        this.reconnectTask = Bukkit.getScheduler().runTaskLater((Plugin)this.plugin, () -> {
+        this.reconnectTask = UniversalScheduler.runAsyncLater(this.plugin, () -> {
             this.reconnectTask = null;
             if (!this.plugin.isEnabled()) {
                 return;
@@ -361,7 +361,7 @@ implements WebSocket.Listener {
     }
 
     public void runDiagnostic(CommandSender sender) {
-        Bukkit.getScheduler().runTaskAsynchronously((Plugin)this.plugin, () -> {
+        UniversalScheduler.runAsync(this.plugin, () -> {
             sender.sendMessage("\u00a7e[VanillaBridge] \u00a7f\u0417\u0430\u043f\u0443\u0441\u043a \u043f\u043e\u043b\u043d\u043e\u0439 \u0441\u0435\u0442\u0435\u0432\u043e\u0439 \u0434\u0438\u0430\u0433\u043d\u043e\u0441\u0442\u0438\u043a\u0438 \u043c\u043e\u0441\u0442\u0430...");
             List<String> candidates = this.buildCandidates();
             sender.sendMessage("\u00a77\u041f\u0440\u043e\u0432\u0435\u0440\u043a\u0430 \u0432\u0441\u0435\u0445 \u0434\u043e\u0441\u0442\u0443\u043f\u043d\u044b\u0445 \u043c\u0430\u0440\u0448\u0440\u0443\u0442\u043e\u0432 \u043a \u0431\u043e\u0442\u0443 (\u0432\u0441\u0435\u0433\u043e \u043a\u0430\u043d\u0434\u0438\u0434\u0430\u0442\u043e\u0432: " + candidates.size() + "):");

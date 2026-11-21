@@ -110,7 +110,7 @@ implements Listener {
         event.setCancelled(true);
         String rawText = PlainTextComponentSerializer.plainText().serialize(event.message()).trim();
         if (rawText.matches("^\\d{6}$")) {
-            Bukkit.getScheduler().runTask((Plugin)this.plugin, () -> this.manager.checkCode(player, rawText));
+            UniversalScheduler.runEntity(this.plugin, player, () -> this.manager.checkCode(player, rawText));
             return;
         }
         player.sendMessage(MiniMessage.miniMessage().deserialize("<red>\u274c \u0427\u0430\u0442 \u0437\u0430\u0431\u043b\u043e\u043a\u0438\u0440\u043e\u0432\u0430\u043d \u0432\u043e \u0432\u0440\u0435\u043c\u044f \u043f\u043e\u0434\u0442\u0432\u0435\u0440\u0436\u0434\u0435\u043d\u0438\u044f \u0432\u0445\u043e\u0434\u0430!</red>\n<gray>\u041f\u043e\u0434\u0442\u0432\u0435\u0440\u0434\u0438\u0442\u0435 \u0432\u0445\u043e\u0434 \u0432 Discord \u043a\u043d\u043e\u043f\u043a\u043e\u0439 \u0438\u043b\u0438 \u0432\u0432\u0435\u0434\u0438\u0442\u0435 6 \u0446\u0438\u0444\u0440: <yellow>/code [6 \u0446\u0438\u0444\u0440]</yellow></gray>"));
@@ -272,7 +272,29 @@ implements Listener {
 
     @EventHandler(priority=EventPriority.HIGHEST, ignoreCancelled=true)
     public void onTeleport(PlayerTeleportEvent event) {
-        if (this.manager.isPending2FA(event.getPlayer().getUniqueId()) && (event.getCause() == PlayerTeleportEvent.TeleportCause.NETHER_PORTAL || event.getCause() == PlayerTeleportEvent.TeleportCause.END_PORTAL || event.getCause() == PlayerTeleportEvent.TeleportCause.ENDER_PEARL || event.getCause() == PlayerTeleportEvent.TeleportCause.CHORUS_FRUIT)) {
+        if (this.manager.isPending2FA(event.getPlayer().getUniqueId())) {
+            event.setCancelled(true);
+        }
+    }
+
+    @EventHandler(priority=EventPriority.HIGHEST, ignoreCancelled=true)
+    public void onVehicleExit(org.bukkit.event.vehicle.VehicleExitEvent event) {
+        LivingEntity entity = event.getExited();
+        if (entity instanceof Player && this.manager.isPending2FA(((Player) entity).getUniqueId())) {
+            event.setCancelled(true);
+        }
+    }
+
+    @EventHandler(priority=EventPriority.HIGHEST, ignoreCancelled=true)
+    public void onBedEnter(org.bukkit.event.player.PlayerBedEnterEvent event) {
+        if (this.manager.isPending2FA(event.getPlayer().getUniqueId())) {
+            event.setCancelled(true);
+        }
+    }
+
+    @EventHandler(priority=EventPriority.HIGHEST, ignoreCancelled=true)
+    public void onEntityTarget(org.bukkit.event.entity.EntityTargetLivingEntityEvent event) {
+        if (event.getTarget() instanceof Player && this.manager.isPending2FA(((Player) event.getTarget()).getUniqueId())) {
             event.setCancelled(true);
         }
     }

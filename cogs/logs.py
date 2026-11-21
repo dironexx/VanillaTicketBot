@@ -118,11 +118,11 @@ class LogsCog(commands.Cog, name="Логирование и Защита"):
             if isinstance(ch, discord.TextChannel):
                 return ch
 
-        # 3. Fallback: поиск по названию
-        for name in ("логи", "logs", "журнал", "аудит", "лог", "server-logs"):
-            found = discord.utils.get(guild.text_channels, name=name)
-            if found:
-                return found
+        # 3. Fallback: поиск по названию (точное и нечеткое с учетом эмодзи)
+        for ch in guild.text_channels:
+            low = ch.name.lower().strip()
+            if any(k in low for k in ("логи", "logs", "журнал", "аудит", "лог-", "-лог")):
+                return ch
 
         return None
 
@@ -136,6 +136,11 @@ class LogsCog(commands.Cog, name="Логирование и Защита"):
         if Config.ADMIN_LOG_CHANNEL_ID:
             ch = guild.get_channel(Config.ADMIN_LOG_CHANNEL_ID)
             if isinstance(ch, discord.TextChannel):
+                return ch
+
+        for ch in guild.text_channels:
+            low = ch.name.lower().strip()
+            if any(k in low for k in ("алерты", "alerts", "админ-лог", "модерация-лог")):
                 return ch
 
         return self.get_log_channel(guild)

@@ -79,8 +79,11 @@ implements Listener {
         }
     }
 
-    @EventHandler(priority=EventPriority.LOW, ignoreCancelled=false)
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
     public void onChat(AsyncChatEvent event) {
+        if (event.isCancelled()) {
+            return;
+        }
         String messageToSend;
         Player player = event.getPlayer();
         if (this.isPlayerMuted(player)) {
@@ -103,22 +106,25 @@ implements Listener {
             }
             String bcText = rawText.substring(spaceIdx + 1).trim();
             if (!bcText.isEmpty()) {
-                Bukkit.getScheduler().runTask((Plugin)this.plugin, () -> this.plugin.broadcastAnnouncement(bcText, player.getName(), true));
+                UniversalScheduler.runGlobal(this.plugin, () -> this.plugin.broadcastAnnouncement(bcText, player.getName(), true));
             }
             return;
         }
         if (!this.isGlobalChat(event, rawText, player)) {
             return;
         }
-        String string = messageToSend = rawText.startsWith("!") ? rawText.substring(1).trim() : rawText;
+        messageToSend = rawText.startsWith("!") ? rawText.substring(1).trim() : rawText;
         if (messageToSend.isEmpty()) {
             return;
         }
         this.sendChatToDiscord(player, messageToSend);
     }
 
-    @EventHandler(priority=EventPriority.LOW, ignoreCancelled=false)
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
     public void onLegacyChat(AsyncPlayerChatEvent event) {
+        if (event.isCancelled()) {
+            return;
+        }
         String tagArea;
         String rawText;
         Player player = event.getPlayer();
@@ -128,7 +134,7 @@ implements Listener {
         if (this.plugin.getAuthMeHook() != null && !this.plugin.getAuthMeHook().isAuthenticated(player)) {
             return;
         }
-        String string = rawText = event.getMessage() != null ? event.getMessage().trim() : "";
+        rawText = event.getMessage() != null ? event.getMessage().trim() : "";
         if (rawText.isEmpty()) {
             return;
         }
@@ -137,6 +143,9 @@ implements Listener {
             if (!messageToSend.isEmpty()) {
                 this.sendChatToDiscord(player, messageToSend);
             }
+            return;
+        }
+        if (rawText.contains("\u21c4") || ChatBridgeListener.isLocalTag(rawText)) {
             return;
         }
         String mode = ChatBridgeListener.getPlayerChatMode(player.getUniqueId());
@@ -154,8 +163,8 @@ implements Listener {
             return;
         }
         String format = event.getFormat() != null ? ChatBridgeListener.normalizeChannelTag(event.getFormat()) : "";
-        String string2 = tagArea = format.length() > 60 ? format.substring(0, 60) : format;
-        if (ChatBridgeListener.isLocalTag(tagArea)) {
+        tagArea = format.length() > 60 ? format.substring(0, 60) : format;
+        if (format.contains("\u21c4") || ChatBridgeListener.isLocalTag(tagArea)) {
             return;
         }
         if (ChatBridgeListener.isGlobalTag(tagArea)) {
@@ -169,8 +178,13 @@ implements Listener {
                 return;
             }
         }
-        catch (Throwable throwable) {
-            // empty catch block
+        catch (Throwable ignored) {
+        }
+        boolean hasLocalChatPlugin = Bukkit.getPluginManager().getPlugin("FlectonePulse") != null
+                || Bukkit.getPluginManager().getPlugin("Chatty") != null
+                || Bukkit.getPluginManager().getPlugin("LPC") != null;
+        if (hasLocalChatPlugin) {
+            return;
         }
         this.sendChatToDiscord(player, rawText);
     }
@@ -178,6 +192,9 @@ implements Listener {
     private boolean isGlobalChat(AsyncChatEvent event, String rawText, Player player) {
         if (rawText.startsWith("!")) {
             return true;
+        }
+        if (rawText.contains("\u21c4") || ChatBridgeListener.isLocalTag(rawText)) {
+            return false;
         }
         String mode = ChatBridgeListener.getPlayerChatMode(player.getUniqueId());
         if (mode != null) {
@@ -195,8 +212,11 @@ implements Listener {
             String tagArea;
             Component rendered = event.renderer().render(player, player.displayName(), event.message(), (Audience)Bukkit.getConsoleSender());
             String plain = PlainTextComponentSerializer.plainText().serialize(rendered);
+            if (plain.contains("\u21c4")) {
+                return false;
+            }
             String norm = ChatBridgeListener.normalizeChannelTag(plain);
-            String string = tagArea = norm.length() > 60 ? norm.substring(0, 60) : norm;
+            tagArea = norm.length() > 60 ? norm.substring(0, 60) : norm;
             if (ChatBridgeListener.isLocalTag(tagArea)) {
                 return false;
             }
@@ -204,8 +224,7 @@ implements Listener {
                 return true;
             }
         }
-        catch (Throwable rendered) {
-            // empty catch block
+        catch (Throwable ignored) {
         }
         try {
             int online = Bukkit.getOnlinePlayers().size();
@@ -214,8 +233,13 @@ implements Listener {
                 return false;
             }
         }
-        catch (Throwable throwable) {
-            // empty catch block
+        catch (Throwable ignored) {
+        }
+        boolean hasLocalChatPlugin = Bukkit.getPluginManager().getPlugin("FlectonePulse") != null
+                || Bukkit.getPluginManager().getPlugin("Chatty") != null
+                || Bukkit.getPluginManager().getPlugin("LPC") != null;
+        if (hasLocalChatPlugin) {
+            return false;
         }
         return true;
     }
@@ -410,13 +434,13 @@ implements Listener {
         }
         String payload = "{\"type\":\"join\",\"player\":\"" + this.escapeJson(player.getName()) + "\",\"ip\":\"" + this.escapeJson(ip) + "\",\"skin\":\"" + this.escapeJson(skinHash) + "\"}";
         this.sendToBridge(payload);
-        Bukkit.getScheduler().runTaskLater((Plugin)this.plugin, () -> {
+        UniversalScheduler.runEntityLater(this.plugin, player, () -> {
             if (player.isOnline()) {
                 this.sendToBridge("{\"type\":\"check_mail\",\"player\":\"" + this.escapeJson(player.getName()) + "\"}");
             }
         }, 40L);
         if (this.plugin.getAuthMeHook() == null || !this.plugin.getAuthMeHook().isAuthMeAvailable()) {
-            Bukkit.getScheduler().runTaskLater((Plugin)this.plugin, () -> {
+            UniversalScheduler.runEntityLater(this.plugin, player, () -> {
                 if (player.isOnline()) {
                     this.plugin.handlePostLoginCheck(player);
                 }
@@ -688,7 +712,6 @@ implements Listener {
     }
 
     private boolean isPlayerMuted(Player player) {
-        Plugin liteBans;
         if (player == null) {
             return false;
         }
@@ -702,26 +725,7 @@ implements Listener {
                     return true;
                 }
             }
-            catch (Throwable getUser) {
-                // empty catch block
-            }
-        }
-        if ((liteBans = Bukkit.getPluginManager().getPlugin("LiteBans")) != null && liteBans.isEnabled()) {
-            try {
-                Class<?> dbClass = Class.forName("litebans.api.Database");
-                Method get = dbClass.getMethod("get", new Class[0]);
-                Object db = get.invoke(null, new Object[0]);
-                if (db != null) {
-                    String ip;
-                    Method isPlayerMuted = dbClass.getMethod("isPlayerMuted", UUID.class, String.class);
-                    String string = ip = player.getAddress() != null && player.getAddress().getAddress() != null ? player.getAddress().getAddress().getHostAddress() : "";
-                    if (((Boolean)isPlayerMuted.invoke(db, player.getUniqueId(), ip)).booleanValue()) {
-                        return true;
-                    }
-                }
-            }
-            catch (Throwable throwable) {
-                // empty catch block
+            catch (Throwable ignored) {
             }
         }
         return false;

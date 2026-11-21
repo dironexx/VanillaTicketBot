@@ -2404,25 +2404,6 @@ class SecurityCog(commands.Cog, name="Безопасность"):
         # Опрос LiteBans по целевому игроку и его твинкам
         bridge_cog = get_bridge_cog(self.bot)
         banned_map = {}
-        if bridge_cog and getattr(bridge_cog, "active_sockets", set()) and (ips or alts):
-            check_names = list(set([p_name] + [a["player_name"] for a in alts]))
-            check_str = ",".join(check_names)
-            def check_packet_whois(p_type, p_data):
-                return p_type == "alts_bans_result" and p_data.get("player") == p_name
-            try:
-                if hasattr(bridge_cog, "register_alt_check"):
-                    bridge_cog.register_alt_check(p_name, ttl=10.0, manual=True)
-                await bridge_cog.broadcast_packet({
-                    "type": "check_alts_bans",
-                    "player": p_name,
-                    "ip": ips[0]["ip"] if ips else "",
-                    "alts": check_str,
-                })
-                _, res_data = await self.bot.wait_for("bridge_packet", check=check_packet_whois, timeout=2.5)
-                for b_item in res_data.get("banned", []):
-                    banned_map[b_item.get("player", "").lower()] = b_item
-            except Exception:
-                pass
 
         linked_user_str = "Не привязан к Discord"
         if linked:

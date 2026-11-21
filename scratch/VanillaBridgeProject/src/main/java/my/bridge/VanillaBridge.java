@@ -136,7 +136,7 @@ public class VanillaBridge
 extends JavaPlugin
 implements CommandExecutor {
     private BridgeClient bridgeClient;
-    private BukkitTask statsTask;
+    private UniversalScheduler.TaskHandle statsTask;
     private final AtomicBoolean hasSentStartup = new AtomicBoolean(false);
     private long serverStartTime = 0L;
     private boolean twoFactorEnabled = true;
@@ -149,7 +149,7 @@ implements CommandExecutor {
     private volatile boolean maintenance = false;
     private volatile String maintenanceReason = "\u0422\u0435\u0445\u043d\u0438\u0447\u0435\u0441\u043a\u0438\u0435 \u0440\u0430\u0431\u043e\u0442\u044b \u043d\u0430 \u0441\u0435\u0440\u0432\u0435\u0440\u0435";
     private final Set<String> staffWhitelist = ConcurrentHashMap.newKeySet();
-    private BukkitTask maintenanceCountdownTask = null;
+    private UniversalScheduler.TaskHandle maintenanceCountdownTask = null;
     private volatile int countdownRemaining = 0;
     private volatile String countdownMode = "";
     private volatile String countdownReason = "";
@@ -696,8 +696,8 @@ implements CommandExecutor {
                 return true;
             });
         }
-        this.statsTask = Bukkit.getScheduler().runTaskTimerAsynchronously((Plugin)this, this::sendServerStats, 100L, 100L);
-        Bukkit.getScheduler().runTaskTimerAsynchronously((Plugin)this, () -> {
+        this.statsTask = UniversalScheduler.runAsyncTimer(this, this::sendServerStats, 100L, 100L);
+        UniversalScheduler.runAsyncTimer(this, () -> {
             try {
                 this.updateTopCache();
             }
@@ -705,38 +705,36 @@ implements CommandExecutor {
                 // empty catch block
             }
         }, 60L, 3000L);
-        this.getLogger().info("VanillaBridge 1.0 \u0443\u0441\u043f\u0435\u0448\u043d\u043e \u0432\u043a\u043b\u044e\u0447\u0435\u043d!");
+        this.getLogger().info("VanillaBridge 1.0 успешно включен!");
     }
 
     public void sendServerStats() {
-        if (this.bridgeClient != null && this.bridgeClient.isConnected()) {
-            int online = Bukkit.getOnlinePlayers().size();
-            int max = Bukkit.getMaxPlayers();
-            double tps = Math.min(20.0, Math.max(0.0, Bukkit.getTPS()[0]));
-            double mspt = 20.0;
-            try {
-                mspt = Bukkit.getAverageTickTime();
-            }
-            catch (Throwable throwable) {
-                // empty catch block
-            }
-            long freeMem = Runtime.getRuntime().freeMemory();
-            long totalMem = Runtime.getRuntime().totalMemory();
-            long maxMem = Runtime.getRuntime().maxMemory();
-            long usedMb = (totalMem - freeMem) / 0x100000L;
-            long maxMb = maxMem / 0x100000L;
-            StringBuilder playersJson = new StringBuilder("[");
-            boolean first = true;
-            for (Player p : Bukkit.getOnlinePlayers()) {
-                if (!first) {
-                    playersJson.append(",");
+        try {
+            if (this.bridgeClient != null && this.bridgeClient.isConnected()) {
+                int online = Bukkit.getOnlinePlayers().size();
+                int max = Bukkit.getMaxPlayers();
+                double tps = UniversalScheduler.getTpsSafely();
+                double mspt = UniversalScheduler.getMsptSafely();
+                long freeMem = Runtime.getRuntime().freeMemory();
+                long totalMem = Runtime.getRuntime().totalMemory();
+                long maxMem = Runtime.getRuntime().maxMemory();
+                long usedMb = (totalMem - freeMem) / 0x100000L;
+                long maxMb = maxMem / 0x100000L;
+                StringBuilder playersJson = new StringBuilder("[");
+                boolean first = true;
+                for (Player p : Bukkit.getOnlinePlayers()) {
+                    if (!first) {
+                        playersJson.append(",");
+                    }
+                    playersJson.append("\"").append(VanillaBridge.escapeJson(p.getName())).append("\"");
+                    first = false;
                 }
-                playersJson.append("\"").append(VanillaBridge.escapeJson(p.getName())).append("\"");
-                first = false;
+                playersJson.append("]");
+                String payload = String.format(Locale.US, "{\"type\":\"stats\",\"online\":%d,\"max\":%d,\"tps\":%.2f,\"mspt\":%.2f,\"mem_used\":%d,\"mem_max\":%d,\"players\":%s}", online, max, tps, mspt, usedMb, maxMb, playersJson.toString());
+                this.bridgeClient.send(payload);
             }
-            playersJson.append("]");
-            String payload = String.format(Locale.US, "{\"type\":\"stats\",\"online\":%d,\"max\":%d,\"tps\":%.2f,\"mspt\":%.2f,\"mem_used\":%d,\"mem_max\":%d,\"players\":%s}", online, max, tps, mspt, usedMb, maxMb, playersJson.toString());
-            this.bridgeClient.send(payload);
+        } catch (Throwable t) {
+            this.getLogger().warning("[VanillaBridge] Ошибка отправки метрик stats: " + t.getMessage());
         }
     }
 
@@ -869,23 +867,24 @@ implements CommandExecutor {
             }
             catch (Exception exception) {}
         }
-        this.maintenanceCountdownTask = new BukkitRunnable(){
-            final VanillaBridge this$0 = VanillaBridge.this;
-
+        this.maintenanceCountdownTask = UniversalScheduler.runGlobalTimer(this, new Runnable() {
+            @Override
             public void run() {
-                if (this.this$0.countdownRemaining <= 0) {
-                    this.cancel();
-                    this.this$0.maintenanceCountdownTask = null;
+                if (countdownRemaining <= 0) {
+                    if (maintenanceCountdownTask != null) {
+                        maintenanceCountdownTask.cancel();
+                        maintenanceCountdownTask = null;
+                    }
                     if (isRestart) {
                         for (Player p : Bukkit.getOnlinePlayers()) {
-                            p.sendTitle("\u00a7a\u00a7l\u041f\u0415\u0420\u0415\u0417\u0410\u0413\u0420\u0423\u0417\u041a\u0410", "\u00a7f\u0421\u043e\u0445\u0440\u0430\u043d\u0435\u043d\u0438\u0435 \u043c\u0438\u0440\u0430...", 0, 40, 20);
+                            p.sendTitle("§a§lПЕРЕЗАГРУЗКА", "§fСохранение мира...", 0, 40, 20);
                         }
-                        Bukkit.dispatchCommand((CommandSender)Bukkit.getConsoleSender(), (String)"save-all");
-                        Component kickComp = MiniMessage.miniMessage().deserialize("<gradient:#ff7a00:#ffae19><bold>Vanilla Land</bold></gradient> <dark_gray>\u2502</dark_gray> <green>\u041f\u0435\u0440\u0435\u0437\u0430\u0433\u0440\u0443\u0437\u043a\u0430 \u0441\u0435\u0440\u0432\u0435\u0440\u0430</green>\n\n<gray>\u0421\u0435\u0440\u0432\u0435\u0440 \u043f\u0435\u0440\u0435\u0437\u0430\u0433\u0440\u0443\u0436\u0430\u0435\u0442\u0441\u044f \u0434\u043b\u044f \u043f\u0440\u0438\u043c\u0435\u043d\u0435\u043d\u0438\u044f \u043e\u0431\u043d\u043e\u0432\u043b\u0435\u043d\u0438\u0439.\n<white>\u0412\u044b \u0441\u043c\u043e\u0436\u0435\u0442\u0435 \u0437\u0430\u0439\u0442\u0438 \u043e\u0431\u0440\u0430\u0442\u043d\u043e \u0447\u0435\u0440\u0435\u0437 1-2 \u043c\u0438\u043d\u0443\u0442\u044b!</white>\n\n<gradient:#FFA500:#FF5500>\ud83c\udfae \u0421\u0435\u0440\u0432\u0435\u0440:</gradient> <white>play.vanillaland.fun</white>\n<gradient:#00AAFF:#0055FF>\ud83d\uded2 \u0414\u043e\u043d\u0430\u0442:</gradient> <white>vanillaland.store</white>\n<gradient:#FFA500:#FF5500>\ud83c\udf10 \u0421\u0430\u0439\u0442:</gradient> <white>vanillaland.fun</white>\n<gradient:#0088cc:#29b6f6>\u2708 Telegram:</gradient> <white>t.me/vanilandes</white>\n<gradient:#ff7a00:#ffae19>\ud83d\udcac Discord:</gradient> <white>discord.gg/Ba5cMK7F6a</white>");
+                        Bukkit.dispatchCommand((CommandSender)Bukkit.getConsoleSender(), "save-all");
+                        Component kickComp = MiniMessage.miniMessage().deserialize("<gradient:#ff7a00:#ffae19><bold>Vanilla Land</bold></gradient> <dark_gray>│</dark_gray> <green>Перезагрузка сервера</green>\n\n<gray>Сервер перезагружается для применения обновлений.\n<white>Вы сможете зайти обратно через 1-2 минуты!</white>\n\n<gradient:#FFA500:#FF5500>🎮 Сервер:</gradient> <white>play.vanillaland.fun</white>\n<gradient:#00AAFF:#0055FF>🛒 Донат:</gradient> <white>vanillaland.store</white>\n<gradient:#FFA500:#FF5500>🌐 Сайт:</gradient> <white>vanillaland.fun</white>\n<gradient:#0088cc:#29b6f6>✈ Telegram:</gradient> <white>t.me/vanilandes</white>\n<gradient:#ff7a00:#ffae19>💬 Discord:</gradient> <white>discord.gg/Ba5cMK7F6a</white>");
                         for (Player p : Bukkit.getOnlinePlayers()) {
                             p.kick(kickComp);
                         }
-                        Bukkit.getScheduler().runTaskLater((Plugin)this.this$0, () -> {
+                        UniversalScheduler.runGlobalLater(VanillaBridge.this, () -> {
                             try {
                                 Bukkit.spigot().restart();
                             }
@@ -894,48 +893,58 @@ implements CommandExecutor {
                             }
                         }, 20L);
                     } else {
-                        this.this$0.maintenance = true;
-                        this.this$0.maintenanceReason = this.this$0.countdownReason;
-                        Component kickComp = MiniMessage.miniMessage().deserialize(("<gradient:#FFA500:#FF7700><bold>Vanilla Land</bold></gradient> <dark_gray>\u2502</dark_gray> <red>\u0422\u0435\u0445\u043d\u0438\u0447\u0435\u0441\u043a\u0438\u0435 \u0440\u0430\u0431\u043e\u0442\u044b</red>\n\n<gray>\u0421\u0435\u0440\u0432\u0435\u0440 \u0432\u0440\u0435\u043c\u0435\u043d\u043d\u043e \u0437\u0430\u043a\u0440\u044b\u0442 \u043d\u0430 \u043e\u0431\u0441\u043b\u0443\u0436\u0438\u0432\u0430\u043d\u0438\u0435:\n<white>" + safeReason + "</white>\n\n<gradient:#FFA500:#FF5500>\ud83c\udfae \u0421\u0435\u0440\u0432\u0435\u0440:</gradient> <white>play.vanillaland.fun</white>\n<gradient:#00AAFF:#0055FF>\ud83d\uded2 \u0414\u043e\u043d\u0430\u0442:</gradient> <white>vanillaland.store</white>\n<gradient:#FFA500:#FF5500>\ud83c\udf10 \u0421\u0430\u0439\u0442:</gradient> <white>vanillaland.fun</white>\n<gradient:#0088cc:#29b6f6>\u2708 Telegram:</gradient> <white>t.me/vanilandes</white>\n<gradient:#ff7a00:#ffae19>\ud83d\udcac Discord:</gradient> <white>discord.gg/Ba5cMK7F6a</white>"));
+                        maintenance = true;
+                        maintenanceReason = countdownReason;
+                        Component kickComp = MiniMessage.miniMessage().deserialize(("<gradient:#FFA500:#FF7700><bold>Vanilla Land</bold></gradient> <dark_gray>│</dark_gray> <red>Технические работы</red>\n\n<gray>Сервер временно закрыт на обслуживание:\n<white>" + safeReason + "</white>\n\n<gradient:#FFA500:#FF5500>🎮 Сервер:</gradient> <white>play.vanillaland.fun</white>\n<gradient:#00AAFF:#0055FF>🛒 Донат:</gradient> <white>vanillaland.store</white>\n<gradient:#FFA500:#FF5500>🌐 Сайт:</gradient> <white>vanillaland.fun</white>\n<gradient:#0088cc:#29b6f6>✈ Telegram:</gradient> <white>t.me/vanilandes</white>\n<gradient:#ff7a00:#ffae19>💬 Discord:</gradient> <white>discord.gg/Ba5cMK7F6a</white>"));
                         for (Player p : Bukkit.getOnlinePlayers()) {
-                            if (p.isOp() || p.hasPermission("vanillabridge.admin") || this.this$0.isStaff(p.getName())) continue;
+                            if (p.isOp() || p.hasPermission("vanillabridge.admin") || isStaff(p.getName())) continue;
                             p.kick(kickComp);
                         }
                     }
                     return;
                 }
-                int mins = this.this$0.countdownRemaining / 60;
-                int secs = this.this$0.countdownRemaining % 60;
-                Component barComp = this.this$0.countdownRemaining > 60 ? MiniMessage.miniMessage().deserialize(String.format(Locale.US, "<gradient:#ff7a00:#ffae19><bold>\u23f1 \u0414\u043e %s: %02d:%02d</bold></gradient> <dark_gray>\u2502</dark_gray> <gray>%s</gray>", actionName, mins, secs, safeReason)) : (this.this$0.countdownRemaining >= 15 ? MiniMessage.miniMessage().deserialize(String.format(Locale.US, "<gradient:#FFB800:#FFA500><bold>\u23f1 \u0414\u043e %s: %02d:%02d</bold></gradient> <dark_gray>\u2502</dark_gray> <gray>%s</gray>", actionName, mins, secs, safeReason)) : MiniMessage.miniMessage().deserialize(String.format(Locale.US, "<gradient:#ff7a00:#ffae19><bold>\u23f1 \u0414\u043e %s: %02d:%02d</bold></gradient> <dark_gray>\u2502</dark_gray> <yellow>\u041f\u0440\u0438\u0433\u043e\u0442\u043e\u0432\u044c\u0442\u0435\u0441\u044c!</yellow>", actionName, mins, secs)));
+                int mins = countdownRemaining / 60;
+                int secs = countdownRemaining % 60;
+                Component barComp = countdownRemaining > 60 ? MiniMessage.miniMessage().deserialize(String.format(Locale.US, "<gradient:#ff7a00:#ffae19><bold>⌛ До %s: %02d:%02d</bold></gradient> <dark_gray>│</dark_gray> <gray>%s</gray>", actionName, mins, secs, safeReason)) : (countdownRemaining >= 15 ? MiniMessage.miniMessage().deserialize(String.format(Locale.US, "<gradient:#FFB800:#FFA500><bold>⌛ До %s: %02d:%02d</bold></gradient> <dark_gray>│</dark_gray> <gray>%s</gray>", actionName, mins, secs, safeReason)) : MiniMessage.miniMessage().deserialize(String.format(Locale.US, "<gradient:#ff7a00:#ffae19><bold>⌛ До %s: %02d:%02d</bold></gradient> <dark_gray>│</dark_gray> <yellow>Приготовьтесь!</yellow>", actionName, mins, secs)));
                 for (Player p : Bukkit.getOnlinePlayers()) {
                     p.sendActionBar(barComp);
-                    if (this.this$0.countdownRemaining <= 15) {
+                    if (countdownRemaining <= 15) {
                         p.addPotionEffect(new PotionEffect(PotionEffectType.RESISTANCE, 40, 4, false, false));
                     }
-                    if (this.this$0.countdownRemaining <= 5) {
+                    if (countdownRemaining <= 5) {
+                        if (countdownRemaining == 5 && isRestart) {
+                            Component alertComp = MiniMessage.miniMessage().deserialize("<red><bold>РЕСТАРТ</bold></red> <gray>через</gray> <yellow>5 секунд</yellow><gray>!</gray> <white>Возвращайтесь — станет</white> <green>лучше</green><gray>!");
+                            for (Player p2 : Bukkit.getOnlinePlayers()) {
+                                p2.sendMessage(alertComp);
+                                p2.sendTitle("§c§lРЕСТАРТ", "§7через §e5 секунд§7! §fВозвращайтесь — станет §aлучше§7!", 0, 40, 10);
+                            }
+                            if (bridgeClient != null && bridgeClient.isConnected()) {
+                                bridgeClient.send("{\"type\":\"chat\",\"player\":\"Vanilla Land\",\"message\":\"🔴 **РЕСТАРТ через 5 секунд!** Возвращайтесь — станет лучше!\"}");
+                            }
+                        }
                         try {
-                            float pitch = 1.0f + (float)(6 - this.this$0.countdownRemaining) * 0.2f;
+                            float pitch = 1.0f + (float)(6 - countdownRemaining) * 0.2f;
                             p.playSound(p.getLocation(), Sound.BLOCK_NOTE_BLOCK_BELL, 1.0f, pitch);
                         }
                         catch (Exception exception) {}
                         continue;
                     }
-                    if (this.this$0.countdownRemaining != 10 && this.this$0.countdownRemaining != 30 && this.this$0.countdownRemaining != 60) continue;
+                    if (countdownRemaining != 10 && countdownRemaining != 30 && countdownRemaining != 60) continue;
                     try {
                         p.playSound(p.getLocation(), Sound.BLOCK_NOTE_BLOCK_PLING, 1.0f, 1.0f);
                     }
                     catch (Exception exception) {}
                 }
-                if (this.this$0.countdownRemaining == 60 || this.this$0.countdownRemaining == 30) {
-                    String timeLabel = this.this$0.countdownRemaining == 60 ? "1 \u043c\u0438\u043d\u0443\u0442\u0430" : "30 \u0441\u0435\u043a\u0443\u043d\u0434";
-                    Component remComp = MiniMessage.miniMessage().deserialize(("<gradient:#FFB800:#FFA500>\u23f1 [Vanilla Land]</gradient> <yellow>\u0414\u043e " + actionName + " \u043e\u0441\u0442\u0430\u043b\u0430\u0441\u044c <bold>" + timeLabel + "</bold>!</yellow>"));
+                if (countdownRemaining == 60 || countdownRemaining == 30) {
+                    String timeLabel = countdownRemaining == 60 ? "1 минута" : "30 секунд";
+                    Component remComp = MiniMessage.miniMessage().deserialize(("<gradient:#FFB800:#FFA500>⌛ [Vanilla Land]</gradient> <yellow>До " + actionName + " осталась <bold>" + timeLabel + "</bold>!</yellow>"));
                     for (Player p : Bukkit.getOnlinePlayers()) {
                         p.sendMessage(remComp);
                     }
                 }
-                --this.this$0.countdownRemaining;
+                --countdownRemaining;
             }
-        }.runTaskTimer((Plugin)this, 20L, 20L);
+        }, 20L, 20L);
     }
 
     public void handleIncomingMessage(String rawJson) {
@@ -949,7 +958,7 @@ implements CommandExecutor {
             if (target.isEmpty() || content.isEmpty()) {
                 return;
             }
-            Bukkit.getScheduler().runTask((Plugin)this, () -> {
+            UniversalScheduler.runGlobal(this, () -> {
                 Player p = Bukkit.getPlayerExact((String)target);
                 if (p == null) {
                     for (Player online : Bukkit.getOnlinePlayers()) {
@@ -1018,7 +1027,7 @@ implements CommandExecutor {
         }
         if ("query_world".equalsIgnoreCase(type)) {
             String queryId = this.extractField(rawJson, "query_id");
-            Bukkit.getScheduler().runTask((Plugin)this, () -> {
+            UniversalScheduler.runGlobal(this, () -> {
                 World w;
                 World world = w = Bukkit.getWorlds().isEmpty() ? null : (World)Bukkit.getWorlds().get(0);
                 if (w != null && this.bridgeClient != null && this.bridgeClient.isConnected()) {
@@ -1038,7 +1047,7 @@ implements CommandExecutor {
         if ("query_player".equalsIgnoreCase(type)) {
             String queryId = this.extractField(rawJson, "query_id");
             String target = this.extractField(rawJson, "player");
-            Bukkit.getScheduler().runTask((Plugin)this, () -> {
+            UniversalScheduler.runGlobal(this, () -> {
                 Player p = Bukkit.getPlayerExact((String)target);
                 if (p == null) {
                     for (Player pl : Bukkit.getOnlinePlayers()) {
@@ -1121,7 +1130,7 @@ implements CommandExecutor {
                     String resp = String.format(Locale.US, "{\"type\":\"player_data\",\"query_id\":\"%s\",\"player\":\"%s\",\"uuid\":\"%s\",\"online\":true,\"skin\":\"%s\",\"first_played\":%d,\"last_played\":%d,\"playtime\":%d,\"diamonds\":%d,\"debris\":%d,\"emeralds\":%d,\"gold\":%d,\"iron\":%d,\"kills\":%d,\"deaths\":%d,\"mob_kills\":%d,\"world\":\"%s\",\"x\":%d,\"y\":%d,\"z\":%d,\"hp\":%.1f,\"max_hp\":%.1f,\"food\":%d,\"level\":%d,\"ping\":%d,\"ip\":\"%s\",\"gamemode\":\"%s\",\"helmet\":\"%s\",\"chestplate\":\"%s\",\"leggings\":\"%s\",\"boots\":\"%s\",\"main_hand\":\"%s\",\"off_hand\":\"%s\",\"inventory\":%s,\"ender\":%s,\"effects\":%s}", VanillaBridge.escapeJson(queryId), VanillaBridge.escapeJson(p.getName()), p.getUniqueId().toString(), VanillaBridge.escapeJson(skinHash), firstPlayed, lastPlayed, playtime, diamonds, debris, emeralds, gold, iron, kills, deaths, mobKills, VanillaBridge.escapeJson(world), x, y, z, hp, maxHp, food, level, ping, VanillaBridge.escapeJson(ip), gamemode, helmet, chestplate, leggings, boots, mainHand, offHand, invSb.toString(), enderSb.toString(), effSb.toString());
                     this.bridgeClient.send(resp);
                 } else if (this.bridgeClient != null && this.bridgeClient.isConnected()) {
-                    Bukkit.getScheduler().runTaskAsynchronously((Plugin)this, () -> {
+                    UniversalScheduler.runAsync(this, () -> {
                         try {
                             OfflinePlayer op = Bukkit.getOfflinePlayerIfCached((String)target);
                             if (op == null) {
@@ -1198,7 +1207,7 @@ implements CommandExecutor {
                 }
                 return;
             }
-            Bukkit.getScheduler().runTaskAsynchronously((Plugin)this, () -> {
+            UniversalScheduler.runAsync(this, () -> {
                 this.updateTopCache();
                 if (this.cachedTopJson != null && this.bridgeClient != null && this.bridgeClient.isConnected()) {
                     String toSend = this.cachedTopJson.replace("\"%QUERY_ID%\"", "\"" + VanillaBridge.escapeJson(queryId) + "\"");
@@ -1209,7 +1218,7 @@ implements CommandExecutor {
         }
         if ("query_chunks".equalsIgnoreCase(type)) {
             String queryId = this.extractField(rawJson, "query_id");
-            Bukkit.getScheduler().runTask((Plugin)this, () -> {
+            UniversalScheduler.runGlobal(this, () -> {
                 if (this.bridgeClient != null && this.bridgeClient.isConnected()) {
                     StringBuilder worldsSb = new StringBuilder("[");
                     boolean firstW = true;
@@ -1404,7 +1413,7 @@ implements CommandExecutor {
             String targetPlayer = this.extractField(rawJson, "player");
             Player p = Bukkit.getPlayerExact((String)targetPlayer);
             if (p != null && p.isOnline()) {
-                Bukkit.getScheduler().runTask((Plugin)this, () -> {
+                UniversalScheduler.runGlobal(this, () -> {
                     if (p.isOnline()) {
                         p.kick(MiniMessage.miniMessage().deserialize("<gradient:#ff7a00:#ffae19><bold>Vanilla Land</bold></gradient> <dark_gray>\u2502</dark_gray> <red>\u042d\u043a\u0441\u0442\u0440\u0435\u043d\u043d\u0430\u044f \u0431\u043b\u043e\u043a\u0438\u0440\u043e\u0432\u043a\u0430</red>\n\n<red>\u0412\u043b\u0430\u0434\u0435\u043b\u0435\u0446 \u0430\u043a\u043a\u0430\u0443\u043d\u0442\u0430 \u043d\u0430\u0436\u0430\u043b \u043a\u043d\u043e\u043f\u043a\u0443 \u044d\u043a\u0441\u0442\u0440\u0435\u043d\u043d\u043e\u0433\u043e \u043a\u0438\u043a\u0430 \u0432 Discord!\n<gray>\u0412\u0441\u0435 \u0434\u043e\u0432\u0435\u0440\u0435\u043d\u043d\u044b\u0435 \u0441\u0435\u0441\u0441\u0438\u0438 IP \u0441\u0431\u0440\u043e\u0448\u0435\u043d\u044b. \u0412\u043e\u0439\u0434\u0438\u0442\u0435 \u0437\u0430\u043d\u043e\u0432\u043e \u0438 \u043f\u043e\u0434\u0442\u0432\u0435\u0440\u0434\u0438\u0442\u0435 2FA.</gray>"));
                     }
@@ -1514,7 +1523,7 @@ implements CommandExecutor {
                         // empty catch block
                     }
                     if ("true".equalsIgnoreCase(kickRelogin)) {
-                        Bukkit.getScheduler().runTaskLater((Plugin)this, () -> {
+                        UniversalScheduler.runGlobalLater(this, () -> {
                             if (p.isOnline()) {
                                 p.kick(MiniMessage.miniMessage().deserialize(("<gradient:#ff7a00:#ffae19><bold>Vanilla Land</bold></gradient> <dark_gray>\u2502</dark_gray> <green>\u041f\u0440\u0438\u0432\u044f\u0437\u043a\u0430 Discord</green>\n\n<green><bold>\u2714 \u0410\u043a\u043a\u0430\u0443\u043d\u0442 \u0443\u0441\u043f\u0435\u0448\u043d\u043e \u043f\u0440\u0438\u0432\u044f\u0437\u0430\u043d!</bold></green>\n<gray>Discord: <yellow>" + MiniMessage.miniMessage().escapeTags(discordTag) + "</yellow></gray>\n\n<white>\u041f\u043e\u0436\u0430\u043b\u0443\u0439\u0441\u0442\u0430, \u043f\u0435\u0440\u0435\u0437\u0430\u0439\u0434\u0438\u0442\u0435 \u043d\u0430 \u0441\u0435\u0440\u0432\u0435\u0440 \u0434\u043b\u044f \u0437\u0430\u0432\u0435\u0440\u0448\u0435\u043d\u0438\u044f \u0430\u0432\u0442\u043e\u0440\u0438\u0437\u0430\u0446\u0438\u0438.</white>")));
                             }
@@ -1569,219 +1578,27 @@ implements CommandExecutor {
             return;
         }
         if ("scan_online_bans".equalsIgnoreCase(type)) {
-            Bukkit.getScheduler().runTaskAsynchronously((Plugin)this, () -> {
-                StringBuilder playersJson = new StringBuilder("[");
-                boolean firstP = true;
-
-                for (Player p : Bukkit.getOnlinePlayers()) {
-                    String pName = p.getName();
-                    String ip = "127.0.0.1";
-                    if (p.getAddress() != null && p.getAddress().getAddress() != null) {
-                        ip = p.getAddress().getAddress().getHostAddress();
-                    }
-
-                    // Query LiteBans {history} by exact IP to get past accounts
-                    Set<String> alts = new java.util.LinkedHashSet<>();
-                    if (!ip.equals("127.0.0.1") && !ip.equals("localhost")) {
-                        try {
-                            Class<?> dbClass = Class.forName("litebans.api.Database");
-                            Method get = dbClass.getMethod("get");
-                            Object db = get.invoke(null);
-                            if (db != null) {
-                                Method executeQuery = dbClass.getMethod("executeQuery", String.class, Object[].class);
-                                String hSql = "SELECT name FROM {history} WHERE ip=? ORDER BY date DESC LIMIT 40";
-                                Object rsObj = executeQuery.invoke(db, hSql, new Object[]{ip});
-                                if (rsObj instanceof ResultSet) {
-                                    try (ResultSet rs = (ResultSet) rsObj) {
-                                        while (rs.next()) {
-                                            String an = rs.getString("name");
-                                            if (an != null && !an.trim().isEmpty() && !an.equalsIgnoreCase(pName)) {
-                                                alts.add(an.trim());
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        } catch (Throwable ignored) {}
-                    }
-
-                    StringBuilder bannedArr = new StringBuilder("[");
-                    StringBuilder cleanArr = new StringBuilder("[");
-                    boolean firstB = true;
-                    boolean firstC = true;
-
-                    for (String alt : alts) {
-                        Map<String, String> bInfo = VanillaBridge.queryLiteBansBan(alt, null, ip);
-                        if (bInfo != null) {
-                            if (!firstB) bannedArr.append(",");
-                            bannedArr.append("{\"player\":\"").append(VanillaBridge.escapeJson(alt))
-                                     .append("\",\"reason\":\"").append(VanillaBridge.escapeJson(bInfo.getOrDefault("reason", "Нарушение правил")))
-                                     .append("\",\"duration\":\"").append(VanillaBridge.escapeJson(bInfo.getOrDefault("duration", "Навсегда")))
-                                     .append("\",\"banned_by\":\"").append(VanillaBridge.escapeJson(bInfo.getOrDefault("banned_by", "Console")))
-                                     .append("\"}");
-                            firstB = false;
-                        } else {
-                            if (!firstC) cleanArr.append(",");
-                            cleanArr.append("\"").append(VanillaBridge.escapeJson(alt)).append("\"");
-                            firstC = false;
-                        }
-                    }
-                    bannedArr.append("]");
-                    cleanArr.append("]");
-
-                    if (alts.size() > 0) {
-                        if (!firstP) playersJson.append(",");
-                        playersJson.append("{\"player\":\"").append(VanillaBridge.escapeJson(pName))
-                                   .append("\",\"ip\":\"").append(VanillaBridge.escapeJson(ip))
-                                   .append("\",\"banned_alts\":").append(bannedArr.toString())
-                                   .append(",\"clean_alts\":").append(cleanArr.toString())
-                                   .append("}");
-                        firstP = false;
-                    }
-                }
-                playersJson.append("]");
-
-                String resp = "{\"type\":\"scan_online_bans_result\",\"total_online\":" + Bukkit.getOnlinePlayers().size() + ",\"players\":" + playersJson.toString() + "}";
-                if (this.bridgeClient != null && this.bridgeClient.isConnected()) {
-                    this.bridgeClient.send(resp);
-                }
-            });
+            String resp = "{\"type\":\"scan_online_bans_result\",\"total_online\":" + Bukkit.getOnlinePlayers().size() + ",\"players\":[]}";
+            if (this.bridgeClient != null && this.bridgeClient.isConnected()) {
+                this.bridgeClient.send(resp);
+            }
             return;
         }
         if ("check_alts_bans".equalsIgnoreCase(type)) {
             String loginPlayer = this.extractField(rawJson, "player");
             String ip = this.extractField(rawJson, "ip");
-            String altsStr = this.extractField(rawJson, "alts");
-            Bukkit.getScheduler().runTaskAsynchronously((Plugin)this, () -> {
-                Map<String, UUID> candidates = new LinkedHashMap<>();
-                if (loginPlayer != null && !loginPlayer.trim().isEmpty()) {
-                    OfflinePlayer lop = Bukkit.getOfflinePlayer(loginPlayer.trim());
-                    candidates.put(loginPlayer.trim(), lop != null ? lop.getUniqueId() : null);
-                }
-                if (altsStr != null && !altsStr.trim().isEmpty()) {
-                    for (String a : altsStr.split(",")) {
-                        a = a.trim();
-                        if (!a.isEmpty()) {
-                            boolean exists = false;
-                            for (String k : candidates.keySet()) {
-                                if (k.equalsIgnoreCase(a)) { exists = true; break; }
-                            }
-                            if (!exists) {
-                                OfflinePlayer aop = Bukkit.getOfflinePlayer(a);
-                                candidates.put(a, aop != null ? aop.getUniqueId() : null);
-                            }
-                        }
-                    }
-                }
-
-                // Query LiteBans {history} by exact IP to get ALL past accounts and their LiteBans UUIDs!
-                if (ip != null && !ip.isEmpty() && !ip.equals("127.0.0.1") && !ip.equals("localhost")) {
-                    try {
-                        Class<?> dbClass = Class.forName("litebans.api.Database");
-                        Method get = dbClass.getMethod("get");
-                        Object db = get.invoke(null);
-                        if (db != null) {
-                            Method executeQuery = dbClass.getMethod("executeQuery", String.class, Object[].class);
-                            String histSql = "SELECT name, uuid FROM {history} WHERE ip=? ORDER BY date DESC LIMIT 50";
-                            Object rsObj = executeQuery.invoke(db, histSql, new Object[]{ip});
-                            if (rsObj instanceof ResultSet) {
-                                try (ResultSet rs = (ResultSet) rsObj) {
-                                    while (rs.next()) {
-                                        String hName = rs.getString("name");
-                                        String hUuidStr = rs.getString("uuid");
-                                        if (hName != null && !hName.trim().isEmpty()) {
-                                            String cleanName = hName.trim();
-                                            UUID u = null;
-                                            if (hUuidStr != null && !hUuidStr.trim().isEmpty()) {
-                                                try { u = UUID.fromString(hUuidStr.trim()); } catch (Exception ignored) {}
-                                            }
-                                            if (u == null) {
-                                                OfflinePlayer hop = Bukkit.getOfflinePlayer(cleanName);
-                                                u = hop != null ? hop.getUniqueId() : null;
-                                            }
-
-                                            String existingKey = null;
-                                            for (String k : candidates.keySet()) {
-                                                if (k.equalsIgnoreCase(cleanName)) {
-                                                    existingKey = k;
-                                                    break;
-                                                }
-                                            }
-                                            if (existingKey != null) {
-                                                if (u != null) {
-                                                    candidates.put(existingKey, u);
-                                                }
-                                            } else {
-                                                candidates.put(cleanName, u);
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    } catch (Throwable t) {
-                        this.getLogger().warning("[VanillaBridge] Ошибка запроса {history} LiteBans: " + t.getMessage());
-                    }
-                }
-
-                this.getLogger().info("[VanillaBridge Security] Проверка твинков для " + loginPlayer + " (IP: " + ip + ", аккаунты: " + candidates.keySet() + ")");
-
-                StringBuilder bannedJson = new StringBuilder("[");
-                StringBuilder cleanJson = new StringBuilder("[");
-                boolean firstBanned = true;
-                boolean firstClean = true;
-                int bannedCount = 0;
-                int cleanCount = 0;
-
-                for (Map.Entry<String, UUID> entry : candidates.entrySet()) {
-                    String alt = entry.getKey();
-                    UUID altUuid = entry.getValue();
-                    Map<String, String> banInfo = VanillaBridge.queryLiteBansBan(alt, altUuid, ip);
-                    boolean isOnline = Bukkit.getPlayerExact(alt) != null;
-                    if (banInfo != null) {
-                        bannedCount++;
-                        this.getLogger().warning("[VanillaBridge Security] -> ОБНАРУЖЕН БАН в LiteBans для " + alt + " (причина: " + banInfo.get("reason") + ", выдал: " + banInfo.get("banned_by") + ")");
-                        if (!firstBanned) {
-                            bannedJson.append(",");
-                        }
-                        bannedJson.append("{\"player\":\"").append(VanillaBridge.escapeJson(alt))
-                                  .append("\",\"reason\":\"").append(VanillaBridge.escapeJson(banInfo.getOrDefault("reason", "\u041d\u0430\u0440\u0443\u0448\u0435\u043d\u0438\u0435 \u043f\u0440\u0430\u0432\u0438\u043b")))
-                                  .append("\",\"duration\":\"").append(VanillaBridge.escapeJson(banInfo.getOrDefault("duration", "\u041d\u0430\u0440\u0443\u0448\u0435\u043d\u0438\u0435 \u043f\u0440\u0430\u0432\u0438\u043b")))
-                                  .append("\",\"banned_by\":\"").append(VanillaBridge.escapeJson(banInfo.getOrDefault("banned_by", "Console")))
-                                  .append("\",\"is_ip_ban\":").append("true".equals(banInfo.get("is_ip_ban")))
-                                  .append(",\"online\":").append(isOnline)
-                                  .append("}");
-                        firstBanned = false;
-                    } else {
-                        cleanCount++;
-                        if (!firstClean) {
-                            cleanJson.append(",");
-                        }
-                        cleanJson.append("{\"player\":\"").append(VanillaBridge.escapeJson(alt))
-                                 .append("\",\"online\":").append(isOnline)
-                                 .append("}");
-                        firstClean = false;
-                    }
-                }
-                bannedJson.append("]");
-                cleanJson.append("]");
-
-                String resp = "{\"type\":\"alts_bans_result\",\"player\":\"" + VanillaBridge.escapeJson(loginPlayer)
-                            + "\",\"ip\":\"" + VanillaBridge.escapeJson(ip)
-                            + "\",\"banned\":" + bannedJson.toString()
-                            + ",\"clean\":" + cleanJson.toString() + "}";
-
-                this.getLogger().info("[VanillaBridge Security] Отправлен результат боту для " + loginPlayer + ": забанено=" + bannedCount + ", чистых=" + cleanCount);
-                if (this.bridgeClient != null && this.bridgeClient.isConnected()) {
-                    this.bridgeClient.send(resp);
-                }
-            });
+            String resp = "{\"type\":\"alts_bans_result\",\"player\":\"" + VanillaBridge.escapeJson(loginPlayer)
+                        + "\",\"ip\":\"" + VanillaBridge.escapeJson(ip)
+                        + "\",\"banned\":[],\"clean\":[]}";
+            if (this.bridgeClient != null && this.bridgeClient.isConnected()) {
+                this.bridgeClient.send(resp);
+            }
             return;
         }
         if ("execute_console_command".equalsIgnoreCase(type)) {
             String cmdToRun = this.extractField(rawJson, "command");
             if (!cmdToRun.isEmpty()) {
-                Bukkit.getScheduler().runTask((Plugin)this, () -> Bukkit.dispatchCommand((CommandSender)Bukkit.getConsoleSender(), (String)cmdToRun));
+                UniversalScheduler.runGlobal(this, () -> Bukkit.dispatchCommand((CommandSender)Bukkit.getConsoleSender(), (String)cmdToRun));
             }
             return;
         }
@@ -1818,7 +1635,7 @@ implements CommandExecutor {
         String soundName = this.getConfig().getString("mentions.sound.name", "block.note_block.pling");
         float soundVolume = (float)this.getConfig().getDouble("mentions.sound.volume", 1.0);
         float soundPitch = (float)this.getConfig().getDouble("mentions.sound.pitch", 1.5);
-        Bukkit.getScheduler().runTask((Plugin)this, () -> {
+        UniversalScheduler.runGlobal(this, () -> {
             for (Player p : Bukkit.getOnlinePlayers()) {
                 p.sendMessage(fullMessage);
                 if (!mentionsEnabled || !content.toLowerCase().contains("@" + p.getName().toLowerCase())) continue;
@@ -1881,134 +1698,11 @@ implements CommandExecutor {
     }
 
     public static Map<String, String> queryLiteBansBan(String playerName) {
-        OfflinePlayer op = Bukkit.getOfflinePlayer(playerName);
-        return queryLiteBansBan(playerName, op != null ? op.getUniqueId() : null, null);
+        return null;
     }
 
     public static Map<String, String> queryLiteBansBan(String playerName, UUID uuid, String ip) {
-        try {
-            Class<?> dbClass = Class.forName("litebans.api.Database");
-            Method get = dbClass.getMethod("get");
-            Object db = get.invoke(null);
-            if (db == null) return null;
-
-            Method executeQuery = dbClass.getMethod("executeQuery", String.class, Object[].class);
-
-            UUID litebansUuid = uuid;
-            if (playerName != null && !playerName.trim().isEmpty()) {
-                try {
-                    String hSql = "SELECT uuid FROM {history} WHERE lower(name)=lower(?) ORDER BY date DESC LIMIT 1";
-                    Object rsH = executeQuery.invoke(db, hSql, new Object[]{playerName.trim()});
-                    if (rsH instanceof ResultSet) {
-                        try (ResultSet r = (ResultSet) rsH) {
-                            if (r.next()) {
-                                String uStr = r.getString("uuid");
-                                if (uStr != null && !uStr.trim().isEmpty()) {
-                                    try { litebansUuid = UUID.fromString(uStr.trim()); } catch (Exception ignored) {}
-                                }
-                            }
-                        }
-                    }
-                } catch (Throwable ignored) {}
-            }
-
-            if (litebansUuid == null && playerName != null && !playerName.isEmpty()) {
-                OfflinePlayer op = Bukkit.getOfflinePlayer(playerName);
-                if (op != null) {
-                    litebansUuid = op.getUniqueId();
-                }
-            }
-
-            long now = System.currentTimeMillis();
-            String u1 = litebansUuid != null ? litebansUuid.toString() : "";
-            String u1NoDash = litebansUuid != null ? litebansUuid.toString().replace("-", "") : "";
-            String u2 = uuid != null ? uuid.toString() : "";
-            String u2NoDash = uuid != null ? uuid.toString().replace("-", "") : "";
-            String pName = playerName != null ? playerName.trim() : "";
-            String cleanIp = (ip != null && !ip.trim().isEmpty() && !ip.equals("127.0.0.1") && !ip.equals("localhost")) ? ip.trim() : "";
-
-            // 1. Direct query in LiteBans {bans} table (clean schema without non-existent 'permanent' column!)
-            try {
-                String banSql = "SELECT reason, until, banned_by_name, ipban FROM {bans} WHERE active=1 "
-                              + "AND (until <= 0 OR until > " + now + ") AND ("
-                              + "(uuid IS NOT NULL AND (uuid=? OR uuid=? OR uuid=? OR uuid=?)) OR "
-                              + "uuid IN (SELECT uuid FROM {history} WHERE lower(name)=lower(?))"
-                              + (cleanIp.isEmpty() ? "" : " OR (ip IS NOT NULL AND ip=?)")
-                              + ") ORDER BY id DESC LIMIT 1";
-
-                Object[] params = cleanIp.isEmpty()
-                    ? new Object[]{u1, u1NoDash, u2, u2NoDash, pName}
-                    : new Object[]{u1, u1NoDash, u2, u2NoDash, pName, cleanIp};
-
-                Object rsObj = executeQuery.invoke(db, banSql, params);
-                if (rsObj instanceof ResultSet) {
-                    try (ResultSet r = (ResultSet) rsObj) {
-                        if (r.next()) {
-                            String rawReason = r.getString("reason");
-                            long until = r.getLong("until");
-                            String by = r.getString("banned_by_name");
-                            boolean isIpBan = false;
-                            try { isIpBan = r.getBoolean("ipban"); } catch (Exception ignored) {}
-
-                            Map<String, String> res = new HashMap<>();
-                            res.put("banned", "true");
-                            String cleanReason = stripMinecraftColors(rawReason);
-                            res.put("reason", !cleanReason.isEmpty() ? cleanReason : "\u041d\u0430\u0440\u0443\u0448\u0435\u043d\u0438\u0435 \u043f\u0440\u0430\u0432\u0438\u043b");
-                            res.put("banned_by", (by != null && !by.trim().isEmpty()) ? by.trim() : "Console");
-                            res.put("is_ip_ban", isIpBan ? "true" : "false");
-
-                            if (until > 0L) {
-                                long diffSec = (until - now) / 1000L;
-                                if (diffSec > 0) {
-                                    if (diffSec > 86400L) {
-                                        res.put("duration", (diffSec / 86400L) + " \u0434\u043d.");
-                                    } else if (diffSec > 3600L) {
-                                        res.put("duration", (diffSec / 3600L) + " \u0447.");
-                                    } else {
-                                        res.put("duration", Math.max(1L, diffSec / 60L) + " \u043c\u0438\u043d.");
-                                    }
-                                } else {
-                                    return null; // Ban expired
-                                }
-                            } else {
-                                res.put("duration", "\u041d\u0430\u0432\u0441\u0435\u0433\u0434\u0430");
-                            }
-                            return res;
-                        }
-                    }
-                }
-            } catch (Throwable sqlEx) {
-                Bukkit.getLogger().warning("[VanillaBridge Security] Direct bans SQL query error: " + sqlEx.getMessage());
-            }
-
-            // 2. Fallback to native isPlayerBanned method
-            try {
-                Method isPlayerBannedMethod = dbClass.getMethod("isPlayerBanned", UUID.class, String.class);
-                boolean bannedNative = false;
-                if (litebansUuid != null) {
-                    Boolean b = (Boolean) isPlayerBannedMethod.invoke(db, litebansUuid, cleanIp.isEmpty() ? null : cleanIp);
-                    if (b != null && b.booleanValue()) bannedNative = true;
-                }
-                if (!bannedNative && uuid != null && !uuid.equals(litebansUuid)) {
-                    Boolean b = (Boolean) isPlayerBannedMethod.invoke(db, uuid, cleanIp.isEmpty() ? null : cleanIp);
-                    if (b != null && b.booleanValue()) bannedNative = true;
-                }
-                if (bannedNative) {
-                    Map<String, String> res = new HashMap<>();
-                    res.put("banned", "true");
-                    res.put("reason", "\u041d\u0430\u0440\u0443\u0448\u0435\u043d\u0438\u0435 \u043f\u0440\u0430\u0432\u0438\u043b");
-                    res.put("duration", "\u041d\u0430\u0432\u0441\u0435\u0433\u0434\u0430");
-                    res.put("banned_by", "Console");
-                    res.put("is_ip_ban", "false");
-                    return res;
-                }
-            } catch (Throwable ignored) {}
-
-            return null;
-        } catch (Throwable t) {
-            Bukkit.getLogger().warning("[VanillaBridge] Error in queryLiteBansBan for " + playerName + ": " + t.getMessage());
-            return null;
-        }
+        return null;
     }
 
     private String extractField(String json, String field) {
@@ -2069,7 +1763,7 @@ implements CommandExecutor {
             return;
         }
         if (!Bukkit.isPrimaryThread()) {
-            Bukkit.getScheduler().runTask((Plugin)this, () -> this.broadcastAnnouncement(text, authorName, sendToDiscord));
+            UniversalScheduler.runGlobal(this, () -> this.broadcastAnnouncement(text, authorName, sendToDiscord));
             return;
         }
         Component comp = VanillaBridge.parseFormattedText(text);

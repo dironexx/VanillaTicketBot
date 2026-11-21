@@ -21,7 +21,7 @@ public class MaintenanceManager {
     private boolean maintenanceActive = false;
     private String maintenanceReason = "Плановые технические работы";
 
-    private BukkitTask countdownTask = null;
+    private UniversalScheduler.TaskHandle countdownTask = null;
     private int remainingSeconds = 0;
     private String countdownMode = "maintenance";
     private String countdownReason = "";
@@ -94,16 +94,22 @@ public class MaintenanceManager {
             } catch (Exception ignored) {}
         }
 
-        this.countdownTask = new BukkitRunnable() {
+        this.countdownTask = UniversalScheduler.runGlobalTimer(this.plugin, new Runnable() {
             @Override
             public void run() {
                 remainingSeconds--;
                 if (remainingSeconds <= 0) {
-                    cancel();
-                    countdownTask = null;
+                    if (countdownTask != null) {
+                        countdownTask.cancel();
+                        countdownTask = null;
+                    }
                     if (isRestart) {
                         Bukkit.broadcast(MiniMessage.miniMessage().deserialize("<red><bold>Сервер перезагружается прямо сейчас...</bold></red>"));
-                        Bukkit.shutdown();
+                        try {
+                            Bukkit.spigot().restart();
+                        } catch (Throwable t) {
+                            Bukkit.shutdown();
+                        }
                     } else {
                         maintenanceActive = true;
                         maintenanceReason = actualReason;
@@ -122,6 +128,16 @@ public class MaintenanceManager {
                     return;
                 }
 
+                if (remainingSeconds == 5 && isRestart) {
+                    Component fiveSec = MiniMessage.miniMessage().deserialize(
+                        "<red><bold>РЕСТАРТ</bold></red> <gray>через</gray> <yellow>5 секунд</yellow><gray>!</gray> <white>Возвращайтесь — станет</white> <green>лучше</green><gray>!"
+                    );
+                    for (Player p : Bukkit.getOnlinePlayers()) {
+                        p.sendMessage(fiveSec);
+                        p.sendTitle("§c§lРЕСТАРТ", "§7через §e5 секунд§7! §fВозвращайтесь — станет §aлучше§7!", 0, 40, 10);
+                    }
+                }
+
                 if (remainingSeconds == 300 || remainingSeconds == 180 || remainingSeconds == 120 || remainingSeconds == 60 || remainingSeconds == 30 || remainingSeconds <= 10) {
                     String timeStr = remainingSeconds >= 60 ? (remainingSeconds / 60) + " мин." : remainingSeconds + " сек.";
                     Component alert = MiniMessage.miniMessage().deserialize(
@@ -135,7 +151,7 @@ public class MaintenanceManager {
                     }
                 }
             }
-        }.runTaskTimer(this.plugin, 20L, 20L);
+        }, 20L, 20L);
     }
 
     public void extendMaintenanceCountdown(int extraSec) {
