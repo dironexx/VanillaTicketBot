@@ -1455,7 +1455,7 @@ class TicketsCog(commands.Cog, name="Тикеты"):
 
     @commands.hybrid_command(
         name="suspect",
-        aliases=["досье", "проверить_игрока", "check_player"],
+        aliases=["подозреваемый", "проверить_игрока", "check_player", "suspect_check"],
         description="Оперативное досье игрока (твинки, IP, баны, статистика) для персонала",
     )
     @app_commands.describe(player_name="Никнейм игрока для проверки")
