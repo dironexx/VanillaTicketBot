@@ -812,15 +812,6 @@ class InsideTicketView(ui.View):
         if not opened:
             await _safe_send_interaction(interaction, "Не удалось открыть форму закрытия. Попробуйте снова.", ephemeral=True)
 
-    @ui.button(label="Досье игрока", style=discord.ButtonStyle.secondary, custom_id="persistent_suspect_btn")
-    async def request_suspect(self, interaction: discord.Interaction, button: ui.Button):
-        if not is_mod_or_admin(interaction):
-            await _safe_send_interaction(interaction, "Эта функция доступна только персоналу.", ephemeral=True)
-            return
-        opened = await _safe_send_modal(interaction, SuspectCheckModal(self.db))
-        if not opened:
-            await _safe_send_interaction(interaction, "Не удалось открыть форму проверки. Попробуйте снова.", ephemeral=True)
-
     async def on_error(self, interaction: discord.Interaction, error: Exception, item: ui.Item[Any]) -> None:
         logger.error("Ошибка в InsideTicketView (%s): %s", getattr(item, "custom_id", item), error, exc_info=error)
         await _safe_send_interaction(interaction, "Произошла ошибка при обработке кнопки.", ephemeral=True)
