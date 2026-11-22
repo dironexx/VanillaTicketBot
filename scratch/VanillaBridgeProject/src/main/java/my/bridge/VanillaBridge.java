@@ -307,12 +307,7 @@ implements CommandExecutor {
         if (currentWsUrl.contains("fi4.bot-hosting.cloud") || currentWsUrl.contains("65.21.202.154") || currentWsUrl.isEmpty()) {
             cfg.set("bridge.ws-url", (Object)"wss://bridge.vanillaland.fun/ws");
             this.saveConfig();
-            this.getLogger().info("\u041f\u0430\u0440\u0430\u043c\u0435\u0442\u0440 bridge.ws-url \u0443\u0441\u043f\u0435\u0448\u043d\u043e \u0430\u043a\u0442\u0443\u0430\u043b\u0438\u0437\u0438\u0440\u043e\u0432\u0430\u043d \u0432 \u043a\u043e\u043d\u0444\u0438\u0433\u0443\u0440\u0430\u0446\u0438\u0438 \u0441\u0435\u0440\u0432\u0435\u0440\u0430.");
-        } else if (currentWsUrl.contains(":25549")) {
-            String updated = currentWsUrl.replace(":25549", ":25007");
-            cfg.set("bridge.ws-url", (Object)updated);
-            this.saveConfig();
-            this.getLogger().info("\u041f\u0430\u0440\u0430\u043c\u0435\u0442\u0440 bridge.ws-url \u043e\u0431\u043d\u043e\u0432\u043b\u0435\u043d \u043d\u0430 \u043f\u043e\u0440\u0442 25007.");
+            this.getLogger().info("Параметр bridge.ws-url успешно актуализирован в конфигурации сервера (обход РКН: wss://bridge.vanillaland.fun/ws).");
         }
         try (InputStream defStream = this.getResource("config.yml");){
             if (defStream != null) {

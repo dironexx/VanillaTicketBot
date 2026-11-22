@@ -353,11 +353,29 @@ class BridgeCog(commands.Cog, name="Мост Minecraft"):
         try:
             self.runner = web.AppRunner(self.app)
             await self.runner.setup()
-            self.site = web.TCPSite(self.runner, "0.0.0.0", Config.BRIDGE_PORT, reuse_address=True)
-            await self.site.start()
-            logger.info(f"WebSocket-сервер моста запущен на 0.0.0.0:{Config.BRIDGE_PORT}")
+
+            primary_port = Config.BRIDGE_PORT
+            ports_to_bind = [primary_port]
+            for alt_port in (25007, 25549):
+                if alt_port not in ports_to_bind and alt_port > 0:
+                    ports_to_bind.append(alt_port)
+
+            self.sites: list[web.TCPSite] = []
+            for p in ports_to_bind:
+                try:
+                    site = web.TCPSite(self.runner, "0.0.0.0", p, reuse_address=True)
+                    await site.start()
+                    self.sites.append(site)
+                    logger.info(f"WebSocket-сервер моста запущен на 0.0.0.0:{p}")
+                except Exception as port_err:
+                    if p == primary_port:
+                        logger.error(f"Не удалось запустить WebSocket-сервер моста на основном порту {p}: {port_err}")
+                    else:
+                        logger.debug(f"Дополнительный резервный порт {p} моста недоступен ({port_err}), пропускаем.")
+
+            self.site = self.sites[0] if self.sites else None
         except Exception as e:
-            logger.error(f"Не удалось запустить WebSocket-сервер моста на порту {Config.BRIDGE_PORT}: {e}")
+            logger.error(f"Критическая ошибка инициализации веб-сервера моста: {e}")
 
     def cog_unload(self):
         self.update_vc_loop.cancel()
@@ -372,11 +390,19 @@ class BridgeCog(commands.Cog, name="Мост Minecraft"):
                 await ws.close()
             except Exception:
                 pass
-        if self.site:
+        if hasattr(self, "sites") and self.sites:
+            for s in self.sites:
+                try:
+                    await s.stop()
+                except Exception:
+                    pass
+            self.sites.clear()
+        elif self.site:
             try:
                 await self.site.stop()
             except Exception:
                 pass
+            self.site = None
         if self.runner:
             try:
                 await self.runner.cleanup()

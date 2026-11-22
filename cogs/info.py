@@ -228,7 +228,9 @@ def build_info_embed(guild: Optional[discord.Guild]) -> discord.Embed:
     embed.add_field(
         name="Подключение и ресурсы",
         value=(
-            f"• **IP адрес:** `{Config.SERVER_IP}` (Java Edition 26.3)\n"
+            f"• **Основной IP:** `{Config.SERVER_IP}` (Java Edition 26.3)\n"
+            f"• **Резервный IP (обход РКН):** `vanillaland.fun`\n"
+            f"• **Прямой IP сервера:** `81.30.105.141:25565`\n"
             f"• **Донат / Магазин:** [vanillaland.store]({Config.DONATE_URL})\n"
             f"• **Сайт проекта:** [vanillaland.fun]({Config.SITE_URL})\n"
             f"• **Telegram канал:** [t.me/vanilandes]({Config.TELEGRAM_URL})\n"
@@ -418,11 +420,14 @@ class InfoCog(commands.Cog, name="Информация"):
         embed = AG.embed(
             title="Подключение • Vanilla Land",
             description=(
-                f"**IP адрес:** `{Config.SERVER_IP}`\n"
-                f"**Версия:** `26.3 (Java Edition)`\n"
-                f"**Telegram:** [t.me/vanilandes]({Config.TELEGRAM_URL})"
+                f"**Основной IP:** `{Config.SERVER_IP}`\n"
+                f"**Резервный IP (обход РКН):** `vanillaland.fun`\n"
+                f"**Прямой IP сервера:** `81.30.105.141`\n"
+                f"**Версия:** `26.3 (Java Edition 1.21+)`\n"
+                f"**Telegram:** [t.me/vanilandes]({Config.TELEGRAM_URL})\n\n"
+                f"💡 *Если ваш интернет-провайдер или РКН блокирует подключение по основному адресу, используйте резервный домен `vanillaland.fun` или прямой IP `81.30.105.141`.*"
             ),
-            footer="Vanilla Land",
+            footer="Vanilla Land • Подключение без блокировок",
             footer_icon=guild_icon,
             thumbnail=guild_icon,
         )

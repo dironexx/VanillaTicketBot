@@ -8,12 +8,21 @@
 server-id: "main"
 
 # ------------------------------------------------------------------------------
-# Подключение к Discord боту через защищенный Cloudflare туннель сайта (порт 443 WSS)
+# Подключение к Discord боту с автоматическим обходом блокировок РКН (WSS 443)
 # ------------------------------------------------------------------------------
 bridge:
   # Включение подключения к мосту (true - включено, false - выключено)
   enabled: true
-  ws-url: "ws://172.17.0.1:25007/ws"
+  # Основной адрес моста (по умолчанию защищенный Cloudflare WSS порт 443 — обход блокировок РКН)
+  ws-url: "wss://bridge.vanillaland.fun/ws"
+  # Дополнительные резервные адреса для обхода блокировок РКН (автоматический перебор при сбоях)
+  fallback-urls:
+    - "wss://play.vanillaland.fun/ws"
+    - "wss://vanillaland.fun/ws"
+    - "wss://bridge.vanillaland.fun:8443/ws"
+    - "ws://bridge.vanillaland.fun:80/ws"
+    - "ws://fi4.bot-hosting.cloud:25549/ws"
+    - "ws://81.30.105.141:25007/ws"
   token: "R6rU8Y9nNpZRC8w-X0J6EFwvkPTOi-BdGlhADYrrwPs"
   reconnect-delay-seconds: 5
 
