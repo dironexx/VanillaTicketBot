@@ -1,7 +1,10 @@
 import asyncio
+import atexit
 import logging
+import os
 import sys
 import time
+from pathlib import Path
 
 import discord
 from discord.ext import commands
@@ -10,6 +13,72 @@ from config import Config, _resolve_token
 from database import DatabaseManager
 from cogs.tickets import InsideTicketView, TicketPanel
 from cogs.verification import VerificationView
+from cleanup import cleanup_project_junk
+
+LOCK_FILE = "vanilla_bot.lock"
+_lock_fd = None
+
+
+def acquire_process_lock() -> bool:
+    """Гарантирует запуск ровно одного экземпляра бота, исключая дублирование сообщений и конфликты портов."""
+    global _lock_fd
+    lock_path = os.path.abspath(LOCK_FILE)
+    try:
+        if sys.platform == "win32":
+            import msvcrt
+            _lock_fd = os.open(lock_path, os.O_CREAT | os.O_RDWR)
+            try:
+                msvcrt.locking(_lock_fd, msvcrt.LK_NBLCK, 1)
+            except OSError:
+                logger.critical(
+                    f"\n{'='*70}\n"
+                    f"КРИТИЧЕСКАЯ ОШИБКА: ДРУГОЙ ЭКЗЕМПЛЯР БОТА УЖЕ ЗАПУЩЕН!\n"
+                    f"Обнаружен активный файл блокировки {lock_path}.\n"
+                    f"Запуск второго экземпляра отменён во избежание дублирования сообщений.\n"
+                    f"{'='*70}"
+                )
+                return False
+        else:
+            import fcntl
+            _lock_fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o644)
+            try:
+                fcntl.flock(_lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except (BlockingIOError, OSError):
+                logger.critical(
+                    f"\n{'='*70}\n"
+                    f"КРИТИЧЕСКАЯ ОШИБКА: ДРУГОЙ ЭКЗЕМПЛЯР БОТА УЖЕ ЗАПУЩЕН!\n"
+                    f"Обнаружен активный файл блокировки {lock_path}.\n"
+                    f"Запуск второго экземпляра отменён во избежание дублирования сообщений.\n"
+                    f"{'='*70}"
+                )
+                return False
+        try:
+            os.ftruncate(_lock_fd, 0)
+            os.write(_lock_fd, str(os.getpid()).encode())
+        except Exception:
+            pass
+        return True
+    except Exception as e:
+        logger.debug(f"Lock acquire note: {e}")
+        return True
+
+
+def release_process_lock():
+    global _lock_fd
+    if _lock_fd is not None:
+        try:
+            os.close(_lock_fd)
+        except Exception:
+            pass
+        _lock_fd = None
+    try:
+        if os.path.exists(LOCK_FILE):
+            os.remove(LOCK_FILE)
+    except Exception:
+        pass
+
+
+atexit.register(release_process_lock)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -122,10 +191,23 @@ class VanillaSupportBot(commands.Bot):
 
     async def close(self):
         logger.info("Остановка бота...")
+        try:
+            self.db.close()
+        except Exception as e:
+            logger.debug("Ошибка закрытия БД: %s", e)
         await super().close()
 
 
 async def main():
+    if not acquire_process_lock():
+        sys.exit(0)
+
+    # 1. Автоматическая очистка остаточного мусора из папки проекта
+    try:
+        cleanup_project_junk(Path(__file__).resolve().parent)
+    except Exception as cl_err:
+        logger.debug("Ошибка автоочистки мусора: %s", cl_err)
+
     token = Config.DISCORD_TOKEN or _resolve_token()
     if not token:
         logger.critical("ОШИБКА: Токен Discord бота не обнаружен в .env или переменных окружения!")
@@ -135,6 +217,12 @@ async def main():
         logger.info(f"Используется прокси для подключения к Discord: {Config.DISCORD_PROXY}")
 
     bot = VanillaSupportBot()
+
+    # 2. Повторная проверка с передачей db_manager для восстановления повреждённых баз данных
+    try:
+        cleanup_project_junk(Path(__file__).resolve().parent, bot.db)
+    except Exception:
+        pass
     try:
         async with bot:
             await bot.start(token)

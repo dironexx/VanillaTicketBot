@@ -733,7 +733,7 @@ async def close_ticket_process(
                 logger.error("Ошибка удаления тикета %s: %s", channel.id, e)
 
         if deleted:
-            await _async_db_call(db.delete_ticket, channel.id)
+            await _async_db_call(db.close_ticket, channel.id, closed_by_name, reason, saved_file)
     finally:
         _CLOSING_CHANNELS.discard(channel.id)
 
@@ -940,7 +940,7 @@ async def create_ticket_channel(
                     return None, "Категория тикетов переполнена (максимум 50). Обратитесь к администратору."
                 return None, "Ошибка Discord при создании канала тикета. Попробуйте через пару минут."
 
-            await _async_db_call(db.save_ticket, ticket_channel.id, user.id, user.name)
+            await _async_db_call(db.save_ticket, ticket_channel.id, user.id, user.name, ticket_num)
 
         embed = AG.embed(
             title=f"Обращение #{ticket_num:03d}",
@@ -1010,11 +1010,22 @@ class TicketsCog(commands.Cog, name="Тикеты"):
         await asyncio.sleep(2)
         for guild in self.bot.guilds:
             try:
+                # Синхронизируем счётчик тикетов с существующими каналами тикет-NNN в Discord
+                max_found = 0
+                for ch in guild.text_channels:
+                    m = re.match(r"^тикет-(\d+)$", ch.name, re.IGNORECASE)
+                    if m:
+                        num = int(m.group(1))
+                        if num > max_found:
+                            max_found = num
+                if max_found > 0:
+                    await _async_db_call(self.db.ensure_ticket_counter_at_least, max_found)
+
                 spec_role = await get_or_create_spec_role(guild, self.db)
                 if spec_role:
                     await sync_spec_role_to_tickets(guild, spec_role, self.db)
             except Exception as e:
-                logger.debug("Ошибка авто-инициализации роли спека в %s: %s", guild.name, e)
+                logger.debug("Ошибка авто-инициализации в %s: %s", guild.name, e)
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
@@ -1465,6 +1476,45 @@ class TicketsCog(commands.Cog, name="Тикеты"):
         if ctx.interaction:
             await ctx.defer(ephemeral=True)
         embed = build_suspect_embed(self.bot, self.db, player_name.strip())
+        await ctx.send(embed=embed, ephemeral=True)
+
+    @commands.hybrid_command(
+        name="ticket_history",
+        aliases=["история_тикетов", "тикеты_история"],
+        description="Показать историю последних обращений (тикет, пользователь, статус, дата)",
+    )
+    async def ticket_history_cmd(self, ctx: commands.Context, limit: int = 10):
+        if not is_mod_or_admin(ctx):
+            return await ctx.send("Эта команда доступна только персоналу сервера.", ephemeral=True)
+        if ctx.interaction:
+            await ctx.defer(ephemeral=True)
+
+        limit = max(1, min(limit, 25))
+        history = await _async_db_call(self.db.get_ticket_history, limit)
+        if not history:
+            return await ctx.send("История обращений в базе данных пуста.", ephemeral=True)
+
+        lines = []
+        for h in history:
+            num = h.get("ticket_num", 0)
+            status_emoji = "🟢 Открыт" if h.get("status") == "open" else "🔴 Закрыт"
+            u_name = h.get("user_name", "Неизвестен")
+            u_id = h.get("user_id", 0)
+            c_at = h.get("created_at", "")
+            cl_by = h.get("closed_by") or ""
+            reason = h.get("close_reason") or ""
+
+            details = f"• **#тикет-{num:03d}** | {status_emoji} | {u_name} (`{u_id}`)\n  Создан: `{c_at}`"
+            if cl_by:
+                details += f" | Закрыл: **{cl_by}** (`{reason}`)"
+            lines.append(details)
+
+        embed = AG.embed(
+            title="История обращений в поддержку",
+            description="\n\n".join(lines),
+            color=Colors.BLUE,
+            footer=f"Vanilla Land • Показано {len(history)} последних тикетов",
+        )
         await ctx.send(embed=embed, ephemeral=True)
 
 

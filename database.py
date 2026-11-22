@@ -28,7 +28,8 @@ class DatabaseManager:
     def _recover_corrupted_db(self, error: Exception) -> None:
         """
         Safely recovers from SQLite database corruption (e.g. malformed disk image).
-        Backs up the corrupted files and initializes a clean database.
+        Backs up the corrupted files, attempts recovery from automatic backup or salvaging tables,
+        and initializes a consistent database preserving ticket counters and history.
         """
         logger.critical(
             "SQLite database at '%s' is corrupted (%s). Initiating emergency self-healing recovery...",
@@ -50,7 +51,25 @@ class DatabaseManager:
                         os.remove(src)
                     except Exception as rm_err:
                         logger.debug("Failed to remove corrupted file '%s': %s", src, rm_err)
-        logger.info("Corrupted database isolated. Clean database will be initialized.")
+
+        backup_file = os.path.join(os.path.dirname(os.path.abspath(self.db_path)), "backups", "tickets_auto_backup.db")
+        restored = False
+        if os.path.exists(backup_file):
+            try:
+                import shutil
+                shutil.copy2(backup_file, self.db_path)
+                logger.info("Успешно восстановлена база данных из автоматического бэкапа: %s", backup_file)
+                restored = True
+            except Exception as bck_err:
+                logger.warning("Не удалось восстановить базу из бэкапа %s: %s", backup_file, bck_err)
+
+        if not restored:
+            logger.info("Corrupted database isolated. Clean database will be initialized.")
+
+        try:
+            self.salvage_corrupted_file(corrupt_backup)
+        except Exception as salv_err:
+            logger.debug("Corrupted file salvage note: %s", salv_err)
 
     def _is_corrupt_error(self, error: Exception) -> bool:
         msg = str(error).lower()
@@ -111,7 +130,31 @@ class DatabaseManager:
                 user_id INTEGER NOT NULL,
                 user_name TEXT NOT NULL,
                 last_activity TEXT NOT NULL,
-                created_at TEXT NOT NULL
+                created_at TEXT NOT NULL,
+                ticket_num INTEGER
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS ticket_history (
+                ticket_num INTEGER PRIMARY KEY,
+                dc_channel_id INTEGER,
+                user_id INTEGER NOT NULL,
+                user_name TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'open',
+                created_at TEXT NOT NULL,
+                closed_at TEXT,
+                closed_by TEXT,
+                close_reason TEXT,
+                transcript_file TEXT
+            )
+        """)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_ticket_hist_user ON ticket_history(user_id);")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_ticket_hist_channel ON ticket_history(dc_channel_id);")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_ticket_hist_status ON ticket_history(status);")
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS processed_member_events (
+                event_key TEXT PRIMARY KEY,
+                processed_at REAL NOT NULL
             )
         """)
         conn.execute("""
@@ -320,6 +363,17 @@ class DatabaseManager:
         except Exception as mig_err:
             logging.getLogger('VanillaBot.DB').debug('Auto-migration linked_accounts note: %s', mig_err)
 
+        # Автоматическая миграция active_tickets (добавление колонки ticket_num для связки с историей)
+        try:
+            cursor = conn.cursor()
+            cursor.execute("PRAGMA table_info(active_tickets)")
+            at_cols = {row[1] for row in cursor.fetchall()}
+            if at_cols and "ticket_num" not in at_cols:
+                conn.execute("ALTER TABLE active_tickets ADD COLUMN ticket_num INTEGER")
+            conn.commit()
+        except Exception as mig_err:
+            logging.getLogger('VanillaBot.DB').debug('Auto-migration active_tickets note: %s', mig_err)
+
     async def execute_async(self, func, *args, **kwargs):
         """
         Гарантированно выполняет дисковые операции с SQLite в отдельном пуле потоков,
@@ -337,10 +391,56 @@ class DatabaseManager:
                 pass
             self._create_tables(conn)
 
+    # --- ДЕДУПЛИКАЦИЯ СОБЫТИЙ УЧАСТНИКОВ (ЗАЩИТА ОТ ДВОЙНЫХ ЛОГОВ) ---
+    def claim_member_event(self, member_id: int, event_type: str = "join", window_sec: float = 30.0) -> bool:
+        """
+        Гарантирует, что событие участника (вход/выход) обрабатывается только ОДИН раз за окно window_sec.
+        Предотвращает дублирование сообщений даже при параллельных инстансах бота или повторных событиях шлюза.
+        """
+        now = time.time()
+        event_key = f"{member_id}:{event_type}"
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT processed_at FROM processed_member_events WHERE event_key = ?", (event_key,))
+            row = cursor.fetchone()
+            if row:
+                last_time = float(row[0])
+                if (now - last_time) < window_sec:
+                    return False  # Дубль, событие уже обработано недавно
+
+            cursor.execute(
+                "INSERT INTO processed_member_events (event_key, processed_at) VALUES (?, ?) "
+                "ON CONFLICT(event_key) DO UPDATE SET processed_at = excluded.processed_at",
+                (event_key, now)
+            )
+            # Очистка старых событий раз в ~5 минут
+            if int(now) % 300 < 5:
+                cursor.execute("DELETE FROM processed_member_events WHERE processed_at < ?", (now - 3600.0,))
+            conn.commit()
+            return True
+
     # --- ТИКЕТЫ ---
     def get_next_ticket_number(self) -> int:
         with self._get_connection() as conn:
             cursor = conn.cursor()
+            # 1. Авто-синхронизация счётчика: count никогда не должен быть меньше максимального номера в истории
+            try:
+                cursor.execute("SELECT COALESCE(MAX(ticket_num), 0) FROM ticket_history")
+                max_hist = cursor.fetchone()[0] or 0
+                cursor.execute("SELECT COALESCE(MAX(ticket_num), 0) FROM active_tickets")
+                max_act = cursor.fetchone()[0] or 0
+                max_known = max(int(max_hist), int(max_act))
+
+                cursor.execute("SELECT count FROM ticket_counter WHERE id = 1")
+                row = cursor.fetchone()
+                current_count = int(row[0]) if row else 0
+
+                if current_count < max_known:
+                    cursor.execute("UPDATE ticket_counter SET count = ? WHERE id = 1", (max_known,))
+            except Exception as sync_err:
+                logger.debug("Counter sync note: %s", sync_err)
+
+            # 2. Инкремент с атомарным получением номера
             try:
                 cursor.execute("UPDATE ticket_counter SET count = count + 1 WHERE id = 1 RETURNING count")
                 row = cursor.fetchone()
@@ -365,10 +465,51 @@ class DatabaseManager:
             conn.commit()
             return new_count
 
-    def save_ticket(self, dc_channel_id: int, user_id: int, user_name: str):
+    def ensure_ticket_counter_at_least(self, min_val: int) -> None:
+        """Гарантирует, что счётчик тикетов не меньше min_val (например, полученного из существующих каналов Discord)."""
+        if min_val <= 0:
+            return
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT count FROM ticket_counter WHERE id = 1")
+            row = cursor.fetchone()
+            current = int(row[0]) if row else 0
+            if current < min_val:
+                cursor.execute("UPDATE ticket_counter SET count = ? WHERE id = 1", (min_val,))
+                conn.commit()
+                logger.info("Счётчик тикетов обновлён с %d до %d на основе существующих данных.", current, min_val)
+
+    def save_ticket(self, dc_channel_id: int, user_id: int, user_name: str, ticket_num: Optional[int] = None):
         now_str = get_msk_now_str()
         with self._get_connection() as conn:
-            conn.execute("INSERT OR REPLACE INTO active_tickets VALUES (?, ?, ?, ?, ?)", (dc_channel_id, user_id, user_name, now_str, now_str))
+            cur = conn.cursor()
+            if ticket_num is None:
+                cur.execute("SELECT ticket_num FROM active_tickets WHERE dc_channel_id = ?", (dc_channel_id,))
+                row = cur.fetchone()
+                if row and row[0]:
+                    ticket_num = int(row[0])
+                else:
+                    cur.execute("SELECT count FROM ticket_counter WHERE id = 1")
+                    row = cur.fetchone()
+                    ticket_num = int(row[0]) if row and row[0] else None
+
+            conn.execute(
+                "INSERT OR REPLACE INTO active_tickets (dc_channel_id, user_id, user_name, last_activity, created_at, ticket_num) VALUES (?, ?, ?, ?, ?, ?)",
+                (dc_channel_id, user_id, user_name, now_str, now_str, ticket_num)
+            )
+            if ticket_num:
+                conn.execute(
+                    """
+                    INSERT INTO ticket_history (ticket_num, dc_channel_id, user_id, user_name, status, created_at)
+                    VALUES (?, ?, ?, ?, 'open', ?)
+                    ON CONFLICT(ticket_num) DO UPDATE SET
+                        dc_channel_id=excluded.dc_channel_id,
+                        user_id=excluded.user_id,
+                        user_name=excluded.user_name,
+                        status='open'
+                    """,
+                    (ticket_num, dc_channel_id, user_id, user_name, now_str)
+                )
             conn.commit()
 
     def update_ticket_activity(self, dc_channel_id: int):
@@ -402,10 +543,75 @@ class DatabaseManager:
             cursor.execute("SELECT 1 FROM active_tickets WHERE user_id = ?", (user_id,))
             return cursor.fetchone() is not None
 
-    def delete_ticket(self, channel_id: int):
+    def close_ticket(
+        self,
+        channel_id: int,
+        closed_by: str = "Персонал",
+        reason: str = "Вопрос решен",
+        transcript_file: Optional[str] = None,
+    ) -> None:
+        """Закрывает тикет, навсегда сохраняя полную историю в ticket_history перед удалением из active_tickets."""
+        now_str = get_msk_now_str()
         with self._get_connection() as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT ticket_num, user_id, user_name, created_at FROM active_tickets WHERE dc_channel_id = ?", (channel_id,))
+            row = cur.fetchone()
+            if row:
+                t_num, u_id, u_name, c_at = row
+                if t_num:
+                    conn.execute(
+                        """
+                        INSERT INTO ticket_history (ticket_num, dc_channel_id, user_id, user_name, status, created_at, closed_at, closed_by, close_reason, transcript_file)
+                        VALUES (?, ?, ?, ?, 'closed', ?, ?, ?, ?, ?)
+                        ON CONFLICT(ticket_num) DO UPDATE SET
+                            status='closed',
+                            closed_at=excluded.closed_at,
+                            closed_by=excluded.closed_by,
+                            close_reason=excluded.close_reason,
+                            transcript_file=COALESCE(excluded.transcript_file, ticket_history.transcript_file)
+                        """,
+                        (t_num, channel_id, u_id, u_name, c_at or now_str, now_str, closed_by, reason, transcript_file)
+                    )
+            else:
+                conn.execute(
+                    """
+                    UPDATE ticket_history
+                    SET status='closed', closed_at=?, closed_by=?, close_reason=?, transcript_file=COALESCE(?, transcript_file)
+                    WHERE dc_channel_id=? AND status='open'
+                    """,
+                    (now_str, closed_by, reason, transcript_file, channel_id)
+                )
             conn.execute("DELETE FROM active_tickets WHERE dc_channel_id = ?", (channel_id,))
             conn.commit()
+
+    def delete_ticket(self, channel_id: int):
+        with self._get_connection() as conn:
+            now_str = get_msk_now_str()
+            conn.execute(
+                "UPDATE ticket_history SET status='closed', closed_at=COALESCE(closed_at, ?) WHERE dc_channel_id = ? AND status='open'",
+                (now_str, channel_id)
+            )
+            conn.execute("DELETE FROM active_tickets WHERE dc_channel_id = ?", (channel_id,))
+            conn.commit()
+
+    def get_ticket_history(self, limit: int = 50, user_id: Optional[int] = None) -> list[dict]:
+        """Возвращает историю тикетов (номер, пользователь, статус, даты, кто закрыл, причина)."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            if user_id:
+                cursor.execute(
+                    "SELECT ticket_num, dc_channel_id, user_id, user_name, status, created_at, closed_at, closed_by, close_reason, transcript_file "
+                    "FROM ticket_history WHERE user_id = ? ORDER BY ticket_num DESC LIMIT ?",
+                    (user_id, limit)
+                )
+            else:
+                cursor.execute(
+                    "SELECT ticket_num, dc_channel_id, user_id, user_name, status, created_at, closed_at, closed_by, close_reason, transcript_file "
+                    "FROM ticket_history ORDER BY ticket_num DESC LIMIT ?",
+                    (limit,)
+                )
+            cols = ["ticket_num", "dc_channel_id", "user_id", "user_name", "status", "created_at", "closed_at", "closed_by", "close_reason", "transcript_file"]
+            return [dict(zip(cols, r)) for r in cursor.fetchall()]
 
     # --- ЧЕРНЫЙ СПИСОК ТИКЕТОВ ---
     def add_ticket_blacklist(self, user_id: int, reason: str, banned_by: str):
@@ -1395,4 +1601,94 @@ class DatabaseManager:
             "last_death": last_death,
             "alerts": alerts,
         }
+
+    # --- РЕЗЕРВНОЕ КОПИРОВАНИЕ И САЛЬВАЖ ДАННЫХ ПРИ СБОЯХ ---
+    def backup_db(self, backup_dir: Optional[str] = None) -> Optional[str]:
+        """Создает онлайн неблокирующий бэкап базы данных SQLite через API conn.backup."""
+        if not os.path.exists(self.db_path):
+            return None
+        if backup_dir is None:
+            backup_dir = os.path.join(os.path.dirname(os.path.abspath(self.db_path)), "backups")
+        os.makedirs(backup_dir, exist_ok=True)
+        backup_file = os.path.join(backup_dir, "tickets_auto_backup.db")
+        try:
+            with self._get_connection() as src_conn:
+                bck_conn = sqlite3.connect(backup_file)
+                with bck_conn:
+                    src_conn.backup(bck_conn)
+                bck_conn.close()
+            logger.debug("Резервная копия базы данных успешно создана: %s", backup_file)
+            return backup_file
+        except Exception as e:
+            logger.warning("Ошибка создания бэкапа БД: %s", e)
+            return None
+
+    def salvage_corrupted_file(self, corrupted_path: str) -> int:
+        """
+        Пытается извлечь максимум уцелевших записей (счётчик тикетов, историю, привязки, муты)
+        из повреждённого файла SQLite и вставить их в текущую базу данных.
+        """
+        if not os.path.exists(corrupted_path):
+            return 0
+        logger.info("Попытка спасения данных из файла: %s", corrupted_path)
+        recovered_rows = 0
+        try:
+            old_conn = sqlite3.connect(f"file:{corrupted_path}?mode=ro", uri=True, timeout=10.0)
+        except Exception:
+            try:
+                old_conn = sqlite3.connect(corrupted_path, timeout=10.0)
+            except Exception as e:
+                logger.error("Не удалось открыть файл для спасения данных %s: %s", corrupted_path, e)
+                return 0
+
+        target_tables = [
+            ("ticket_counter", "INSERT OR REPLACE INTO ticket_counter (id, count) VALUES (?, ?)"),
+            ("ticket_history", "INSERT OR IGNORE INTO ticket_history (ticket_num, dc_channel_id, user_id, user_name, status, created_at, closed_at, closed_by, close_reason, transcript_file) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"),
+            ("active_tickets", "INSERT OR IGNORE INTO active_tickets (dc_channel_id, user_id, user_name, last_activity, created_at, ticket_num) VALUES (?, ?, ?, ?, ?, ?)"),
+            ("linked_accounts", "INSERT OR IGNORE INTO linked_accounts (player_name, player_uuid, discord_user_id, two_factor_enabled, linked_at, trust_duration_hours, login_alerts_enabled) VALUES (?, ?, ?, ?, ?, ?, ?)"),
+            ("active_mutes", "INSERT OR IGNORE INTO active_mutes (user_id, guild_id, unmute_timestamp, reason) VALUES (?, ?, ?, ?)"),
+            ("ticket_blacklist", "INSERT OR IGNORE INTO ticket_blacklist (user_id, reason, banned_by, banned_at) VALUES (?, ?, ?, ?)"),
+            ("bot_settings", "INSERT OR REPLACE INTO bot_settings (key, value) VALUES (?, ?)"),
+            ("offline_mail", "INSERT OR IGNORE INTO offline_mail (id, sender, recipient, message, sent_at, is_read) VALUES (?, ?, ?, ?, ?, ?)"),
+            ("player_ips", "INSERT OR IGNORE INTO player_ips (player_name, ip, last_seen) VALUES (?, ?, ?)"),
+            ("security_whitelist", "INSERT OR IGNORE INTO security_whitelist (target, target_type, reason, added_by, added_at) VALUES (?, ?, ?, ?, ?)"),
+        ]
+
+        with self._get_connection() as target_conn:
+            for table_name, insert_sql in target_tables:
+                try:
+                    cur = old_conn.cursor()
+                    cur.execute(f"SELECT * FROM {table_name}")
+                    rows = cur.fetchall()
+                    if rows:
+                        for row in rows:
+                            try:
+                                placeholders_count = insert_sql.count("?")
+                                if len(row) >= placeholders_count:
+                                    target_conn.execute(insert_sql, row[:placeholders_count])
+                                    recovered_rows += 1
+                            except Exception:
+                                pass
+                        target_conn.commit()
+                        logger.info("Таблица '%s': успешно спасено строк: %d", table_name, len(rows))
+                except Exception as tbl_err:
+                    logger.debug("Не удалось прочитать таблицу '%s' из %s: %s", table_name, corrupted_path, tbl_err)
+
+        try:
+            old_conn.close()
+        except Exception:
+            pass
+
+        return recovered_rows
+
+    def close(self):
+        """Выполняет корректный чекпоинт WAL и бэкап при завершении работы бота."""
+        try:
+            with self._get_connection() as conn:
+                conn.execute("PRAGMA wal_checkpoint(TRUNCATE);")
+            self.backup_db()
+            logger.info("База данных успешно чекпоинтирована и сохранен бэкап.")
+        except Exception as e:
+            logger.debug("Ошибка при закрытии БД: %s", e)
+
 

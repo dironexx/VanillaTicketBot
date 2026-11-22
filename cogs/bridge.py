@@ -209,8 +209,12 @@ class BridgeCog(commands.Cog, name="Мост Minecraft"):
         """Суммирует онлайн по всем подключённым серверам (main + vps)."""
         stats = [st for st in self._socket_stats.values() if st]
         if not stats:
+            # Grace period (45 сек): если сокет кратковременно переподключается, не сбрасываем онлайн мгновенно
+            if (time.time() - getattr(self, "last_disconnect_time", 0)) < 45.0 and getattr(self, "mc_online", 0) > 0:
+                return
             self.mc_online = 0
-            self.mc_max = 0
+            if not getattr(self, "mc_max", 0):
+                self.mc_max = 0
             self.mc_tps = 20.0
             self.mc_mspt = 20.0
             self.mc_mem_used = 0
@@ -479,6 +483,7 @@ class BridgeCog(commands.Cog, name="Мост Minecraft"):
             async with self._sockets_lock:
                 self.active_sockets.discard(ws)
             self._socket_stats.pop(id(ws), None)
+            self.last_disconnect_time = time.time()
             self._recompute_stats()
             if not self.active_sockets:
                 logger.info("Minecraft сервер отключился от моста.")
@@ -1633,13 +1638,14 @@ class BridgeCog(commands.Cog, name="Мост Minecraft"):
             except Exception as suppressed_exc:
                 logger.debug("Bridge non-fatal operation suppressed: %s", suppressed_exc)
 
-        # 3. Сброс онлайна и алерт при потере соединения с сервером
+        # 3. Сброс онлайна и алерт при потере соединения с сервером (только после истечения grace period 45s)
         if self.was_connected and len(self.active_sockets) == 0:
-            if self.mc_online != 0:
-                self.mc_online = 0
-                self.mc_players = []
-                self.create_tracked_task(self.update_bot_presence())
-                self.pending_channel_update = True
+            if (now - getattr(self, "last_disconnect_time", now)) > 45.0:
+                if self.mc_online != 0:
+                    self.mc_online = 0
+                    self.mc_players = []
+                    self.create_tracked_task(self.update_bot_presence())
+                    self.pending_channel_update = True
 
             if (now - self.last_stats_time) > 45 and (now - self.last_offline_alert_time) > 600:
                 self.last_offline_alert_time = now
@@ -1695,6 +1701,10 @@ class BridgeCog(commands.Cog, name="Мост Minecraft"):
         if not Config.BRIDGE_ENABLE_STATS_CHANNELS:
             return False
         if not guild or not guild.me.guild_permissions.manage_channels:
+            return False
+
+        # Не обновляем голосовые каналы в 0/300 в первые секунды после реконнекта, пока сокет только поднялся
+        if len(self.active_sockets) > 0 and not self._socket_stats:
             return False
 
         online_vc_id = self.get_or_create_vc_id("online_vc_id", Config.ONLINE_VOICE_CHANNEL_ID)
@@ -1901,6 +1911,16 @@ class BridgeCog(commands.Cog, name="Мост Minecraft"):
                 color=Colors.RED,
             )
             embed.set_footer(text=f"Vanilla Land • {Config.SERVER_IP}")
+            return embed
+
+        if connected and not self._socket_stats and getattr(self, "mc_online", 0) == 0:
+            embed = discord.Embed(
+                title="Синхронизация с сервером Minecraft...",
+                description="Сервер подключился к мосту, идёт загрузка данных игроков. Попробуйте через пару секунд.",
+                color=Colors.BLUE,
+            )
+            embed.add_field(name="IP", value=f"`{Config.SERVER_IP}`", inline=True)
+            embed.set_footer(text="Vanilla Land")
             return embed
 
         if self.mc_online == 0:

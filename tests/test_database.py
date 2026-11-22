@@ -49,6 +49,55 @@ class DatabaseTests(unittest.TestCase):
         saved = self.db.get_setting("ticket_ping_role_ids")
         self.assertEqual(saved, "111,222")
 
+    def test_ticket_history_and_counter_persistence(self):
+        # 1. Генерация номеров
+        t1 = self.db.get_next_ticket_number()
+        self.assertEqual(t1, 1)
+
+        # 2. Сохранение тикета
+        self.db.save_ticket(1001, 555, "UserA", ticket_num=t1)
+        self.assertTrue(self.db.is_ticket_channel(1001))
+
+        # 3. Закрытие тикета
+        self.db.close_ticket(1001, closed_by="Mod1", reason="Помогли", transcript_file="transcripts/ticket-001.html")
+        self.assertFalse(self.db.is_ticket_channel(1001))
+
+        # 4. Проверка истории
+        hist = self.db.get_ticket_history()
+        self.assertEqual(len(hist), 1)
+        self.assertEqual(hist[0]["ticket_num"], 1)
+        self.assertEqual(hist[0]["status"], "closed")
+        self.assertEqual(hist[0]["closed_by"], "Mod1")
+        self.assertEqual(hist[0]["close_reason"], "Помогли")
+
+        # 5. Авто-синхронизация счетчика (не должен сбрасываться меньше max(ticket_num))
+        self.db.ensure_ticket_counter_at_least(42)
+        next_t = self.db.get_next_ticket_number()
+        self.assertEqual(next_t, 43)
+
+    def test_claim_member_event_deduplication(self):
+        # Первое событие должно быть захвачено
+        self.assertTrue(self.db.claim_member_event(12345, "join", window_sec=10.0))
+        # Повторное событие в пределах окна должно быть отклонено (защита от двойных сообщений)
+        self.assertFalse(self.db.claim_member_event(12345, "join", window_sec=10.0))
+        # Другой тип события или другой пользователь принимаются
+        self.assertTrue(self.db.claim_member_event(12345, "remove", window_sec=10.0))
+        self.assertTrue(self.db.claim_member_event(99999, "join", window_sec=10.0))
+
+    def test_backup_and_salvage(self):
+        # Создаем данные
+        self.db.get_next_ticket_number()
+        self.db.save_ticket(2002, 777, "UserB", ticket_num=2)
+
+        # Создаем бэкап
+        backup_file = self.db.backup_db()
+        self.assertIsNotNone(backup_file)
+        self.assertTrue(os.path.exists(backup_file))
+
+        # Проверяем сальважирование
+        recovered = self.db.salvage_corrupted_file(backup_file)
+        self.assertGreaterEqual(recovered, 1)
+
 
 if __name__ == "__main__":
     unittest.main()

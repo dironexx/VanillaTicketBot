@@ -276,6 +276,7 @@ implements WebSocket.Listener {
             boolean twoFa = this.plugin.isTwoFactorEnabled();
             String hs = String.format(java.util.Locale.US, "{\"type\":\"handshake\",\"server_id\":\"%s\",\"2fa_enabled\":%b}", sId, twoFa);
             this.send(hs);
+            this.plugin.sendServerStats();
         } catch (Exception ignored) {}
     }
 

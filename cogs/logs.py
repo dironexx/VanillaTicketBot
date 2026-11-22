@@ -345,9 +345,14 @@ class LogsCog(commands.Cog, name="Логирование и Защита"):
         except Exception:
             pass
 
-    # --- ЛОГ ВХОДА УЧАСТНИКА (С ПРОВЕРКОЙ ВОЗРАСТА АККАУНТА) ---
+    # --- ЛОГ ВХОДА УЧАСТНИКА (С ПРОВЕРКОЙ ВОЗРАСТА АККАУНТА И ДЕДУПЛИКАЦИЕЙ) ---
     @commands.Cog.listener()
     async def on_member_join(self, member: discord.Member):
+        # Дедупликация: исключаем задваивание логов при дубликатах событий Discord или параллельных процессах
+        if hasattr(self.db, "claim_member_event") and not self.db.claim_member_event(member.id, "join", window_sec=30.0):
+            logger.debug("Игнорирование дублирующего события входа для %s (%s)", member.name, member.id)
+            return
+
         log_ch = self.get_log_channel(member.guild)
         if not log_ch:
             return
@@ -378,6 +383,10 @@ class LogsCog(commands.Cog, name="Логирование и Защита"):
     # --- ЛОГ ВЫХОДА УЧАСТНИКА ---
     @commands.Cog.listener()
     async def on_member_remove(self, member: discord.Member):
+        # Дедупликация: исключаем задваивание логов
+        if hasattr(self.db, "claim_member_event") and not self.db.claim_member_event(member.id, "remove", window_sec=30.0):
+            logger.debug("Игнорирование дублирующего события выхода для %s (%s)", member.name, member.id)
+            return
         log_ch = self.get_log_channel(member.guild)
         if not log_ch:
             return
