@@ -1,5 +1,7 @@
+import difflib
 import json
 import os
+import re
 import shutil
 import sqlite3
 import logging
@@ -261,6 +263,16 @@ class DatabaseManager:
                 name TEXT NOT NULL,
                 data_json TEXT NOT NULL,
                 archived_at TEXT NOT NULL
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS ticket_auto_replies (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                trigger_phrase TEXT NOT NULL,
+                response_text TEXT NOT NULL,
+                threshold REAL NOT NULL DEFAULT 0.68,
+                created_by TEXT DEFAULT '',
+                created_at TEXT NOT NULL
             )
         """)
         conn.execute("""
@@ -994,6 +1006,120 @@ class DatabaseManager:
             base.setdefault(key, [])
         self.save_season_leaderboard(3, "3 сезон", base)
         return len(filtered_deaths)
+
+    # --- УМНЫЕ АВТООТВЕТЫ В ТИКЕТАХ (FUZZY / ПОХОЖИЕ ФРАЗЫ) ---
+    @staticmethod
+    def _normalize_reply_text(text: str) -> str:
+        low = str(text or "").lower().replace("ё", "е")
+        low = re.sub(r"[^\w\s]", " ", low, flags=re.UNICODE)
+        return re.sub(r"\s+", " ", low).strip()
+
+    def add_ticket_auto_reply(
+        self,
+        trigger_phrase: str,
+        response_text: str,
+        threshold: float = 0.68,
+        created_by: str = "",
+    ) -> int:
+        now_str = get_msk_now_str()
+        thr = max(0.45, min(0.98, float(threshold)))
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                INSERT INTO ticket_auto_replies (trigger_phrase, response_text, threshold, created_by, created_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (trigger_phrase.strip(), response_text.strip(), thr, str(created_by or ""), now_str),
+            )
+            conn.commit()
+            return int(cursor.lastrowid)
+
+    def get_ticket_auto_replies(self) -> list[dict]:
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT id, trigger_phrase, response_text, threshold, created_by, created_at FROM ticket_auto_replies ORDER BY id ASC"
+            )
+            return [
+                {
+                    "id": row[0],
+                    "trigger_phrase": row[1],
+                    "response_text": row[2],
+                    "threshold": float(row[3] if row[3] is not None else 0.68),
+                    "created_by": row[4] or "",
+                    "created_at": row[5] or "",
+                }
+                for row in cursor.fetchall()
+            ]
+
+    def delete_ticket_auto_reply(self, rule_id: int) -> bool:
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM ticket_auto_replies WHERE id = ?", (int(rule_id),))
+            conn.commit()
+            return cursor.rowcount > 0
+
+    def find_matching_auto_reply(self, message_text: str) -> Optional[dict]:
+        """Ищет наиболее подходящий шаблон автоответа с учётом точных и похожих фраз."""
+        msg_norm = self._normalize_reply_text(message_text)
+        if len(msg_norm) < 2:
+            return None
+        msg_words = msg_norm.split()
+        rules = self.get_ticket_auto_replies()
+        if not rules:
+            return None
+
+        best_match: Optional[dict] = None
+        best_score = 0.0
+
+        for rule in rules:
+            variants = [v.strip() for v in re.split(r"[|;]", rule["trigger_phrase"]) if v.strip()]
+            rule_thr = float(rule.get("threshold", 0.68))
+            for variant in variants:
+                v_norm = self._normalize_reply_text(variant)
+                if not v_norm:
+                    continue
+                v_words = v_norm.split()
+
+                score = 0.0
+                if v_norm in msg_norm:
+                    score = 1.0
+                else:
+                    # Проверка по ключевым словам с нечётким сравнением отдельных слов
+                    sig_words = [w for w in v_words if len(w) >= 2] or v_words
+                    matched_words = 0
+                    for tw in sig_words:
+                        if any(tw == mw or difflib.SequenceMatcher(None, tw, mw).ratio() >= 0.78 for mw in msg_words):
+                            matched_words += 1
+                    token_ratio = matched_words / max(1, len(sig_words))
+                    if token_ratio >= 0.8:
+                        score = max(score, 0.85 * token_ratio + 0.1)
+
+                    # Полное сравнение и скользящее окно по n-граммам сообщения
+                    full_ratio = difflib.SequenceMatcher(None, v_norm, msg_norm).ratio()
+                    score = max(score, full_ratio)
+
+                    w_len = len(v_words)
+                    if len(msg_words) >= w_len and w_len > 0:
+                        min_win = max(1, w_len - 1)
+                        max_win = min(len(msg_words), w_len + 1)
+                        for win in range(min_win, max_win + 1):
+                            for start in range(0, len(msg_words) - win + 1):
+                                sub = " ".join(msg_words[start : start + win])
+                                sub_ratio = difflib.SequenceMatcher(None, v_norm, sub).ratio()
+                                if sub_ratio > score:
+                                    score = sub_ratio
+
+                if score >= rule_thr and score > best_score:
+                    best_score = score
+                    best_match = {
+                        "rule": rule,
+                        "score": round(score, 3),
+                        "matched_variant": variant,
+                    }
+
+        return best_match
 
     def is_automod_enabled(self) -> bool:
         val = self.get_setting("automod_enabled", "true")
@@ -1934,6 +2060,7 @@ class DatabaseManager:
             ("ticket_blacklist", "INSERT OR IGNORE INTO ticket_blacklist (user_id, reason, banned_by, banned_at) VALUES (?, ?, ?, ?)"),
             ("bot_settings", "INSERT OR REPLACE INTO bot_settings (key, value) VALUES (?, ?)"),
             ("top_seasons", "INSERT OR REPLACE INTO top_seasons (season, name, data_json, archived_at) VALUES (?, ?, ?, ?)"),
+            ("ticket_auto_replies", "INSERT OR IGNORE INTO ticket_auto_replies (id, trigger_phrase, response_text, threshold, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?)"),
             ("offline_mail", "INSERT OR IGNORE INTO offline_mail (id, sender, recipient, message, sent_at, is_read) VALUES (?, ?, ?, ?, ?, ?)"),
             ("player_ips", "INSERT OR IGNORE INTO player_ips (player_name, ip, last_seen) VALUES (?, ?, ?)"),
             ("security_whitelist", "INSERT OR IGNORE INTO security_whitelist (target, target_type, reason, added_by, added_at) VALUES (?, ?, ?, ?, ?)"),

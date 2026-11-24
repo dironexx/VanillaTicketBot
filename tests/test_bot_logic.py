@@ -326,6 +326,12 @@ class BridgeLogicTests(unittest.TestCase):
         self.assertNotIn("старый", combined)
         self.assertNotIn("новый", combined)
 
+        # Проверяем /setup_channels embed
+        fake.db = SimpleNamespace(get_setting=lambda k: "123456" if k == "events_channel_id" else None)
+        ch_emb = BridgeCog._build_setup_channels_embed(fake, SimpleNamespace(icon=None))
+        self.assertIn("Единая настройка каналов бота", ch_emb.title)
+        self.assertTrue(any("123456" in f.value for f in ch_emb.fields))
+
 
 if __name__ == "__main__":
     unittest.main()

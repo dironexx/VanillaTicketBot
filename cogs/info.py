@@ -321,6 +321,8 @@ def build_mod_help_embed(guild: Optional[discord.Guild]) -> discord.Embed:
             "• `/panic_whitelist [on/off] [kickall]` — Режим изоляции сервера (Panic Whitelist)\n"
             "• `/backup_status` / `/backup_create` — Статус и создание бэкапа (DriveBackupV2)\n"
             "• `/db_backup [now|list|send|channel]` — Бэкап и ротация базы данных `tickets.db`\n"
+            "• `/setup_channels` — Единая настройка всех каналов бота и категории тикетов\n"
+            "• `/ticket_reply [add|list|remove|test]` — Умные автоответы в тикетах (точные и похожие фразы)\n"
             "• `/bridge_status` (`!мост_статус`) — Диагностика WebSocket-моста, RTT пинг и история разрывов\n"
             "• `/top_reset` — Закрыть текущий сезон в архив и начать новый\n"
             "• `/rules_sync` — Синхронизация правил из VanillaRules в Discord\n"

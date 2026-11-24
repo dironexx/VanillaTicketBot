@@ -129,6 +129,32 @@ class DatabaseTests(unittest.TestCase):
         deaths = s3["data"].get("deaths", [])
         self.assertEqual([d["player"] for d in deaths], ["Veteran"])
 
+    def test_ticket_auto_replies_fuzzy_matching(self):
+        rid = self.db.add_ticket_auto_reply(
+            "как привязать аккаунт | не работает привязка",
+            "Напишите /link в игре и введите код в Discord.",
+            threshold=0.68,
+            created_by="Admin",
+        )
+        self.assertGreater(rid, 0)
+
+        # Точное совпадение
+        m1 = self.db.find_matching_auto_reply("Подскажите, как привязать аккаунт на сервере?")
+        self.assertIsNotNone(m1)
+        self.assertEqual(m1["rule"]["id"], rid)
+
+        # Похожая фраза с опечаткой и перефразировкой
+        m2 = self.db.find_matching_auto_reply("привет как превязать акаунт к дс")
+        self.assertIsNotNone(m2)
+        self.assertEqual(m2["rule"]["id"], rid)
+
+        # Посторонняя фраза не должна срабатывать
+        m3 = self.db.find_matching_auto_reply("меня загриферили на спавне вчера")
+        self.assertIsNone(m3)
+
+        self.assertTrue(self.db.delete_ticket_auto_reply(rid))
+        self.assertEqual(self.db.get_ticket_auto_replies(), [])
+
 
 if __name__ == "__main__":
     unittest.main()

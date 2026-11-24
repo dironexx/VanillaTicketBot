@@ -1878,6 +1878,85 @@ class BridgeCog(commands.Cog, name="Мост Minecraft"):
         )
         await ctx.send(embed=embed, ephemeral=True)
 
+    def _build_setup_channels_embed(self, guild: Optional[discord.Guild]) -> discord.Embed:
+        def _fmt_ch(setting_key: str, fallback_id: int) -> str:
+            raw = self.db.get_setting(setting_key)
+            cid = int(raw) if (raw and str(raw).isdigit() and int(raw) > 0) else int(fallback_id or 0)
+            if cid > 0:
+                src = "БД" if (raw and str(raw).isdigit() and int(raw) > 0) else ".env"
+                return f"<#{cid}> (`{cid}`, {src})"
+            return "*Не задан*"
+
+        embed = discord.Embed(
+            title="⚙️ Единая настройка каналов бота • Vanilla Land",
+            description=(
+                "Выберите нужные каналы в выпадающих списках ниже — изменения сразу сохраняются в базе данных (`bot_settings`).\n"
+                "Для точечного изменения также можно передать параметры прямо в `/setup_channels`."
+            ),
+            color=Colors.INDIGO,
+            timestamp=datetime.now(timezone.utc),
+        )
+        if guild and guild.icon:
+            embed.set_thumbnail(url=guild.icon.url)
+        embed.add_field(name="📅 Канал событий", value=_fmt_ch("events_channel_id", Config.EVENTS_CHANNEL_ID), inline=True)
+        embed.add_field(name="🛡️ Админ-логи", value=_fmt_ch("admin_log_channel_id", Config.ADMIN_LOG_CHANNEL_ID), inline=True)
+        embed.add_field(name="📜 Общие логи", value=_fmt_ch("log_channel_id", Config.LOG_CHANNEL_ID), inline=True)
+        embed.add_field(name="💾 Авто-бэкапы БД", value=_fmt_ch("db_backup_channel_id", 0), inline=True)
+        embed.add_field(name="🚨 Алерты твинков", value=_fmt_ch("alts_alert_channel_id", Config.ALTS_ALERT_CHANNEL_ID), inline=True)
+        embed.add_field(name="🎫 Категория тикетов", value=_fmt_ch("tickets_category_id", Config.TICKETS_CATEGORY_ID), inline=True)
+        embed.add_field(name="📁 Архив тикетов", value=_fmt_ch("ticket_log_channel_id", Config.LOG_CHANNEL_ID), inline=True)
+        embed.set_footer(text="Vanilla Land • Конфигурация каналов")
+        return embed
+
+    # --- КОМАНДА /setup_channels (ЕДИНАЯ НАСТРОЙКА КАНАЛОВ БОТА) ---
+    @commands.hybrid_command(
+        name="setup_channels",
+        aliases=["настройка_каналов", "каналы_бота", "channels_setup"],
+        description="[Админ] Единая настройка всех служебных каналов и категории тикетов",
+    )
+    @commands.has_permissions(administrator=True)
+    @app_commands.describe(
+        events_channel="Канал событий сервера (входы, выходы, смерти, рестарты)",
+        admin_log_channel="Канал админ-логов и тех. алертов",
+        log_channel="Общий канал логов и автомода",
+        db_backup_channel="Приватный канал для ежедневных бэкапов tickets.db",
+        alts_channel="Канал оповещений о мультиаккаунтах/твинках",
+        tickets_category="Категория, в которой создаются каналы тикетов",
+        ticket_log_channel="Канал для архивов закрытых тикетов",
+    )
+    async def setup_channels_cmd(
+        self,
+        ctx: commands.Context,
+        events_channel: Optional[discord.TextChannel] = None,
+        admin_log_channel: Optional[discord.TextChannel] = None,
+        log_channel: Optional[discord.TextChannel] = None,
+        db_backup_channel: Optional[discord.TextChannel] = None,
+        alts_channel: Optional[discord.TextChannel] = None,
+        tickets_category: Optional[discord.CategoryChannel] = None,
+        ticket_log_channel: Optional[discord.TextChannel] = None,
+    ):
+        if not is_mod_or_admin(ctx):
+            return await ctx.send("Эта команда доступна только администраторам.", ephemeral=True)
+        if ctx.interaction:
+            await ctx.defer(ephemeral=True)
+
+        updates = {
+            "events_channel_id": events_channel,
+            "admin_log_channel_id": admin_log_channel,
+            "log_channel_id": log_channel,
+            "db_backup_channel_id": db_backup_channel,
+            "alts_alert_channel_id": alts_channel,
+            "tickets_category_id": tickets_category,
+            "ticket_log_channel_id": ticket_log_channel,
+        }
+        for key, ch_obj in updates.items():
+            if ch_obj is not None:
+                self.db.set_setting(key, str(ch_obj.id))
+
+        embed = self._build_setup_channels_embed(ctx.guild)
+        view = SetupChannelsView(self)
+        await ctx.send(embed=embed, view=view, ephemeral=True)
+
     # --- КОМАНДА /online ДЛЯ ИГРОКОВ (ГИБРИДНАЯ: СЛЭШ + ПРЕФИКС) ---
     @commands.hybrid_command(
         name="online",
@@ -3786,6 +3865,41 @@ class ShulkerSelectView(ui.View):
 
 
 
+class SetupChannelsView(ui.View):
+    """Интерактивная панель выбора служебных каналов бота."""
+    def __init__(self, bridge_cog: "BridgeCog"):
+        super().__init__(timeout=300)
+        self.bridge_cog = bridge_cog
+
+    async def _save_channel(self, interaction: discord.Interaction, key: str, selected_channels):
+        if not selected_channels:
+            return await interaction.response.defer()
+        ch = selected_channels[0]
+        self.bridge_cog.db.set_setting(key, str(ch.id))
+        embed = self.bridge_cog._build_setup_channels_embed(interaction.guild)
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    @ui.select(cls=ui.ChannelSelect, placeholder="📅 Выбрать канал событий...", channel_types=[discord.ChannelType.text], min_values=1, max_values=1, row=0)
+    async def sel_events(self, interaction: discord.Interaction, select: ui.ChannelSelect):
+        await self._save_channel(interaction, "events_channel_id", select.values)
+
+    @ui.select(cls=ui.ChannelSelect, placeholder="🛡️ Выбрать канал админ-логов...", channel_types=[discord.ChannelType.text], min_values=1, max_values=1, row=1)
+    async def sel_admin_logs(self, interaction: discord.Interaction, select: ui.ChannelSelect):
+        await self._save_channel(interaction, "admin_log_channel_id", select.values)
+
+    @ui.select(cls=ui.ChannelSelect, placeholder="💾 Выбрать канал авто-бэкапов БД...", channel_types=[discord.ChannelType.text], min_values=1, max_values=1, row=2)
+    async def sel_db_backup(self, interaction: discord.Interaction, select: ui.ChannelSelect):
+        await self._save_channel(interaction, "db_backup_channel_id", select.values)
+
+    @ui.select(cls=ui.ChannelSelect, placeholder="🚨 Выбрать канал алертов твинков...", channel_types=[discord.ChannelType.text], min_values=1, max_values=1, row=3)
+    async def sel_alts(self, interaction: discord.Interaction, select: ui.ChannelSelect):
+        await self._save_channel(interaction, "alts_alert_channel_id", select.values)
+
+    @ui.select(cls=ui.ChannelSelect, placeholder="🎫 Выбрать категорию тикетов...", channel_types=[discord.ChannelType.category], min_values=1, max_values=1, row=4)
+    async def sel_tickets_cat(self, interaction: discord.Interaction, select: ui.ChannelSelect):
+        await self._save_channel(interaction, "tickets_category_id", select.values)
+
+
 class BridgeStatusView(ui.View):
     """Кнопка живого обновления диагностики WebSocket-моста."""
     def __init__(self, bridge_cog: "BridgeCog"):
@@ -3863,61 +3977,61 @@ class TopLeaderboardView(ui.View):
 
     def _build_summary_embed(self) -> discord.Embed:
         embed = discord.Embed(
-            title=f"Доска почёта • {self.season} сезон",
+            title=f"🏆 Доска почёта • {self.season} сезон",
             description=(
-                f"Главные рекорды и лидеры сервера (**{self.season} сезон**).\n"
-                "*Нажимайте кнопки ниже, чтобы открыть подробный ТОП-10 или переключить сезон.*"
+                f"Ключевые рекорды игроков сервера **Vanilla Land** (**{self.season} сезон**).\n"
+                "> Нажимайте кнопки ниже, чтобы открыть подробный ТОП-10 или переключить сезон."
             ),
             color=Colors.GOLD,
             timestamp=datetime.now(timezone.utc),
         )
 
-        medals = ["#1", "#2", "#3"]
+        medals = ["🥇", "🥈", "🥉"]
 
         # 1. Время
         pt_list = self.data.get("playtime", [])
         if pt_list:
             lines = []
             for i, it in enumerate(pt_list[:3]):
-                m = medals[i] if i < 3 else f"{i+1}."
-                lines.append(f"`{m}` **{it['player']}** — {self._format_time(it.get('value', 0))}")
-            embed.add_field(name="Время в игре", value="\n".join(lines), inline=True)
+                m = medals[i] if i < 3 else f"`#{i+1}`"
+                lines.append(f"{m} **{it['player']}** — `{self._format_time(it.get('value', 0))}`")
+            embed.add_field(name="⏱️ Время в игре", value="\n".join(lines), inline=True)
 
         # 2. Алмазы
         dia_list = self.data.get("diamonds", [])
         if dia_list:
             lines = []
             for i, it in enumerate(dia_list[:3]):
-                m = medals[i] if i < 3 else f"{i+1}."
-                lines.append(f"`{m}` **{it['player']}** — {it.get('value', 0):,} шт.")
-            embed.add_field(name="Алмазные руды", value="\n".join(lines), inline=True)
+                m = medals[i] if i < 3 else f"`#{i+1}`"
+                lines.append(f"{m} **{it['player']}** — `{it.get('value', 0):,} шт.`")
+            embed.add_field(name="💎 Алмазные руды", value="\n".join(lines), inline=True)
 
         # 3. Незерит
         deb_list = self.data.get("debris", [])
         if deb_list:
             lines = []
             for i, it in enumerate(deb_list[:3]):
-                m = medals[i] if i < 3 else f"{i+1}."
-                lines.append(f"`{m}` **{it['player']}** — {it.get('value', 0):,} шт.")
-            embed.add_field(name="Древние обломки", value="\n".join(lines), inline=True)
+                m = medals[i] if i < 3 else f"`#{i+1}`"
+                lines.append(f"{m} **{it['player']}** — `{it.get('value', 0):,} шт.`")
+            embed.add_field(name="🔥 Древние обломки", value="\n".join(lines), inline=True)
 
         # 4. PvP Убийства
         kills_list = self.data.get("kills", [])
         if kills_list:
             lines = []
             for i, it in enumerate(kills_list[:3]):
-                m = medals[i] if i < 3 else f"{i+1}."
-                lines.append(f"`{m}` **{it['player']}** — {it.get('value', 0):,} киллов")
-            embed.add_field(name="PvP Убийства", value="\n".join(lines), inline=True)
+                m = medals[i] if i < 3 else f"`#{i+1}`"
+                lines.append(f"{m} **{it['player']}** — `{it.get('value', 0):,} киллов`")
+            embed.add_field(name="⚔️ PvP Убийства", value="\n".join(lines), inline=True)
 
         # 5. Смерти
         deaths_list = self.data.get("deaths", [])
         if deaths_list:
             lines = []
             for i, it in enumerate(deaths_list[:3]):
-                m = medals[i] if i < 3 else f"{i+1}."
-                lines.append(f"`{m}` **{it['player']}** — {it.get('value', 0):,} раз")
-            embed.add_field(name="Смерти игроков", value="\n".join(lines), inline=True)
+                m = medals[i] if i < 3 else f"`#{i+1}`"
+                lines.append(f"{m} **{it['player']}** — `{it.get('value', 0):,} раз`")
+            embed.add_field(name="💀 Смерти игроков", value="\n".join(lines), inline=True)
 
         if not any((pt_list, dia_list, deb_list, kills_list, deaths_list)):
             embed.description = (
@@ -3936,12 +4050,12 @@ class TopLeaderboardView(ui.View):
     def _build_category_embed(self, key: str, title: str, val_label: str, is_time: bool = False) -> discord.Embed:
         items = self.data.get(key, [])
         embed = discord.Embed(
-            title=title,
+            title=f"🏆 {title}",
             color=Colors.BLUE,
             timestamp=datetime.now(timezone.utc),
         )
 
-        medals = {1: "#1", 2: "#2", 3: "#3"}
+        medals = {1: "🥇", 2: "🥈", 3: "🥉"}
 
         if not items:
             embed.description = f"*В этой категории ({self.season} сезон) пока нет записанных данных.*"
@@ -3956,10 +4070,10 @@ class TopLeaderboardView(ui.View):
                 elif key == "deaths":
                     formatted_val = f"{raw_val:,} смертей"
 
-                badge = medals.get(i, f"#{i}")
-                lines.append(f"`{badge}` **{p_name}** — `{formatted_val}`")
+                badge = medals.get(i, f"`#{i:02d}`")
+                lines.append(f"{badge} **{p_name}** — `{formatted_val}`")
 
-            embed.description = f"**Топ игроков ({self.season} сезон) по критерию: {val_label}**\n\n" + "\n".join(lines)
+            embed.description = f"**Рейтинг ТОП-10 ({self.season} сезон) • {val_label}**\n\n" + "\n".join(lines)
 
             top_player = items[0].get("player", "")
             top_skin = items[0].get("skin", "")

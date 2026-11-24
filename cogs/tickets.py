@@ -679,15 +679,32 @@ async def close_ticket_process(
             try:
                 user = bot.get_user(user_id) or await bot.fetch_user(user_id)
                 if user:
-                    embed = AG.embed(
-                        title=f"Обращение закрыто • #{channel.name}",
-                        description=(
-                            f"Ваше обращение закрыто сотрудником **{closed_by_name}**.\n\n"
-                            f"**Причина:** {reason}\n"
-                            f"HTML-лог переписки прикреплен к сообщению."
-                        ),
-                        footer="Vanilla Land • Поддержка",
+                    guild_icon = channel.guild.icon.url if channel.guild and channel.guild.icon else None
+                    closed_ts = int(time.time())
+                    file_note = (
+                        "📎 **Архив переписки** прикреплён к этому сообщению — откройте `.html` файл в браузере для удобного просмотра."
+                        if file_exists and saved_file
+                        else "ℹ️ *В этом обращении не было текстовых сообщений для архива.*"
                     )
+                    embed = discord.Embed(
+                        title=f"📩 Ваше обращение закрыто • #{channel.name}",
+                        description=(
+                            f"Сотрудник **{closed_by_name}** завершил рассмотрение вашего обращения.\n\n"
+                            f"{file_note}"
+                        ),
+                        color=Colors.GREEN,
+                        timestamp=datetime.now(timezone.utc),
+                    )
+                    if guild_icon:
+                        embed.set_author(name="Vanilla Land • Служба поддержки", icon_url=guild_icon)
+                        embed.set_thumbnail(url=guild_icon)
+                    else:
+                        embed.set_author(name="Vanilla Land • Служба поддержки")
+                    embed.add_field(name="🎫 Обращение", value=f"`#{channel.name}`", inline=True)
+                    embed.add_field(name="👮 Закрыл", value=f"**{closed_by_name}**", inline=True)
+                    embed.add_field(name="🕒 Закрыто", value=f"<t:{closed_ts}:f>", inline=True)
+                    embed.add_field(name="📝 Причина закрытия", value=f"```{reason}```", inline=False)
+                    embed.set_footer(text="Vanilla Land • Спасибо за обращение! Если вопрос остался — создайте новый тикет.")
                     if file_exists and saved_file:
                         await user.send(embed=embed, file=discord.File(saved_file))
                     else:
@@ -697,27 +714,38 @@ async def close_ticket_process(
             except Exception as e:
                 logger.warning("Ошибка отправки ЛС %s: %s", user_id, e)
 
-        # Отправка транскрипта в канал логов
-        if Config.LOG_CHANNEL_ID:
-            log_ch = bot.get_channel(Config.LOG_CHANNEL_ID)
-            if isinstance(log_ch, discord.TextChannel):
-                user_display = f"<@{user_id}> (`{user_id}`)" if user_id else "*Неизвестен*"
-                embed_log = AG.embed(
-                    title=f"Тикет закрыт • #{channel.name}",
-                    description=(
-                        f"**Пользователь:** {user_display}\n"
-                        f"**Закрыл:** **{closed_by_name}**\n"
-                        f"**Причина:** {reason}"
-                    ),
-                    footer="Vanilla Land • Архив тикетов",
-                )
-                try:
-                    if file_exists and saved_file:
-                        await log_ch.send(embed=embed_log, file=discord.File(saved_file))
-                    else:
-                        await log_ch.send(embed=embed_log)
-                except Exception as log_err:
-                    logger.warning("Не удалось отправить транскрипт в лог-канал: %s", log_err)
+        # Отправка транскрипта в канал логов (приоритет: ticket_log_channel_id -> log_channel_id -> Config.LOG_CHANNEL_ID)
+        log_ch = None
+        for key_name in ("ticket_log_channel_id", "log_channel_id"):
+            saved_log_id = await _async_db_call(db.get_setting, key_name)
+            if saved_log_id and str(saved_log_id).isdigit():
+                cand = bot.get_channel(int(saved_log_id))
+                if isinstance(cand, discord.TextChannel):
+                    log_ch = cand
+                    break
+        if not log_ch and Config.LOG_CHANNEL_ID:
+            cand = bot.get_channel(Config.LOG_CHANNEL_ID)
+            if isinstance(cand, discord.TextChannel):
+                log_ch = cand
+
+        if isinstance(log_ch, discord.TextChannel):
+            user_display = f"<@{user_id}> (`{user_id}`)" if user_id else "*Неизвестен*"
+            embed_log = discord.Embed(
+                title=f"📁 Архив обращения • #{channel.name}",
+                color=Colors.INDIGO,
+                timestamp=datetime.now(timezone.utc),
+            )
+            embed_log.add_field(name="👤 Автор", value=user_display, inline=True)
+            embed_log.add_field(name="👮 Закрыл", value=f"**{closed_by_name}**", inline=True)
+            embed_log.add_field(name="📝 Причина", value=reason, inline=False)
+            embed_log.set_footer(text="Vanilla Land • Архив тикетов")
+            try:
+                if file_exists and saved_file:
+                    await log_ch.send(embed=embed_log, file=discord.File(saved_file))
+                else:
+                    await log_ch.send(embed=embed_log)
+            except Exception as log_err:
+                logger.warning("Не удалось отправить транскрипт в лог-канал: %s", log_err)
 
         # Сначала удаляем канал из Discord, и только после подтверждения удаления очищаем БД
         deleted = channel_already_deleted
@@ -905,7 +933,12 @@ async def create_ticket_channel(
             )
 
         target_category = None
-        if Config.TICKETS_CATEGORY_ID:
+        saved_cat_id = await _async_db_call(db.get_setting, "tickets_category_id")
+        if saved_cat_id and str(saved_cat_id).isdigit():
+            cand_cat = guild.get_channel(int(saved_cat_id))
+            if isinstance(cand_cat, discord.CategoryChannel):
+                target_category = cand_cat
+        if not target_category and Config.TICKETS_CATEGORY_ID:
             target_category = guild.get_channel(Config.TICKETS_CATEGORY_ID)
         if not target_category and fallback_channel:
             target_category = fallback_channel.category
@@ -933,18 +966,24 @@ async def create_ticket_channel(
 
             await _async_db_call(db.save_ticket, ticket_channel.id, user.id, user.name, ticket_num)
 
-        embed = AG.embed(
-            title=f"Обращение #{ticket_num:03d}",
+        embed = discord.Embed(
+            title=f"🎫 Обращение #{ticket_num:03d} • Vanilla Land",
             description=(
-                f"Здравствуйте, {user.mention}!\n\n"
-                f"**Пожалуйста, укажите:**\n"
-                f"• Ваш точный никнейм в игре\n"
-                f"• Суть проблемы или вопроса\n"
-                f"• Скриншоты или видео (если есть)\n\n"
-                f"Персонал ответит вам в ближайшее время."
+                f"Здравствуйте, {user.mention}! Ваше обращение принято в работу.\n\n"
+                "**Чтобы мы помогли быстрее, пожалуйста, укажите:**\n"
+                "• Ваш **точный никнейм** на сервере\n"
+                "• **Подробное описание** ситуации или вопроса\n"
+                "• **Скриншоты, видео или координаты** (если относятся к делу)"
             ),
-            footer="Vanilla Land • Поддержка | Команды: !add, !remove, !rename, !close",
+            color=Colors.INDIGO,
+            timestamp=datetime.now(timezone.utc),
         )
+        embed.set_author(name="Vanilla Land • Служба поддержки", icon_url=guild.icon.url if guild.icon else None)
+        embed.set_thumbnail(url=user.display_avatar.url)
+        embed.add_field(name="📌 Номер", value=f"`#{ticket_num:03d}`", inline=True)
+        embed.add_field(name="👤 Автор", value=user.mention, inline=True)
+        embed.add_field(name="🟢 Статус", value="`Открыт`", inline=True)
+        embed.set_footer(text="Vanilla Land • Поддержка | Управление: !add, !remove, !rename, !close")
 
         try:
             await ticket_channel.send(content=" ".join(mentions_list), embed=embed, view=InsideTicketView(db))
@@ -982,11 +1021,46 @@ class TicketPanel(ui.View):
         await _safe_send_interaction(interaction, "Не удалось обработать запрос. Попробуйте через пару секунд.", ephemeral=True)
 
 
+class TicketAutoReplyModal(ui.Modal, title="Добавить автоответ в тикетах"):
+    trigger_input = ui.TextInput(
+        label="Когда отвечать (фразы через | )",
+        placeholder="Например: как привязать аккаунт | не работает link | привязка",
+        max_length=250,
+        required=True,
+    )
+    response_input = ui.TextInput(
+        label="Текст ответа бота",
+        style=discord.TextStyle.paragraph,
+        placeholder="Подробный ответ, который бот отправит игроку в тикет...",
+        max_length=1500,
+        required=True,
+    )
+
+    def __init__(self, db: DatabaseManager):
+        super().__init__()
+        self.db = db
+
+    async def on_submit(self, interaction: discord.Interaction):
+        trigger = (self.trigger_input.value or "").strip()
+        response = (self.response_input.value or "").strip()
+        if not trigger or not response:
+            return await _safe_send_interaction(interaction, "Укажите и триггер, и текст ответа.", ephemeral=True)
+        rule_id = await _async_db_call(
+            self.db.add_ticket_auto_reply, trigger, response, 0.68, interaction.user.name
+        )
+        embed = AG.success(
+            f"Автоответ #{rule_id} добавлен",
+            f"• **Когда отвечает:** `{trigger}`\n• **Ответ:**\n{response[:400]}",
+        )
+        await _safe_send_interaction(interaction, embed=embed, ephemeral=True)
+
+
 class TicketsCog(commands.Cog, name="Тикеты"):
     def __init__(self, bot: commands.Bot, db: DatabaseManager):
         self.bot = bot
         self.db = db
         self._non_ticket_cache: dict[int, float] = {}
+        self._auto_reply_cooldowns: dict[tuple[int, int], float] = {}
         self.auto_close_task.start()
         self._init_spec_task: Optional[asyncio.Task[None]] = asyncio.create_task(self.init_spec_role_on_start())
 
@@ -1033,6 +1107,30 @@ class TicketsCog(commands.Cog, name="Тикеты"):
             if await _async_db_call(self.db.is_ticket_channel, ch_id):
                 self._non_ticket_cache.pop(ch_id, None)
                 await _async_db_call(self.db.update_ticket_activity, ch_id)
+
+                # Умный автоответ в тикетах для сообщений от игроков (не персонала и не команд)
+                content = (message.content or "").strip()
+                if content and not content.startswith(tuple(Config.COMMAND_PREFIXES)) and not is_mod_or_admin(message):
+                    match = await _async_db_call(self.db.find_matching_auto_reply, content)
+                    if match:
+                        rule = match["rule"]
+                        r_id = int(rule["id"])
+                        cd_key = (ch_id, r_id)
+                        if (now_mono - self._auto_reply_cooldowns.get(cd_key, 0.0)) >= 120.0:
+                            self._auto_reply_cooldowns[cd_key] = now_mono
+                            if len(self._auto_reply_cooldowns) > 1000:
+                                self._auto_reply_cooldowns.clear()
+                            pct = int(round(match["score"] * 100))
+                            emb = discord.Embed(
+                                title="💡 Быстрая подсказка • Vanilla Land",
+                                description=rule["response_text"],
+                                color=Colors.INDIGO,
+                            )
+                            emb.set_footer(text=f"Автоответ #{r_id} (совпадение {pct}%) • Если вопрос не решён, дождитесь ответа персонала")
+                            try:
+                                await message.reply(embed=emb, mention_author=False)
+                            except Exception as send_err:
+                                logger.debug("Ticket auto-reply send failed in %s: %s", ch_id, send_err)
             else:
                 if len(self._non_ticket_cache) >= 2048:
                     self._non_ticket_cache.clear()
@@ -1522,6 +1620,104 @@ class TicketsCog(commands.Cog, name="Тикеты"):
             await ctx.defer(ephemeral=True)
         val = await _async_db_call(self.db.set_ticket_counter, number)
         await ctx.send(f"✅ Счётчик тикетов успешно установлен на: **{val}** (следующий созданный тикет будет `#тикет-{val + 1:03d}`).", ephemeral=True)
+
+    @commands.hybrid_command(
+        name="ticket_reply",
+        aliases=["автоответ", "шаблон", "faq_rule", "snippet"],
+        description="[Персонал] Настройка автоответов бота в тикетах (точные и похожие фразы)",
+    )
+    @app_commands.describe(
+        action="Действие: add (добавить), list (список), remove (удалить), test (проверить фразу)",
+        trigger="Ключевая фраза (можно несколько через |) или фраза для test / ID для remove",
+        response="Текст ответа (если не указать при add — откроется удобная форма)",
+        similarity="Порог похожести от 0.50 до 0.95 (по умолчанию 0.68)",
+    )
+    @app_commands.choices(
+        action=[
+            app_commands.Choice(name="Добавить правило (add)", value="add"),
+            app_commands.Choice(name="Список правил (list)", value="list"),
+            app_commands.Choice(name="Удалить по ID (remove)", value="remove"),
+            app_commands.Choice(name="Протестировать фразу (test)", value="test"),
+        ]
+    )
+    async def ticket_reply_cmd(
+        self,
+        ctx: commands.Context,
+        action: Optional[str] = "list",
+        trigger: Optional[str] = None,
+        response: Optional[str] = None,
+        similarity: Optional[float] = 0.68,
+    ):
+        if not is_mod_or_admin(ctx):
+            return await ctx.send("Эта команда доступна только персоналу сервера.", ephemeral=True)
+
+        act = (action or "list").strip().lower()
+        if act == "add":
+            if ctx.interaction and (not trigger or not response):
+                await ctx.interaction.response.send_modal(TicketAutoReplyModal(self.db))
+                return
+            if not trigger or not response:
+                return await ctx.send(
+                    "Использование: `/ticket_reply add` (откроет форму) или `!ticket_reply add \"фраза1 | фраза2\" \"ответ\"`",
+                    ephemeral=True,
+                )
+            thr = similarity if similarity is not None else 0.68
+            rule_id = await _async_db_call(
+                self.db.add_ticket_auto_reply, trigger, response, thr, ctx.author.name
+            )
+            embed = AG.success(
+                f"Автоответ #{rule_id} добавлен",
+                f"• **Триггер:** `{trigger}`\n• **Порог похожести:** `{int(round(thr * 100))}%`\n• **Ответ:**\n{response[:500]}",
+            )
+            return await ctx.send(embed=embed, ephemeral=True)
+
+        if act == "remove":
+            if not trigger or not str(trigger).strip().isdigit():
+                return await ctx.send("Укажите числовой ID правила для удаления (смотрите `/ticket_reply list`).", ephemeral=True)
+            deleted = await _async_db_call(self.db.delete_ticket_auto_reply, int(str(trigger).strip()))
+            if deleted:
+                return await ctx.send(f"✅ Автоответ `#{trigger.strip()}` удалён.", ephemeral=True)
+            return await ctx.send(f"❌ Автоответ `#{trigger.strip()}` не найден.", ephemeral=True)
+
+        if act == "test":
+            if not trigger:
+                return await ctx.send("Укажите фразу игрока в параметре `trigger` для проверки.", ephemeral=True)
+            match = await _async_db_call(self.db.find_matching_auto_reply, trigger)
+            if not match:
+                return await ctx.send(f"🔍 Для фразы `{trigger}` подходящих шаблонов не найдено.", ephemeral=True)
+            rule = match["rule"]
+            pct = int(round(match["score"] * 100))
+            embed = AG.embed(
+                title=f"✅ Совпадение найдено • Правило #{rule['id']} ({pct}%)",
+                description=(
+                    f"• **Фраза:** `{trigger}`\n"
+                    f"• **Сработал вариант:** `{match['matched_variant']}`\n\n"
+                    f"**Ответ бота:**\n{rule['response_text']}"
+                ),
+                color=Colors.GREEN,
+            )
+            return await ctx.send(embed=embed, ephemeral=True)
+
+        # list
+        rules = await _async_db_call(self.db.get_ticket_auto_replies)
+        if not rules:
+            return await ctx.send(
+                "Список автоответов в тикетах пуст. Добавьте первый командой `/ticket_reply add`.",
+                ephemeral=True,
+            )
+        lines = []
+        for r in rules[:15]:
+            preview = r["response_text"].replace("\n", " ")
+            if len(preview) > 90:
+                preview = preview[:87] + "..."
+            lines.append(f"**#{r['id']}** (`{int(round(r['threshold']*100))}%`) — `{r['trigger_phrase']}`\n↳ {preview}")
+        embed = AG.embed(
+            title="💡 Автоответы в тикетах • Vanilla Land",
+            description="\n\n".join(lines),
+            color=Colors.INDIGO,
+            footer="Удалить: /ticket_reply remove <id> | Проверить: /ticket_reply test <фраза>",
+        )
+        await ctx.send(embed=embed, ephemeral=True)
 
 
 async def setup(bot: commands.Bot):
