@@ -19,8 +19,6 @@ DEFAULT_KEYS: tuple[tuple[str, str], ...] = (
     ("ALTS_ALERT_CHANNEL_ID", "0"),
     ("BRIDGE_PORT", "25549"),
     ("AUTO_CLOSE_HOURS", "24"),
-    ("IP_SESSION_HOURS", "48"),
-    ("LOGIN_2FA_TIMEOUT_SEC", "180"),
     ("DB_PATH", "tickets.db"),
     ("TRANSCRIPTS_DIR", "transcripts"),
     ("BRIDGE_ENABLE_ALTS_CHECK", "0"),

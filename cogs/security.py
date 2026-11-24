@@ -391,21 +391,16 @@ class AltsQuickWhoisModal(ui.Modal, title="Быстрый поиск аккау�
             )
             embed.set_thumbnail(url=f"https://mc-heads.net/avatar/{query}/128.png")
 
-            # 2FA & Discord link section
+            # Discord link section
             if show_2fa:
                 linked = self.db.get_linked_account_by_mc(query) if self.db else None
                 sec_lines = []
                 if linked:
-                    is_2fa = linked.get("two_factor_enabled", False)
-                    trust_h = linked.get("trust_duration_hours", 48)
-                    status_2fa = f"Включен (сессия = {trust_h} ч.)" if is_2fa else "Выключен"
                     dc_user = f"<@{linked['discord_user_id']}> (`{linked['discord_user_id']}`)"
-                    sec_lines.append(f"• 🔐 **2FA - Google Authenticator:** `{status_2fa}`")
                     sec_lines.append(f"• 🔗 **Привязка Discord:** {dc_user}")
                 else:
-                    sec_lines.append("• 🔐 **2FA - Google Authenticator:** `Не настроен`")
                     sec_lines.append("• 🔗 **Привязка Discord:** `Не привязан`")
-                embed.add_field(name="Безопасность", value="\n".join(sec_lines), inline=False)
+                embed.add_field(name="Привязка аккаунта", value="\n".join(sec_lines), inline=False)
 
             # Network & IP section
             if ips and (show_net or show_geo):
@@ -2548,8 +2543,9 @@ class SecurityCog(commands.Cog, name="Безопасность"):
         await bridge_cog.broadcast_packet({"type": "execute_console_command", "command": cmd})
 
         if is_on:
-            # Кикнуть обычных игроков с понятной причиной
-            kick_cmd = f"kickall {reason}"
+            # Кикнуть обычных игроков с понятной причиной (санитизируем переносы строк от инъекции команд)
+            safe_reason = (reason or "Экстренное техническое обслуживание").replace("\r", " ").replace("\n", " ").strip()
+            kick_cmd = f"kickall {safe_reason}"
             await bridge_cog.broadcast_packet({"type": "execute_console_command", "command": kick_cmd})
 
         embed = discord.Embed(

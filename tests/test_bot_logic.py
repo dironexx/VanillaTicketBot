@@ -7,7 +7,6 @@ import unittest
 from types import SimpleNamespace
 
 from cogs.bridge import BridgeCog
-from cogs.bridge_views import TwoFactorVerifyView
 from cogs.security import AltActionView, check_ip_intel
 
 
@@ -49,10 +48,29 @@ class BridgeLogicTests(unittest.TestCase):
         self.assertEqual(fake.mc_online, 0)
         self.assertEqual(fake.mc_players, [])
 
-    def test_resend_rate_limit(self):
-        fake = SimpleNamespace(_resend_attempts={})
-        allowed = BridgeCog.resend_rate_ok.__get__(fake)
-        self.assertEqual([allowed("Steve") for _ in range(5)], [True, True, True, False, False])
+    def test_link_rate_limit_and_views(self):
+        from cogs.bridge_views import AccountLinkView, PermanentLinkPanelView
+        fake = SimpleNamespace(_link_attempts={}, link_max_attempts=5, link_window_sec=600.0)
+        allowed = BridgeCog.link_rate_ok.__get__(fake)
+        self.assertEqual([allowed(42) for _ in range(7)], [True, True, True, True, True, False, False])
+        self.assertIsNotNone(AccountLinkView)
+        self.assertIsNotNone(PermanentLinkPanelView)
+
+    def test_say_command_mentions_safety_and_reset_top_deaths(self):
+        import tempfile
+        from database import DatabaseManager
+        from cogs.utility import UtilityCog
+        cog_cmd = UtilityCog.say_cmd
+        self.assertEqual(cog_cmd.name, "say")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db = DatabaseManager(os.path.join(tmp, "top_reset.db"))
+            db.record_player_death("Steve", "упал")
+            db.record_death_coords("Steve", "world", 10, 64, -20, "упал")
+            self.assertEqual(db.get_player_deaths("Steve")[0], 1)
+            db.reset_top_deaths()
+            self.assertEqual(db.get_player_deaths("Steve")[0], 0)
+            self.assertIsNone(db.get_death_coords("Steve"))
 
     def test_alt_check_auto_vs_manual(self):
         fake = SimpleNamespace(_alt_check_requests={}, _alt_check_manual={})
@@ -69,29 +87,6 @@ class BridgeLogicTests(unittest.TestCase):
         register("Expired", ttl=1)
         fake._alt_check_requests["expired"] = 0
         self.assertFalse(consume("Expired"))
-
-    def test_two_factor_session_stale(self):
-        fake = SimpleNamespace(pending_2fa={})
-        self.assertTrue(TwoFactorVerifyView._is_session_stale(fake, "Steve", "s1"))
-        fake.pending_2fa["steve"] = {"session_id": "s1"}
-        self.assertFalse(TwoFactorVerifyView._is_session_stale(fake, "Steve", "s1"))
-        self.assertTrue(TwoFactorVerifyView._is_session_stale(fake, "Steve", "old"))
-        self.assertTrue(TwoFactorVerifyView._is_session_stale(fake, "Steve", ""))
-
-    def test_trust_hours_resolution(self):
-        fake = SimpleNamespace(
-            db=SimpleNamespace(
-                get_linked_account_by_mc=lambda player: {"trust_duration_hours": 168}
-            )
-        )
-        self.assertEqual(TwoFactorVerifyView._resolve_trust_hours(fake, "Steve"), 168)
-
-        fake0 = SimpleNamespace(
-            db=SimpleNamespace(
-                get_linked_account_by_mc=lambda player: {"trust_duration_hours": 0}
-            )
-        )
-        self.assertEqual(TwoFactorVerifyView._resolve_trust_hours(fake0, "Steve"), 0)
 
     def test_alt_action_state_from_db(self):
         db = SimpleNamespace(

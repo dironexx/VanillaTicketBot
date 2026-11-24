@@ -53,40 +53,43 @@ class UtilityCog(commands.Cog, name="Утилиты"):
     # --- ФОНОВЫЙ ЦИКЛ НАПОМИНАНИЙ ---
     @tasks.loop(seconds=20)
     async def reminders_loop(self):
-        now_ts = time.time()
-        expired = self.db.get_expired_reminders(now_ts)
+        try:
+            now_ts = time.time()
+            expired = self.db.get_expired_reminders(now_ts)
 
-        for rem_id, user_id, channel_id, text in expired:
-            channel = self.bot.get_channel(channel_id)
-            user = self.bot.get_user(user_id)
-            if not user:
-                try:
-                    user = await self.bot.fetch_user(user_id)
-                except Exception:
-                    user = None
+            for rem_id, user_id, channel_id, text in expired:
+                channel = self.bot.get_channel(channel_id)
+                user = self.bot.get_user(user_id)
+                if not user:
+                    try:
+                        user = await self.bot.fetch_user(user_id)
+                    except Exception:
+                        user = None
 
-            embed = AG.embed(
-                title="Напоминание • Vanilla Land",
-                description=text,
-                color=Colors.YELLOW,
-                footer="Vanilla Land • Напоминания",
-            )
+                embed = AG.embed(
+                    title="Напоминание • Vanilla Land",
+                    description=text,
+                    color=Colors.YELLOW,
+                    footer="Vanilla Land • Напоминания",
+                )
 
-            sent = False
-            if channel and isinstance(channel, discord.TextChannel):
-                try:
-                    await channel.send(content=f"<@{user_id}>", embed=embed)
-                    sent = True
-                except Exception:
-                    pass
+                sent = False
+                if channel and isinstance(channel, discord.TextChannel):
+                    try:
+                        await channel.send(content=f"<@{user_id}>", embed=embed)
+                        sent = True
+                    except Exception:
+                        pass
 
-            if not sent and user:
-                try:
-                    await user.send(embed=embed)
-                except Exception:
-                    pass
+                if not sent and user:
+                    try:
+                        await user.send(embed=embed)
+                    except Exception:
+                        pass
 
-            self.db.delete_reminder(rem_id)
+                self.db.delete_reminder(rem_id)
+        except Exception as e:
+            logger.error(f"Ошибка в цикле напоминаний: {e}")
 
     @reminders_loop.before_loop
     async def before_reminders_loop(self):
@@ -220,19 +223,96 @@ class UtilityCog(commands.Cog, name="Утилиты"):
 
         await ctx.send(embed=embed)
 
-    # --- SAY (ДЛЯ ПЕРСОНАЛА) ---
-    @commands.command(name="say", aliases=["сказать"])
-    async def say_cmd(self, ctx: commands.Context, target_channel: Optional[discord.TextChannel] = None, *, text: str):
+    # --- SAY (ОТПРАВКА СООБЩЕНИЙ ОТ ИМЕНИ БОТА ДЛЯ ПЕРСОНАЛА) ---
+    @commands.hybrid_command(
+        name="say",
+        aliases=["сказать", "сообщение", "echo"],
+        description="Отправить обычное сообщение или сообщение в рамке (Embed) от имени бота",
+    )
+    @app_commands.describe(
+        text="Текст сообщения (используйте \\n для переноса строки)",
+        channel="Целевой текстовый канал (по умолчанию текущий)",
+        as_embed="Оформить в виде красивой рамки Embed (да/нет)",
+        embed_title="Заголовок рамки (если as_embed = True)",
+        reply_to_id="ID сообщения в канале, на которое нужно ответить",
+    )
+    async def say_cmd(
+        self,
+        ctx: commands.Context,
+        text: str,
+        channel: Optional[discord.TextChannel] = None,
+        as_embed: bool = False,
+        embed_title: Optional[str] = None,
+        reply_to_id: Optional[str] = None,
+    ):
         if not is_mod_or_admin(ctx):
-            return await ctx.send("Эта команда доступна только персоналу сервера.", delete_after=4)
+            return await ctx.send("Эта команда доступна только персоналу сервера.", ephemeral=True)
 
-        channel = target_channel or ctx.channel
+        if not ctx.guild:
+            return await ctx.send("Команда доступна только на сервере.", ephemeral=True)
+
+        target_channel = channel or ctx.channel
+        if not isinstance(target_channel, (discord.TextChannel, discord.Thread)):
+            return await ctx.send("Невозможно отправить сообщение в этот тип канала.", ephemeral=True)
+
+        # Поддержка префиксного формата !say #канал текст
+        actual_text = text.replace("\\n", "\n").strip()
+        if not ctx.interaction and channel is None:
+            parts = text.split(maxsplit=1)
+            if len(parts) == 2 and parts[0].startswith("<#") and parts[0].endswith(">"):
+                ch_id_str = parts[0][2:-1]
+                if ch_id_str.isdigit():
+                    parsed_ch = ctx.guild.get_channel(int(ch_id_str))
+                    if isinstance(parsed_ch, discord.TextChannel):
+                        target_channel = parsed_ch
+                        actual_text = parts[1].replace("\\n", "\n").strip()
+
+        if not actual_text:
+            return await ctx.send("Текст сообщения не может быть пустым.", ephemeral=True)
+
+        if ctx.message:
+            try:
+                await ctx.message.delete()
+            except Exception:
+                pass
+
+        # Защита от злоупотреблений пингами: @everyone / @here / @roles разрешены только администраторам
+        is_admin = isinstance(ctx.author, discord.Member) and (
+            ctx.author.guild_permissions.administrator or ctx.author.id == ctx.guild.owner_id
+        )
+        allowed = (
+            discord.AllowedMentions(everyone=True, users=True, roles=True)
+            if is_admin
+            else discord.AllowedMentions(everyone=False, users=True, roles=False)
+        )
+
+        ref_msg = None
+        if reply_to_id and reply_to_id.strip().isdigit():
+            try:
+                ref_msg = await target_channel.fetch_message(int(reply_to_id.strip()))
+            except Exception:
+                ref_msg = None
+
         try:
-            await ctx.message.delete()
-        except Exception:
-            pass
+            if as_embed:
+                embed = AG.embed(
+                    title=embed_title.strip() if embed_title else None,
+                    description=actual_text,
+                    color=Colors.BLUE,
+                    footer="Vanilla Land",
+                )
+                await target_channel.send(embed=embed, reference=ref_msg, allowed_mentions=allowed)
+            else:
+                await target_channel.send(actual_text, reference=ref_msg, allowed_mentions=allowed)
 
-        await channel.send(text)
+            if ctx.interaction:
+                await ctx.send(f"Сообщение успешно отправлено в {target_channel.mention}.", ephemeral=True)
+        except discord.Forbidden:
+            if ctx.interaction:
+                await ctx.send(f"У бота нет прав на отправку сообщений в {target_channel.mention}.", ephemeral=True)
+        except discord.HTTPException as err:
+            if ctx.interaction:
+                await ctx.send(f"Ошибка отправки сообщения: {err}", ephemeral=True)
 
     # --- POLL ---
     @commands.command(name="poll", aliases=["опрос"])

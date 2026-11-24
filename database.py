@@ -1198,18 +1198,6 @@ class DatabaseManager:
                 "login_alerts_enabled": bool(row[6]) if len(row) > 6 and row[6] is not None else True,
             }
 
-    def set_two_factor_enabled(self, discord_user_id: int, enabled: bool) -> bool:
-        """Включает или выключает обязательное 2FA подтверждение входов"""
-        with self._get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                UPDATE linked_accounts
-                SET two_factor_enabled = ?
-                WHERE discord_user_id = ?
-            """, (1 if enabled else 0, int(discord_user_id)))
-            conn.commit()
-            return cursor.rowcount > 0
-
     def set_trust_duration(self, discord_user_id: int, hours: int) -> bool:
         """Устанавливает персональный срок доверия к IP (0 = каждый раз, 24ч, 48ч, 168ч)"""
         with self._get_connection() as conn:

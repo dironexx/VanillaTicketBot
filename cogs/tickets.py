@@ -1184,9 +1184,9 @@ class TicketsCog(commands.Cog, name="Тикеты"):
         if not can_manage_ticket(ctx, self.db):
             return await ctx.send("Переименовывать тикет может только его создатель или персонал.", ephemeral=True)
 
-        clean_name = new_name.strip().replace(" ", "-").lower()[:32]
+        clean_name = re.sub(r"[^a-zа-яё0-9\-_]", "-", new_name.strip().lower()).strip("-")[:32]
         if not clean_name:
-            return await ctx.send("Укажите корректное название.", ephemeral=True)
+            return await ctx.send("Укажите корректное название (буквы или цифры).", ephemeral=True)
 
         try:
             old_name = ctx.channel.name

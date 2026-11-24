@@ -54,7 +54,7 @@ def build_overview_embed(guild: Optional[discord.Guild], is_staff: bool) -> disc
         name="📁 Доступные категории",
         value=(
             "• **Сервер Minecraft** — Онлайн, статистика игроков, мир, TPS и координаты\n"
-            "• **Безопасность и 2FA** — Привязка аккаунта, управление сессиями IP и защита\n"
+            "• **Привязка аккаунта** — Синхронизация игрового ника с Discord\n"
             "• **Поддержка и тикеты** — Создание и управление персональными обращениями\n"
             "• **Утилиты Discord** — Аватары, профили участников, напоминания и сервер\n"
             "• **О проекте** — Адрес подключения, ссылка на правила и сайт"
@@ -123,27 +123,27 @@ def build_bridge_embed(guild: Optional[discord.Guild]) -> discord.Embed:
 def build_security_embed(guild: Optional[discord.Guild]) -> discord.Embed:
     guild_icon = guild.icon.url if guild and guild.icon else None
     embed = AG.embed(
-        title="Безопасность и 2FA • Vanilla Land",
-        description="Система двухфакторной аутентификации и защиты аккаунта от несанкционированного входа.",
-        footer="Vanilla Land • Безопасность",
+        title="Привязка аккаунта • Vanilla Land",
+        description="Синхронизация вашего игрового профиля Minecraft с Discord для просмотра статистики и скинов.",
+        footer="Vanilla Land • Привязка профиля",
         footer_icon=guild_icon,
         thumbnail=guild_icon,
     )
 
     embed.add_field(
-        name="Привязка и управление защитой",
+        name="Команды привязки",
         value=(
-            "• `!link [код/ник]` (`!привязать`) — Связать аккаунт Minecraft с Discord и включить 2FA\n"
-            "• `!security` (`!секьюрити`) — Личный кабинет безопасности: статус 2FA, список доверенных IP-сессий и кнопка сброса"
+            "• `/link [код/ник]` (`!привязать`) — Связать игровой аккаунт Minecraft с Discord\n"
+            "• `/unlink` (`!отвязать`) — Отвязать текущий аккаунт от профиля Discord"
         ),
         inline=False,
     )
     embed.add_field(
-        name="Как работает защита при входе",
+        name="Как привязать аккаунт",
         value=(
-            "1. При входе с нового IP после ввода пароля в AuthMe игра блокирует управление.\n"
-            "2. В личные сообщения Discord приходит уведомление с кнопками «Подтвердить» и «Отклонить».\n"
-            "3. После подтверждения IP запоминается на 48 часов без повторных запросов."
+            "1. Введите `/link <ВашНик>` в Discord или `/link` на сервере Minecraft.\n"
+            "2. Введите полученный 6-значный код для подтверждения привязки.\n"
+            "3. После привязки команда `/profile` будет автоматически показывать вашу статистику."
         ),
         inline=False,
     )
@@ -281,7 +281,7 @@ def build_mod_help_embed(guild: Optional[discord.Guild]) -> discord.Embed:
         value=(
             "• `!vckick @user [причина]` — Отключить от голосового канала\n"
             "• `!vcban @user [время] [причина]` — Заблокировать вход в голосовые каналы\n"
-            "• `!say [#канал] <текст>` — Отправить сообщение от имени бота\n"
+            "• `/say <текст> [#канал] [as_embed]` — Отправить сообщение или рамку от имени бота\n"
             "• `!poll <вопрос> [варианты...]` — Создать опрос с реакциями"
         ),
         inline=False,
@@ -320,7 +320,7 @@ def build_mod_help_embed(guild: Optional[discord.Guild]) -> discord.Embed:
             "• `/healthcheck` (`!статус`, `!status`, `!heatlhcheck`) — Gaming HUD аудит сервера, TPS, памяти, прав и моста `[Тех. Админ+]`\n"
             "• `/panic_whitelist [on/off] [kickall]` — Режим изоляции сервера (Panic Whitelist)\n"
             "• `/backup_status` / `/backup_create` — Статус и создание бэкапа (DriveBackupV2)\n"
-            "• `/chat_search <запрос>` — Поиск по истории сообщений в игре\n"
+            "• `/top_reset` — Сбросить топ и статистику смертей после вайпа\n"
             "• `/rules_sync` — Синхронизация правил из VanillaRules в Discord\n"
             "• `!alts_channel [#канал]` — Настройка канала оповещений о твинках\n"
             "• `!alts_panel` — Панель защиты от твинков и обхода банов"
@@ -351,7 +351,7 @@ class HelpSelect(discord.ui.Select):
             discord.SelectOption(label="Главная", value="overview", description="Обзор всех разделов и возможностей"),
             discord.SelectOption(label="Поддержка и тикеты", value="tickets", description="Создание и управление обращениями"),
             discord.SelectOption(label="Сервер Minecraft", value="bridge", description="Онлайн, статистика, профили, мир, топы"),
-            discord.SelectOption(label="Безопасность и 2FA", value="security", description="Привязка аккаунта, доверенные IP и сессии"),
+            discord.SelectOption(label="Привязка аккаунта", value="security", description="Синхронизация игрового ника с Discord"),
             discord.SelectOption(label="Утилиты Discord", value="utility", description="Профили, аватарки, напоминания, рандом"),
             discord.SelectOption(label="О проекте", value="info", description="IP адрес, правила, донат и статус бота"),
         ]

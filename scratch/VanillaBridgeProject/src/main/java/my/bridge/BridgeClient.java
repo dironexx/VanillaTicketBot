@@ -358,8 +358,7 @@ public class BridgeClient implements WebSocket.Listener {
         webSocket.request(1L);
         try {
             String sId = this.plugin.getConfig().getString("server-id", "main");
-            boolean twoFa = this.plugin.isTwoFactorEnabled();
-            String hs = String.format(Locale.US, "{\"type\":\"handshake\",\"server_id\":\"%s\",\"2fa_enabled\":%b}", sId, twoFa);
+            String hs = String.format(Locale.US, "{\"type\":\"handshake\",\"server_id\":\"%s\"}", sId);
             this.send(hs);
             this.plugin.sendServerStats();
         } catch (Exception ignored) {}

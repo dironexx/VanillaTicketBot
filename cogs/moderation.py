@@ -76,7 +76,7 @@ async def send_dm_notification(
 
 
 async def extract_target_from_ctx(ctx: commands.Context) -> Optional[discord.Member]:
-    if ctx.message.reference and ctx.message.reference.message_id:
+    if ctx.message and ctx.message.reference and ctx.message.reference.message_id:
         try:
             ref_msg = await ctx.channel.fetch_message(ctx.message.reference.message_id)
             if isinstance(ref_msg.author, discord.Member):
@@ -193,6 +193,9 @@ class ModerationCog(commands.Cog, name="Модерация"):
         if not is_mod_or_admin(ctx):
             return await ctx.send("Эта команда доступна только персоналу сервера.", ephemeral=True)
 
+        if not ctx.guild:
+            return await ctx.send("Команда доступна только на сервере.", ephemeral=True)
+
         if target is None:
             target = await extract_target_from_ctx(ctx)
 
@@ -259,6 +262,9 @@ class ModerationCog(commands.Cog, name="Модерация"):
         if not is_mod_or_admin(ctx):
             return await ctx.send("Эта команда доступна только персоналу сервера.", ephemeral=True)
 
+        if not ctx.guild:
+            return await ctx.send("Команда доступна только на сервере.", ephemeral=True)
+
         if target is None:
             target = await extract_target_from_ctx(ctx)
 
@@ -316,6 +322,9 @@ class ModerationCog(commands.Cog, name="Модерация"):
         if not is_mod_or_admin(ctx):
             return await ctx.send("Эта команда доступна только персоналу сервера.", ephemeral=True)
 
+        if not ctx.guild:
+            return await ctx.send("Команда доступна только на сервере.", ephemeral=True)
+
         if target is None:
             target = await extract_target_from_ctx(ctx)
 
@@ -353,6 +362,9 @@ class ModerationCog(commands.Cog, name="Модерация"):
     async def ban_cmd(self, ctx: commands.Context, target: Optional[str] = None, *, reason: Optional[str] = "Не указана"):
         if not is_mod_or_admin(ctx):
             return await ctx.send("Эта команда доступна только персоналу сервера.", ephemeral=True)
+
+        if not ctx.guild:
+            return await ctx.send("Команда доступна только на сервере.", ephemeral=True)
 
         member_to_ban = None
         user_id_to_ban = None
@@ -409,6 +421,8 @@ class ModerationCog(commands.Cog, name="Модерация"):
     @commands.hybrid_command(name="unban", aliases=["разбан"], description="Разблокировать по Discord ID")
     @app_commands.describe(user_id="Discord ID пользователя для разбана", reason="Причина (не обязательно)")
     async def unban_cmd(self, ctx: commands.Context, user_id: str, *, reason: Optional[str] = "Не указана"):
+        if not ctx.guild:
+            return await ctx.send("Команда доступна только на сервере.", ephemeral=True)
         if not is_mod_or_admin(ctx):
             return await ctx.send("Эта команда доступна только персоналу сервера.", ephemeral=True)
 
@@ -445,6 +459,8 @@ class ModerationCog(commands.Cog, name="Модерация"):
     @commands.hybrid_command(name="clear", aliases=["очистить", "purge", "clean"], description="Очистить сообщения в канале")
     @app_commands.describe(amount="Количество сообщений для удаления (1-100)")
     async def clear_cmd(self, ctx: commands.Context, amount: int = 10):
+        if not ctx.guild:
+            return await ctx.send("Команда доступна только на сервере.", ephemeral=True)
         if not is_mod_or_admin(ctx):
             return await ctx.send("Эта команда доступна только персоналу сервера.", ephemeral=True)
 
@@ -482,6 +498,8 @@ class ModerationCog(commands.Cog, name="Модерация"):
     @commands.hybrid_command(name="slowmode", aliases=["медленный", "слоумод"], description="Установить задержку отправки сообщений в канале")
     @app_commands.describe(delay="Задержка (например: 5s, 10s, 1m или 0 для отключения)")
     async def slowmode_cmd(self, ctx: commands.Context, delay: str = "0"):
+        if not ctx.guild:
+            return await ctx.send("Команда доступна только на сервере.", ephemeral=True)
         if not is_mod_or_admin(ctx):
             return await ctx.send("Эта команда доступна только персоналу сервера.", ephemeral=True)
 
@@ -504,6 +522,8 @@ class ModerationCog(commands.Cog, name="Модерация"):
     @commands.hybrid_command(name="lock", aliases=["закрыть_чат", "лок"], description="Заблокировать отправку сообщений в текущем канале")
     @app_commands.describe(reason="Причина блокировки чата")
     async def lock_cmd(self, ctx: commands.Context, *, reason: Optional[str] = "Не указана"):
+        if not ctx.guild:
+            return await ctx.send("Команда доступна только на сервере.", ephemeral=True)
         if not is_mod_or_admin(ctx):
             return await ctx.send("Эта команда доступна только персоналу сервера.", ephemeral=True)
 
@@ -526,6 +546,8 @@ class ModerationCog(commands.Cog, name="Модерация"):
     # --- UNLOCK (РАЗБЛОКИРОВКА КАНАЛА) ---
     @commands.hybrid_command(name="unlock", aliases=["открыть_чат", "анлок"], description="Разблокировать текущий канал")
     async def unlock_cmd(self, ctx: commands.Context):
+        if not ctx.guild:
+            return await ctx.send("Команда доступна только на сервере.", ephemeral=True)
         if not is_mod_or_admin(ctx):
             return await ctx.send("Эта команда доступна только персоналу сервера.", ephemeral=True)
 
@@ -545,6 +567,8 @@ class ModerationCog(commands.Cog, name="Модерация"):
     @commands.hybrid_command(name="lockall", aliases=["закрыть_все", "локолл"], description="Заблокировать все общедоступные каналы")
     @app_commands.describe(reason="Причина общей блокировки")
     async def lockall_cmd(self, ctx: commands.Context, *, reason: Optional[str] = "Экстренная блокировка"):
+        if not ctx.guild:
+            return await ctx.send("Команда доступна только на сервере.", ephemeral=True)
         if not is_mod_or_admin(ctx):
             return await ctx.send("Эта команда доступна только персоналу сервера.", ephemeral=True)
 
@@ -574,7 +598,10 @@ class ModerationCog(commands.Cog, name="Модерация"):
             color=Colors.RED,
             footer="Vanilla Land • Безопасность",
         )
-        await msg.delete()
+        try:
+            await msg.delete()
+        except Exception:
+            pass
         await ctx.send(embed=embed)
 
     # --- UNLOCKALL (РАЗБЛОКИРОВКА ТОЛЬКО РАНЕЕ ЗАКРЫТЫХ КАНАЛОВ) ---
@@ -582,6 +609,9 @@ class ModerationCog(commands.Cog, name="Модерация"):
     async def unlockall_cmd(self, ctx: commands.Context):
         if not is_mod_or_admin(ctx):
             return await ctx.send("Эта команда доступна только персоналу сервера.", ephemeral=True)
+
+        if not ctx.guild:
+            return await ctx.send("Команда доступна только на сервере.", ephemeral=True)
 
         msg = await ctx.send("Восстановление доступа к каналам...")
         locked_ids = self.db.get_locked_channels(ctx.guild.id)
@@ -610,7 +640,10 @@ class ModerationCog(commands.Cog, name="Модерация"):
             color=Colors.GREEN,
             footer="Vanilla Land • Безопасность",
         )
-        await msg.delete()
+        try:
+            await msg.delete()
+        except Exception:
+            pass
         await ctx.send(embed=embed)
 
     # --- VCKICK (КИК ИЗ ГОЛОСОВОГО КАНАЛА) ---
@@ -620,11 +653,17 @@ class ModerationCog(commands.Cog, name="Модерация"):
         if not is_mod_or_admin(ctx):
             return await ctx.send("Эта команда доступна только персоналу сервера.", ephemeral=True)
 
+        if not ctx.guild:
+            return await ctx.send("Команда доступна только на сервере.", ephemeral=True)
+
         if target is None:
             target = await extract_target_from_ctx(ctx)
 
         if target is None:
             return await ctx.send("Укажите пользователя (@упоминание).", ephemeral=True)
+
+        if target.id != ctx.author.id and target.top_role >= ctx.author.top_role and ctx.author.id != ctx.guild.owner_id:
+            return await ctx.send("Роль этого пользователя равна или выше вашей в иерархии.", ephemeral=True)
 
         if not target.voice or not target.voice.channel:
             return await ctx.send(f"Пользователь {target.mention} не находится в голосовом канале.", ephemeral=True)
@@ -658,11 +697,19 @@ class ModerationCog(commands.Cog, name="Модерация"):
         if not is_mod_or_admin(ctx):
             return await ctx.send("Эта команда доступна только персоналу сервера.", ephemeral=True)
 
+        if not ctx.guild:
+            return await ctx.send("Команда доступна только на сервере.", ephemeral=True)
+
         if target is None:
             target = await extract_target_from_ctx(ctx)
 
         if target is None:
             return await ctx.send("Укажите пользователя (@упоминание).", ephemeral=True)
+
+        if target.id == ctx.author.id:
+            return await ctx.send("Вы не можете заблокировать себя в голосовых каналах.", ephemeral=True)
+        if target.top_role >= ctx.author.top_role and ctx.author.id != ctx.guild.owner_id:
+            return await ctx.send("Роль этого пользователя равна или выше вашей в иерархии.", ephemeral=True)
 
         parsed = parse_duration(duration or "1h")
         if not parsed:
@@ -711,6 +758,8 @@ class ModerationCog(commands.Cog, name="Модерация"):
     )
     @app_commands.describe(mode="Режим: on или off (оставьте пустым для проверки статуса)")
     async def automod_cmd(self, ctx: commands.Context, mode: Optional[str] = None):
+        if not ctx.guild:
+            return await ctx.send("Команда доступна только на сервере.", ephemeral=True)
         if not is_mod_or_admin(ctx):
             return await ctx.send("Эта команда доступна только персоналу сервера.", ephemeral=True)
 

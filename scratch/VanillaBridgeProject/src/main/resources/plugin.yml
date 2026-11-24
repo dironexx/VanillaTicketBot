@@ -1,9 +1,9 @@
 name: VanillaBridge
-version: '1.3'
+version: '1.4'
 main: my.bridge.VanillaBridge
 api-version: '26.3'
 folia-supported: true
-softdepend: [CustomInteractiveChat, AuthMe, VanillaChat]
+softdepend: [CustomInteractiveChat, VanillaChat]
 description: Discord Bridge for Vanilla Land (Paper 26.3)
 commands:
   bridge:
@@ -25,10 +25,6 @@ commands:
     description: Привязать свой аккаунт Minecraft к Discord
     aliases: [привязать, linkaccount]
     usage: /link [6-значный код]
-  code:
-    description: Ввести 6-значный код подтверждения безопасности (2FA)
-    aliases: [код, auth, confirm]
-    usage: /code [6 цифр]
   vbc:
     description: Цветное объявление на весь сервер
     aliases: [vbroadcast, об, объявление, bc, broadcast]

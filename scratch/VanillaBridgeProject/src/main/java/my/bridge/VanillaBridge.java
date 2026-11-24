@@ -60,6 +60,8 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.Reader;
@@ -78,6 +80,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Properties;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
@@ -85,11 +88,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Function;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
-import my.bridge.AuthMeHook;
 import my.bridge.BridgeClient;
 import my.bridge.ChatBridgeListener;
-import my.bridge.SecurityIpManager;
-import my.bridge.SecurityListener;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.TextComponent;
 import net.kyori.adventure.text.event.ClickEvent;
@@ -139,8 +139,6 @@ implements CommandExecutor {
     private UniversalScheduler.TaskHandle statsTask;
     private final AtomicBoolean hasSentStartup = new AtomicBoolean(false);
     private long serverStartTime = 0L;
-    private boolean twoFactorEnabled = true;
-    public boolean isTwoFactorEnabled() { return this.twoFactorEnabled; }
     private static final Pattern URL_PATTERN = Pattern.compile("https?://[a-zA-Z0-9.-]+(?:/[^\\s]*)?", 2);
     private static final Pattern JSON_EXTRACT_PATTERN = Pattern.compile("\"([^\"]+)\"\\s*:\\s*(?:\"((?:\\\\.|[^\"\\\\])*)\"|([a-zA-Z0-9._-]+))");
     private final Map<UUID, String> lastDiscordDmSender = new ConcurrentHashMap<UUID, String>();
@@ -155,8 +153,7 @@ implements CommandExecutor {
     private volatile String countdownReason = "";
     private volatile String cachedTopJson = null;
     private volatile long lastTopCacheTime = 0L;
-    private SecurityIpManager securityIpManager;
-    private AuthMeHook authMeHook;
+    private final Properties topBaseline = new Properties();
 
     public static int parseDurationSeconds(String input, int defaultSec) {
         if (input == null || input.trim().isEmpty()) {
@@ -332,7 +329,6 @@ implements CommandExecutor {
     public void onEnable() {
         this.serverStartTime = System.currentTimeMillis();
         this.migrateConfig();
-        this.twoFactorEnabled = this.getConfig().getBoolean("security.two-factor.enabled", true);
         boolean bridgeEnabled = this.getConfig().getBoolean("bridge.enabled", true);
         if (bridgeEnabled) {
             this.bridgeClient = new BridgeClient(this);
@@ -340,48 +336,10 @@ implements CommandExecutor {
         } else {
             this.getLogger().info("Подключение к мосту выключено (bridge.enabled: false)");
         }
-        this.securityIpManager = new SecurityIpManager(this);
-        this.securityIpManager.setDefaultTrustHours(this.getConfig().getInt("security.trust-duration-hours", 48));
-        this.getServer().getPluginManager().registerEvents((Listener)new SecurityListener(this, this.securityIpManager), (Plugin)this);
+        this.loadOrInitTopBaseline();
         this.getServer().getPluginManager().registerEvents((Listener)new ChatBridgeListener(this), (Plugin)this);
-        this.authMeHook = new AuthMeHook(this);
-        this.authMeHook.register();
         if (this.getCommand("bridge") != null) {
             this.getCommand("bridge").setExecutor((CommandExecutor)this);
-        }
-        if (this.getCommand("code") != null) {
-            this.getCommand("code").setExecutor((sender, command, label, args) -> {
-                if (!(sender instanceof Player)) {
-                    sender.sendMessage("\u00a7c\u0422\u043e\u043b\u044c\u043a\u043e \u0434\u043b\u044f \u0438\u0433\u0440\u043e\u043a\u043e\u0432!");
-                    return true;
-                }
-                Player player = (Player)sender;
-                if (this.securityIpManager == null || !this.securityIpManager.isPending2FA(player.getUniqueId())) {
-                    player.sendMessage(MiniMessage.miniMessage().deserialize("<gray>\u0423 \u0432\u0430\u0441 \u043d\u0435\u0442 \u0430\u043a\u0442\u0438\u0432\u043d\u043e\u0433\u043e \u0437\u0430\u043f\u0440\u043e\u0441\u0430 \u043d\u0430 \u043f\u043e\u0434\u0442\u0432\u0435\u0440\u0436\u0434\u0435\u043d\u0438\u0435 2FA.</gray>"));
-                    return true;
-                }
-                if (args.length == 0) {
-                    player.sendMessage(MiniMessage.miniMessage().deserialize("<dark_gray>\u2502</dark_gray> <yellow>\u0418\u0441\u043f\u043e\u043b\u044c\u0437\u043e\u0432\u0430\u043d\u0438\u0435: <white>/code [6 \u0446\u0438\u0444\u0440]</white> \u0438\u043b\u0438 <white>/code resend</white></yellow>"));
-                    return true;
-                }
-                String sub = args[0].trim();
-                if (sub.equalsIgnoreCase("resend") || sub.equalsIgnoreCase("\u043f\u043e\u0432\u0442\u043e\u0440")) {
-                    if (this.bridgeClient != null && this.bridgeClient.isConnected()) {
-                        String payload = String.format(Locale.US, "{\"type\":\"2fa_resend_code\",\"player\":\"%s\"}", VanillaBridge.escapeJson(player.getName()));
-                        this.bridgeClient.send(payload);
-                        player.sendMessage(MiniMessage.miniMessage().deserialize("<dark_gray>\u2502</dark_gray> <gray>\u0417\u0430\u043f\u0440\u043e\u0441 \u043d\u0430 \u043f\u043e\u0432\u0442\u043e\u0440\u043d\u0443\u044e \u043e\u0442\u043f\u0440\u0430\u0432\u043a\u0443 \u043a\u043e\u0434\u0430 \u043e\u0442\u043f\u0440\u0430\u0432\u043b\u0435\u043d \u0432 Discord...</gray>"));
-                        try {
-                            player.playSound(player.getLocation(), Sound.UI_BUTTON_CLICK, 1.0f, 1.0f);
-                        }
-                        catch (Exception exception) {}
-                    } else {
-                        player.sendMessage(MiniMessage.miniMessage().deserialize("<dark_gray>\u2502</dark_gray> <red>\u274c \u0421\u0432\u044f\u0437\u044c \u0441 Discord \u0431\u043e\u0442\u043e\u043c \u0432\u0440\u0435\u043c\u0435\u043d\u043d\u043e \u043d\u0435\u0434\u043e\u0441\u0442\u0443\u043f\u043d\u0430. \u041f\u043e\u043f\u0440\u043e\u0431\u0443\u0439\u0442\u0435 \u043f\u043e\u0437\u0436\u0435.</red>"));
-                    }
-                    return true;
-                }
-                this.securityIpManager.checkCode(player, sub);
-                return true;
-            });
         }
         if (this.getCommand("link") != null) {
             this.getCommand("link").setExecutor((sender, command, label, args) -> {
@@ -700,7 +658,7 @@ implements CommandExecutor {
                 // empty catch block
             }
         }, 60L, 3000L);
-        this.getLogger().info("VanillaBridge 1.3 успешно включен!");
+        this.getLogger().info("VanillaBridge 1.4 успешно включен!");
     }
 
     public void sendServerStats() {
@@ -741,9 +699,6 @@ implements CommandExecutor {
             this.maintenanceCountdownTask.cancel();
             this.maintenanceCountdownTask = null;
         }
-        if (this.securityIpManager != null) {
-            this.securityIpManager.cleanUpOnDisable();
-        }
         if (this.bridgeClient != null) {
             if (this.bridgeClient.isConnected()) {
                 this.bridgeClient.send("{\"type\":\"lifecycle\",\"event\":\"stop\"}");
@@ -751,7 +706,7 @@ implements CommandExecutor {
             this.bridgeClient.disconnect();
         }
         this.hasSentStartup.set(false);
-        this.getLogger().info("VanillaBridge 1.0 \u0432\u044b\u043a\u043b\u044e\u0447\u0435\u043d.");
+        this.getLogger().info("VanillaBridge 1.4 \u0432\u044b\u043a\u043b\u044e\u0447\u0435\u043d.");
     }
 
     public void cleanupPlayer(UUID uuid) {
@@ -913,9 +868,6 @@ implements CommandExecutor {
                                 p2.sendMessage(alertComp);
                                 p2.sendTitle("§c§lРЕСТАРТ", "§7через §e5 секунд§7! §fВозвращайтесь — станет §aлучше§7!", 0, 40, 10);
                             }
-                            if (bridgeClient != null && bridgeClient.isConnected()) {
-                                bridgeClient.send("{\"type\":\"chat\",\"player\":\"Vanilla Land\",\"message\":\"🔴 **РЕСТАРТ через 5 секунд!** Возвращайтесь — станет лучше!\"}");
-                            }
                         }
                         try {
                             float pitch = 1.0f + (float)(6 - countdownRemaining) * 0.2f;
@@ -1075,14 +1027,14 @@ implements CommandExecutor {
                     } else {
                         this.cachePlayerSkin(p.getName(), skinHash);
                     }
-                    int playtime = p.getStatistic(Statistic.PLAY_ONE_MINUTE);
-                    int diamonds = VanillaBridge.getSafeMineStat((OfflinePlayer)p, Material.DIAMOND_ORE) + VanillaBridge.getSafeMineStat((OfflinePlayer)p, Material.DEEPSLATE_DIAMOND_ORE);
-                    int debris = VanillaBridge.getSafeMineStat((OfflinePlayer)p, Material.ANCIENT_DEBRIS);
+                    int playtime = this.applyBaseline(p.getName(), "pt", p.getStatistic(Statistic.PLAY_ONE_MINUTE));
+                    int diamonds = this.applyBaseline(p.getName(), "dia", VanillaBridge.getSafeMineStat((OfflinePlayer)p, Material.DIAMOND_ORE) + VanillaBridge.getSafeMineStat((OfflinePlayer)p, Material.DEEPSLATE_DIAMOND_ORE));
+                    int debris = this.applyBaseline(p.getName(), "deb", VanillaBridge.getSafeMineStat((OfflinePlayer)p, Material.ANCIENT_DEBRIS));
                     int emeralds = VanillaBridge.getSafeMineStat((OfflinePlayer)p, Material.EMERALD_ORE) + VanillaBridge.getSafeMineStat((OfflinePlayer)p, Material.DEEPSLATE_EMERALD_ORE);
                     int gold = VanillaBridge.getSafeMineStat((OfflinePlayer)p, Material.GOLD_ORE) + VanillaBridge.getSafeMineStat((OfflinePlayer)p, Material.DEEPSLATE_GOLD_ORE) + VanillaBridge.getSafeMineStat((OfflinePlayer)p, Material.NETHER_GOLD_ORE);
                     int iron = VanillaBridge.getSafeMineStat((OfflinePlayer)p, Material.IRON_ORE) + VanillaBridge.getSafeMineStat((OfflinePlayer)p, Material.DEEPSLATE_IRON_ORE);
-                    int kills = p.getStatistic(Statistic.PLAYER_KILLS);
-                    int deaths = p.getStatistic(Statistic.DEATHS);
+                    int kills = this.applyBaseline(p.getName(), "kills", p.getStatistic(Statistic.PLAYER_KILLS));
+                    int deaths = this.applyBaseline(p.getName(), "deaths", p.getStatistic(Statistic.DEATHS));
                     int mobKills = p.getStatistic(Statistic.MOB_KILLS);
                     long firstPlayed = p.getFirstPlayed();
                     long lastPlayed = p.getLastPlayed();
@@ -1166,14 +1118,14 @@ implements CommandExecutor {
                             int mobKills = 0;
                             if (hasPlayed) {
                                 try {
-                                    playtime = op.getStatistic(Statistic.PLAY_ONE_MINUTE);
-                                    diamonds = VanillaBridge.getSafeMineStat(op, Material.DIAMOND_ORE) + VanillaBridge.getSafeMineStat(op, Material.DEEPSLATE_DIAMOND_ORE);
-                                    debris = VanillaBridge.getSafeMineStat(op, Material.ANCIENT_DEBRIS);
+                                    playtime = this.applyBaseline(actualName, "pt", op.getStatistic(Statistic.PLAY_ONE_MINUTE));
+                                    diamonds = this.applyBaseline(actualName, "dia", VanillaBridge.getSafeMineStat(op, Material.DIAMOND_ORE) + VanillaBridge.getSafeMineStat(op, Material.DEEPSLATE_DIAMOND_ORE));
+                                    debris = this.applyBaseline(actualName, "deb", VanillaBridge.getSafeMineStat(op, Material.ANCIENT_DEBRIS));
                                     emeralds = VanillaBridge.getSafeMineStat(op, Material.EMERALD_ORE) + VanillaBridge.getSafeMineStat(op, Material.DEEPSLATE_EMERALD_ORE);
                                     gold = VanillaBridge.getSafeMineStat(op, Material.GOLD_ORE) + VanillaBridge.getSafeMineStat(op, Material.DEEPSLATE_GOLD_ORE) + VanillaBridge.getSafeMineStat(op, Material.NETHER_GOLD_ORE);
                                     iron = VanillaBridge.getSafeMineStat(op, Material.IRON_ORE) + VanillaBridge.getSafeMineStat(op, Material.DEEPSLATE_IRON_ORE);
-                                    kills = op.getStatistic(Statistic.PLAYER_KILLS);
-                                    deaths = op.getStatistic(Statistic.DEATHS);
+                                    kills = this.applyBaseline(actualName, "kills", op.getStatistic(Statistic.PLAYER_KILLS));
+                                    deaths = this.applyBaseline(actualName, "deaths", op.getStatistic(Statistic.DEATHS));
                                     mobKills = op.getStatistic(Statistic.MOB_KILLS);
                                 }
                                 catch (Throwable throwable) {
@@ -1214,8 +1166,11 @@ implements CommandExecutor {
         if ("reset_top_cache".equalsIgnoreCase(type)) {
             this.cachedTopJson = null;
             this.lastTopCacheTime = 0L;
-            UniversalScheduler.runAsync(this, this::updateTopCache);
-            this.getLogger().info("\u26a1 [Вайп] Кэш топа и лидеров успешно сброшен по запросу от Discord бота.");
+            UniversalScheduler.runAsync(this, () -> {
+                this.snapshotTopBaseline();
+                this.updateTopCache();
+            });
+            this.getLogger().info("\u26a1 [Вайп] Базовая точка топа сброшена и кэш обновлён по запросу Discord бота.");
             return;
         }
         if ("query_chunks".equalsIgnoreCase(type)) {
@@ -1411,133 +1366,27 @@ implements CommandExecutor {
             }
             return;
         }
-        if ("emergency_kick".equalsIgnoreCase(type)) {
-            String targetPlayer = this.extractField(rawJson, "player");
-            Player p = Bukkit.getPlayerExact((String)targetPlayer);
-            if (p != null && p.isOnline()) {
-                UniversalScheduler.runGlobal(this, () -> {
-                    if (p.isOnline()) {
-                        p.kick(MiniMessage.miniMessage().deserialize("<gradient:#ff7a00:#ffae19><bold>Vanilla Land</bold></gradient> <dark_gray>\u2502</dark_gray> <red>\u042d\u043a\u0441\u0442\u0440\u0435\u043d\u043d\u0430\u044f \u0431\u043b\u043e\u043a\u0438\u0440\u043e\u0432\u043a\u0430</red>\n\n<red>\u0412\u043b\u0430\u0434\u0435\u043b\u0435\u0446 \u0430\u043a\u043a\u0430\u0443\u043d\u0442\u0430 \u043d\u0430\u0436\u0430\u043b \u043a\u043d\u043e\u043f\u043a\u0443 \u044d\u043a\u0441\u0442\u0440\u0435\u043d\u043d\u043e\u0433\u043e \u043a\u0438\u043a\u0430 \u0432 Discord!\n<gray>\u0412\u0441\u0435 \u0434\u043e\u0432\u0435\u0440\u0435\u043d\u043d\u044b\u0435 \u0441\u0435\u0441\u0441\u0438\u0438 IP \u0441\u0431\u0440\u043e\u0448\u0435\u043d\u044b. \u0412\u043e\u0439\u0434\u0438\u0442\u0435 \u0437\u0430\u043d\u043e\u0432\u043e \u0438 \u043f\u043e\u0434\u0442\u0432\u0435\u0440\u0434\u0438\u0442\u0435 2FA.</gray>"));
-                    }
-                });
-            }
-            return;
-        }
-        if ("login_verdict".equalsIgnoreCase(type)) {
-            String targetPlayer = this.extractField(rawJson, "player");
-            String status = this.extractField(rawJson, "status");
-            String code = this.extractField(rawJson, "code");
-            String ip = this.extractField(rawJson, "ip");
-            String timeoutStr = this.extractField(rawJson, "timeout");
-            int timeout = 180;
-            try {
-                if (!timeoutStr.isEmpty()) {
-                    timeout = Integer.parseInt(timeoutStr);
-                }
-            }
-            catch (Exception p) {
-                // empty catch block
-            }
-            int trustHours = VanillaBridge.parseTrustHours(this.extractField(rawJson, "trust_hours"), 48);
-            String sessionId = this.extractField(rawJson, "session_id");
-            Player p2 = Bukkit.getPlayerExact((String)targetPlayer);
-            if (p2 != null && p2.isOnline()) {
-                if ("require_2fa".equalsIgnoreCase(status)) {
-                    if (this.securityIpManager != null) {
-                        this.securityIpManager.start2FA(p2, code, ip, timeout, false, trustHours, sessionId);
-                    }
-                } else if ("dm_closed".equalsIgnoreCase(status)) {
-                    if (this.securityIpManager != null) {
-                        this.securityIpManager.start2FA(p2, code, ip, timeout, true, trustHours, sessionId);
-                    }
-                } else if ("trusted_session".equalsIgnoreCase(status)) {
-                    if (this.securityIpManager != null) {
-                        this.securityIpManager.trustIp(p2.getName(), ip, trustHours > 0 ? (long)trustHours * 3600000L : 0L);
-                        String trustLabel = trustHours > 0 ? "\u043d\u0430 " + trustHours + "\u0447" : "\u0441\u0442\u0440\u043e\u0433\u0438\u0439 \u0440\u0435\u0436\u0438\u043c";
-                        p2.sendMessage(MiniMessage.miniMessage().deserialize(("<gray>\u0421\u0435\u0441\u0441\u0438\u044f \u0431\u0435\u0437\u043e\u043f\u0430\u0441\u043d\u043e\u0441\u0442\u0438 \u043f\u043e\u0434\u0442\u0432\u0435\u0440\u0436\u0434\u0435\u043d\u0430 \u0434\u043b\u044f IP <white>" + ip + "</white> (2FA \u043f\u0440\u043e\u043f\u0443\u0449\u0435\u043d\u043e " + trustLabel + ").</gray>")));
-                    }
-                } else if (("not_linked".equalsIgnoreCase(status) || "2fa_disabled".equalsIgnoreCase(status)) && this.securityIpManager != null) {
-                    this.securityIpManager.cancel(p2.getUniqueId());
-                    this.securityIpManager.clearPlayerSessions(targetPlayer);
-                }
-            }
-            return;
-        }
-        if ("2fa_verified".equalsIgnoreCase(type)) {
-            String targetPlayer = this.extractField(rawJson, "player");
-            String sessionId = this.extractField(rawJson, "session_id");
-            int trustHours = VanillaBridge.parseTrustHours(this.extractField(rawJson, "trust_hours"), 48);
-            Player p = Bukkit.getPlayerExact((String)targetPlayer);
-            if (p != null && p.isOnline() && this.securityIpManager != null && this.securityIpManager.isSessionMatching(p.getUniqueId(), sessionId)) {
-                this.securityIpManager.completeVerification(p, false, trustHours);
-            }
-            return;
-        }
-        if ("2fa_rejected".equalsIgnoreCase(type)) {
-            String targetPlayer = this.extractField(rawJson, "player");
-            String sessionId = this.extractField(rawJson, "session_id");
-            Player p = Bukkit.getPlayerExact((String)targetPlayer);
-            if (p != null && p.isOnline() && this.securityIpManager != null && this.securityIpManager.isSessionMatching(p.getUniqueId(), sessionId)) {
-                this.securityIpManager.rejectVerification(p, "\u0412\u0445\u043e\u0434 \u043e\u0442\u043a\u043b\u043e\u043d\u0451\u043d \u0432\u043b\u0430\u0434\u0435\u043b\u044c\u0446\u0435\u043c \u0430\u043a\u043a\u0430\u0443\u043d\u0442\u0430 \u0447\u0435\u0440\u0435\u0437 Discord!");
-            }
-            return;
-        }
-        if ("2fa_resend_result".equalsIgnoreCase(type)) {
-            String targetPlayer = this.extractField(rawJson, "player");
-            String successStr = this.extractField(rawJson, "success");
-            String message = this.extractField(rawJson, "message");
-            boolean success = "true".equalsIgnoreCase(successStr);
-            Player p = Bukkit.getPlayerExact((String)targetPlayer);
-            if (p != null && p.isOnline()) {
-                if (success) {
-                    p.sendMessage(MiniMessage.miniMessage().deserialize(("<dark_gray>\u2502</dark_gray> <green>\u2714 " + VanillaBridge.escapeJson(message) + "</green>")));
-                    try {
-                        p.playSound(p.getLocation(), Sound.ENTITY_EXPERIENCE_ORB_PICKUP, 1.0f, 1.2f);
-                    }
-                    catch (Exception timeout) {}
-                } else {
-                    p.sendMessage(MiniMessage.miniMessage().deserialize(("<dark_gray>\u2502</dark_gray> <red>\u274c " + VanillaBridge.escapeJson(message) + "</red>")));
-                    try {
-                        p.playSound(p.getLocation(), Sound.BLOCK_NOTE_BLOCK_BASS, 1.0f, 0.6f);
-                    }
-                    catch (Exception timeout) {
-                        // empty catch block
-                    }
-                }
-            }
-            return;
-        }
         if ("link_result".equalsIgnoreCase(type)) {
             String targetPlayer = this.extractField(rawJson, "player");
             String successStr = this.extractField(rawJson, "success");
             String message = this.extractField(rawJson, "message");
             String discordTag = this.extractField(rawJson, "discord_tag");
-            String kickRelogin = this.extractField(rawJson, "kick_relogin");
             Player p = Bukkit.getPlayerExact((String)targetPlayer);
             if (p != null && p.isOnline()) {
                 if ("true".equalsIgnoreCase(successStr)) {
-                    p.sendMessage(MiniMessage.miniMessage().deserialize(("\n<gradient:#ff7a00:#ffae19><bold>\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501 \u2726 \u0423\u0421\u041f\u0415\u0428\u041d\u041e \u2726 \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501</bold></gradient>\n  <green><bold>\u2714 \u0410\u043a\u043a\u0430\u0443\u043d\u0442 \u0443\u0441\u043f\u0435\u0448\u043d\u043e \u043f\u0440\u0438\u0432\u044f\u0437\u0430\u043d \u043a Discord:</bold></green> <yellow>" + discordTag + "</yellow>\n  <gray>\u0414\u0432\u0443\u0445\u0444\u0430\u043a\u0442\u043e\u0440\u043d\u0430\u044f \u0437\u0430\u0449\u0438\u0442\u0430 (2FA) \u0430\u043a\u0442\u0438\u0432\u0438\u0440\u043e\u0432\u0430\u043d\u0430.</gray>\n<gradient:#ff7a00:#ffae19><bold>\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501</bold></gradient>\n")));
+                    p.sendMessage(MiniMessage.miniMessage().deserialize(("\n<gradient:#ff7a00:#ffae19><bold>\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501 \u2726 \u0423\u0421\u041f\u0415\u0428\u041d\u041e \u2726 \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501</bold></gradient>\n  <green><bold>\u2714 \u0410\u043a\u043a\u0430\u0443\u043d\u0442 \u0443\u0441\u043f\u0435\u0448\u043d\u043e \u043f\u0440\u0438\u0432\u044f\u0437\u0430\u043d \u043a Discord:</bold></green> <yellow>" + discordTag + "</yellow>\n<gradient:#ff7a00:#ffae19><bold>\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501</bold></gradient>\n")));
                     try {
                         p.playSound(p.getLocation(), Sound.ENTITY_PLAYER_LEVELUP, 1.0f, 1.2f);
                         p.playSound(p.getLocation(), Sound.UI_TOAST_CHALLENGE_COMPLETE, 0.8f, 1.4f);
                     }
-                    catch (Exception p2) {
-                        // empty catch block
-                    }
-                    if ("true".equalsIgnoreCase(kickRelogin)) {
-                        UniversalScheduler.runGlobalLater(this, () -> {
-                            if (p.isOnline()) {
-                                p.kick(MiniMessage.miniMessage().deserialize(("<gradient:#ff7a00:#ffae19><bold>Vanilla Land</bold></gradient> <dark_gray>\u2502</dark_gray> <green>\u041f\u0440\u0438\u0432\u044f\u0437\u043a\u0430 Discord</green>\n\n<green><bold>\u2714 \u0410\u043a\u043a\u0430\u0443\u043d\u0442 \u0443\u0441\u043f\u0435\u0448\u043d\u043e \u043f\u0440\u0438\u0432\u044f\u0437\u0430\u043d!</bold></green>\n<gray>Discord: <yellow>" + MiniMessage.miniMessage().escapeTags(discordTag) + "</yellow></gray>\n\n<white>\u041f\u043e\u0436\u0430\u043b\u0443\u0439\u0441\u0442\u0430, \u043f\u0435\u0440\u0435\u0437\u0430\u0439\u0434\u0438\u0442\u0435 \u043d\u0430 \u0441\u0435\u0440\u0432\u0435\u0440 \u0434\u043b\u044f \u0437\u0430\u0432\u0435\u0440\u0448\u0435\u043d\u0438\u044f \u0430\u0432\u0442\u043e\u0440\u0438\u0437\u0430\u0446\u0438\u0438.</white>")));
-                            }
-                        }, 30L);
+                    catch (Exception ignored) {
                     }
                 } else {
                     p.sendMessage(MiniMessage.miniMessage().deserialize(("<red>\u274c \u041e\u0448\u0438\u0431\u043a\u0430 \u043f\u0440\u0438\u0432\u044f\u0437\u043a\u0438: " + (message.isEmpty() ? "\u041d\u0435\u0432\u0435\u0440\u043d\u044b\u0439 \u043a\u043e\u0434" : message) + "</red>")));
                     try {
                         p.playSound(p.getLocation(), Sound.BLOCK_NOTE_BLOCK_BASS, 1.0f, 0.6f);
                     }
-                    catch (Exception p2) {
-                        // empty catch block
+                    catch (Exception ignored) {
                     }
                 }
             }
@@ -1552,30 +1401,16 @@ implements CommandExecutor {
                 try {
                     p.playSound(p.getLocation(), Sound.BLOCK_NOTE_BLOCK_PLING, 1.0f, 1.2f);
                 }
-                catch (Exception discordTag) {
-                    // empty catch block
+                catch (Exception ignored) {
                 }
-            }
-            return;
-        }
-        if ("clear_sessions".equalsIgnoreCase(type)) {
-            String targetPlayer = this.extractField(rawJson, "player");
-            if (this.securityIpManager != null && !targetPlayer.isEmpty()) {
-                this.securityIpManager.clearPlayerSessions(targetPlayer);
             }
             return;
         }
         if ("account_unlinked".equalsIgnoreCase(type)) {
             Player p;
             String targetPlayer = this.extractField(rawJson, "player");
-            if (this.securityIpManager != null && !targetPlayer.isEmpty()) {
-                this.securityIpManager.clearPlayerSessions(targetPlayer);
-            }
             if ((p = Bukkit.getPlayerExact((String)targetPlayer)) != null) {
-                if (this.securityIpManager != null) {
-                    this.securityIpManager.cancel(p.getUniqueId());
-                }
-                p.sendMessage(MiniMessage.miniMessage().deserialize("<gradient:#ff7a00:#ffae19>Vanilla Land</gradient> <dark_gray>\u2502</dark_gray> <gray>\u041f\u0440\u0438\u0432\u044f\u0437\u043a\u0430 \u0430\u043a\u043a\u0430\u0443\u043d\u0442\u0430 \u043a Discord \u0430\u043d\u043d\u0443\u043b\u0438\u0440\u043e\u0432\u0430\u043d\u0430. \u0414\u0432\u0443\u0445\u0444\u0430\u043a\u0442\u043e\u0440\u043d\u0430\u044f \u0437\u0430\u0449\u0438\u0442\u0430 2FA \u043e\u0442\u043a\u043b\u044e\u0447\u0435\u043d\u0430.</gray>"));
+                p.sendMessage(MiniMessage.miniMessage().deserialize("<gradient:#ff7a00:#ffae19>Vanilla Land</gradient> <dark_gray>\u2502</dark_gray> <gray>\u041f\u0440\u0438\u0432\u044f\u0437\u043a\u0430 \u0430\u043a\u043a\u0430\u0443\u043d\u0442\u0430 \u043a Discord \u0430\u043d\u043d\u0443\u043b\u0438\u0440\u043e\u0432\u0430\u043d\u0430.</gray>"));
             }
             return;
         }
@@ -1602,97 +1437,75 @@ implements CommandExecutor {
             if (!cmdToRun.isEmpty()) {
                 UniversalScheduler.runGlobal(this, () -> Bukkit.dispatchCommand((CommandSender)Bukkit.getConsoleSender(), (String)cmdToRun));
             }
+        }
+    }
+
+    public synchronized void loadOrInitTopBaseline() {
+        this.topBaseline.clear();
+        File baselineFile = new File(this.getDataFolder(), "top_baseline.properties");
+        if (!baselineFile.exists()) {
+            this.snapshotTopBaseline();
             return;
         }
-        if (!"discord_chat".equalsIgnoreCase(type)) {
-            return;
-        }
-        String author = this.extractField(rawJson, "author");
-        String rawContent = this.extractField(rawJson, "content");
-        if (author.isEmpty() || rawContent.isEmpty()) {
-            return;
-        }
-        final String content = censorProfanity(rawContent);
-        boolean useIcon = this.getConfig().getBoolean("discord-format.use-icon", true);
-        String icon = useIcon ? this.getConfig().getString("discord-format.icon", "\u0152") : "";
-        String iconPart = useIcon && !icon.isEmpty() ? icon + " " : "";
-        String safeAuthor = MiniMessage.miniMessage().escapeTags(author);
-        String badgeGrad = this.getConfig().getString("discord-format.badge-gradient", "<gradient:#5865F2:#7289DA>");
-        if (!badgeGrad.startsWith("<") && badgeGrad.startsWith("#")) {
-            badgeGrad = "<color:" + badgeGrad + ">";
-        }
-        String closeGrad = badgeGrad.contains("gradient") ? "</gradient>" : (badgeGrad.contains("color") ? "</color>" : "");
-        String prefixMini = badgeGrad + iconPart + "Discord" + closeGrad + " <dark_gray>|</dark_gray> <white>" + safeAuthor + "</white><dark_gray>:</dark_gray> ";
-        try {
-            prefixComponent = MiniMessage.miniMessage().deserialize(prefixMini);
+        try (FileInputStream fis = new FileInputStream(baselineFile)) {
+            this.topBaseline.load(fis);
         }
         catch (Exception e) {
-            prefixComponent = Component.text((String)((useIcon ? "\u0152 " : "") + "Discord | " + author + ": "));
+            this.getLogger().warning("Не удалось загрузить top_baseline.properties: " + e.getMessage());
         }
-        String hoverText = this.getConfig().getString("discord-format.hover-text", "&7\u0421\u043e\u043e\u0431\u0449\u0435\u043d\u0438\u0435 \u0438\u0437 Discord\n&e\u041a\u043b\u0438\u043a: \u043e\u0442\u0432\u0435\u0442\u0438\u0442\u044c");
-        TextComponent hoverComponent = LegacyComponentSerializer.legacyAmpersand().deserialize(hoverText);
-        prefixComponent = prefixComponent.hoverEvent((HoverEventSource)HoverEvent.showText((Component)hoverComponent)).clickEvent(ClickEvent.suggestCommand((String)("@" + author + " ")));
-        Component messageBody = VanillaBridge.parseUrlsInComponent(content);
-        Component fullMessage = prefixComponent.append(messageBody);
-        boolean mentionsEnabled = this.getConfig().getBoolean("mentions.enabled", true);
-        String soundName = this.getConfig().getString("mentions.sound.name", "block.note_block.pling");
-        float soundVolume = (float)this.getConfig().getDouble("mentions.sound.volume", 1.0);
-        float soundPitch = (float)this.getConfig().getDouble("mentions.sound.pitch", 1.5);
-        UniversalScheduler.runGlobal(this, () -> {
-            for (Player p : Bukkit.getOnlinePlayers()) {
-                p.sendMessage(fullMessage);
-                if (!mentionsEnabled || !content.toLowerCase().contains("@" + p.getName().toLowerCase())) continue;
-                try {
-                    Sound sound = Sound.valueOf((String)soundName.toUpperCase().replace('.', '_'));
-                    p.playSound(p.getLocation(), sound, soundVolume, soundPitch);
-                }
-                catch (Exception ignored) {
-                    p.playSound(p.getLocation(), Sound.BLOCK_NOTE_BLOCK_PLING, soundVolume, soundPitch);
-                }
+    }
+
+    public synchronized int snapshotTopBaseline() {
+        this.topBaseline.clear();
+        int count = 0;
+        for (OfflinePlayer op : Bukkit.getOfflinePlayers()) {
+            String name = op.getName();
+            if (name == null || name.isEmpty()) continue;
+            String keyPrefix = name.toLowerCase(Locale.ROOT) + ".";
+            try {
+                int pt = op.getStatistic(Statistic.PLAY_ONE_MINUTE);
+                int dia = op.getStatistic(Statistic.MINE_BLOCK, Material.DIAMOND_ORE) + op.getStatistic(Statistic.MINE_BLOCK, Material.DEEPSLATE_DIAMOND_ORE);
+                int deb = op.getStatistic(Statistic.MINE_BLOCK, Material.ANCIENT_DEBRIS);
+                int kills = op.getStatistic(Statistic.PLAYER_KILLS);
+                int deaths = op.getStatistic(Statistic.DEATHS);
+                this.topBaseline.setProperty(keyPrefix + "pt", String.valueOf(pt));
+                this.topBaseline.setProperty(keyPrefix + "dia", String.valueOf(dia));
+                this.topBaseline.setProperty(keyPrefix + "deb", String.valueOf(deb));
+                this.topBaseline.setProperty(keyPrefix + "kills", String.valueOf(kills));
+                this.topBaseline.setProperty(keyPrefix + "deaths", String.valueOf(deaths));
+                count++;
             }
-            Bukkit.getConsoleSender().sendMessage(fullMessage);
-        });
+            catch (Exception ignored) {}
+        }
+        File baselineFile = new File(this.getDataFolder(), "top_baseline.properties");
+        if (baselineFile.getParentFile() != null) {
+            baselineFile.getParentFile().mkdirs();
+        }
+        try (FileOutputStream fos = new FileOutputStream(baselineFile)) {
+            this.topBaseline.store(fos, "VanillaBridge 1.4 Top Baseline (22 Nov Wipe Reset)");
+        }
+        catch (Exception e) {
+            this.getLogger().warning("Не удалось сохранить top_baseline.properties: " + e.getMessage());
+        }
+        this.cachedTopJson = "{}";
+        return count;
     }
 
-    public void handlePostLoginCheck(Player player) {
-        if (!this.twoFactorEnabled) {
-            return;
+    private int applyBaseline(String playerName, String statKey, int rawValue) {
+        if (playerName == null || playerName.isEmpty()) {
+            return Math.max(0, rawValue);
         }
-        if (player == null || !player.isOnline()) {
-            return;
-        }
-        String ip = "127.0.0.1";
-        if (player.getAddress() != null && player.getAddress().getAddress() != null) {
-            ip = player.getAddress().getAddress().getHostAddress();
-        }
-        if (this.bridgeClient != null && this.bridgeClient.isConnected()) {
-            String payload = String.format(Locale.US, "{\"type\":\"check_login\",\"player\":\"%s\",\"uuid\":\"%s\",\"ip\":\"%s\"}", VanillaBridge.escapeJson(player.getName()), player.getUniqueId().toString(), VanillaBridge.escapeJson(ip));
-            this.bridgeClient.send(payload);
-        } else if (this.securityIpManager != null && this.securityIpManager.isIpTrusted(player.getName(), ip)) {
-            int cachedHours = this.securityIpManager.getTrustHoursFor(player.getName(), ip);
-            String trustLabel = cachedHours > 0 ? "\u043d\u0430 " + cachedHours + "\u0447" : "\u0441\u0442\u0440\u043e\u0433\u0438\u0439 \u0440\u0435\u0436\u0438\u043c";
-            player.sendMessage(MiniMessage.miniMessage().deserialize(("<gray>\u0421\u0435\u0441\u0441\u0438\u044f \u0431\u0435\u0437\u043e\u043f\u0430\u0441\u043d\u043e\u0441\u0442\u0438 \u043f\u043e\u0434\u0442\u0432\u0435\u0440\u0436\u0434\u0435\u043d\u0430 \u0434\u043b\u044f IP <white>" + ip + "</white> (2FA \u043f\u0440\u043e\u043f\u0443\u0449\u0435\u043d\u043e " + trustLabel + ").</gray>")));
-        }
-    }
-
-    private static int parseTrustHours(String raw, int fallback) {
-        if (raw == null || raw.trim().isEmpty()) {
-            return fallback;
+        String rawBase = this.topBaseline.getProperty(playerName.toLowerCase(Locale.ROOT) + "." + statKey);
+        if (rawBase == null || rawBase.isEmpty()) {
+            return Math.max(0, rawValue);
         }
         try {
-            return (int)Math.round(Double.parseDouble(raw.trim()));
+            int baseVal = Integer.parseInt(rawBase.trim());
+            return Math.max(0, rawValue - baseVal);
         }
-        catch (NumberFormatException ignored) {
-            return fallback;
+        catch (NumberFormatException e) {
+            return Math.max(0, rawValue);
         }
-    }
-
-    public SecurityIpManager getSecurityIpManager() {
-        return this.securityIpManager;
-    }
-
-    public AuthMeHook getAuthMeHook() {
-        return this.authMeHook;
     }
 
     public static String stripMinecraftColors(String input) {
@@ -1795,28 +1608,10 @@ implements CommandExecutor {
             sender.sendMessage("\u00a7c\u0423 \u0432\u0430\u0441 \u043d\u0435\u0442 \u043f\u0440\u0430\u0432 \u0434\u043b\u044f \u044d\u0442\u043e\u0439 \u043a\u043e\u043c\u0430\u043d\u0434\u044b!");
             return true;
         }
-        if (args.length > 0 && args[0].equalsIgnoreCase("2fa")) {
-            if (args.length > 1) {
-                String sub = args[1].toLowerCase();
-                if (sub.equals("off") || sub.equals("disable") || sub.equals("false")) {
-                    this.twoFactorEnabled = false;
-                    this.getConfig().set("security.two-factor.enabled", false);
-                    this.saveConfig();
-                    sender.sendMessage("§6[VanillaBridge] §cДвухфакторная защита 2FA отключена на этом сервере.");
-                    return true;
-                }
-                if (sub.equals("on") || sub.equals("enable") || sub.equals("true")) {
-                    this.twoFactorEnabled = true;
-                    this.getConfig().set("security.two-factor.enabled", true);
-                    this.saveConfig();
-                    sender.sendMessage("§6[VanillaBridge] §aДвухфакторная защита 2FA включена на этом сервере.");
-                    return true;
-                }
-            }
-            String stateStr = this.twoFactorEnabled ? "§aВКЛЮЧЕНА" : "§cОТКЛЮЧЕНА";
-            String sId = this.getConfig().getString("server-id", "main");
-            sender.sendMessage("§6[VanillaBridge] §f2FA статус: " + stateStr + " §7(Сервер: §e" + sId + "§7)");
-            sender.sendMessage("§7Использование: §f/bridge 2fa <on|off>");
+        if (args.length > 0 && args[0].equalsIgnoreCase("resettop")) {
+            int snapped = this.snapshotTopBaseline();
+            this.updateTopCache();
+            sender.sendMessage("§a[VanillaBridge] Срез статистики для /top обнулён! Зафиксировано игроков: " + snapped);
             return true;
         }
         if (args.length > 0 && args[0].equalsIgnoreCase("test")) {
@@ -1956,11 +1751,12 @@ implements CommandExecutor {
                 int kills = 0;
                 int deaths = 0;
                 try {
-                    pt = op.getStatistic(Statistic.PLAY_ONE_MINUTE);
-                    dia = op.getStatistic(Statistic.MINE_BLOCK, Material.DIAMOND_ORE) + op.getStatistic(Statistic.MINE_BLOCK, Material.DEEPSLATE_DIAMOND_ORE);
-                    deb = op.getStatistic(Statistic.MINE_BLOCK, Material.ANCIENT_DEBRIS);
-                    kills = op.getStatistic(Statistic.PLAYER_KILLS);
-                    deaths = op.getStatistic(Statistic.DEATHS);
+                    pt = this.applyBaseline(name, "pt", op.getStatistic(Statistic.PLAY_ONE_MINUTE));
+                    int rawDia = op.getStatistic(Statistic.MINE_BLOCK, Material.DIAMOND_ORE) + op.getStatistic(Statistic.MINE_BLOCK, Material.DEEPSLATE_DIAMOND_ORE);
+                    dia = this.applyBaseline(name, "dia", rawDia);
+                    deb = this.applyBaseline(name, "deb", op.getStatistic(Statistic.MINE_BLOCK, Material.ANCIENT_DEBRIS));
+                    kills = this.applyBaseline(name, "kills", op.getStatistic(Statistic.PLAYER_KILLS));
+                    deaths = this.applyBaseline(name, "deaths", op.getStatistic(Statistic.DEATHS));
                 }
                 catch (Throwable throwable) {
                     // empty catch block
