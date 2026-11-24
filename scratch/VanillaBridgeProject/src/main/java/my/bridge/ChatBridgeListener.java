@@ -96,6 +96,13 @@ implements Listener {
         if (rawText.isEmpty()) {
             return;
         }
+
+        // Автоматическая цензура мата в игровом чате (формат: п*****с)
+        String censoredText = VanillaBridge.censorProfanity(rawText);
+        if (!censoredText.equals(rawText)) {
+            event.message(Component.text(censoredText));
+            rawText = censoredText;
+        }
         String lowerRaw = rawText.toLowerCase(Locale.ROOT);
         if ((lowerRaw.startsWith("!bc ") || lowerRaw.startsWith("!\u0431\u0446 ") || lowerRaw.equals("!bc") || lowerRaw.equals("!\u0431\u0446")) && (player.hasPermission("vanillabridge.admin") || player.isOp())) {
             event.setCancelled(true);
@@ -137,6 +144,13 @@ implements Listener {
         rawText = event.getMessage() != null ? event.getMessage().trim() : "";
         if (rawText.isEmpty()) {
             return;
+        }
+
+        // Автоматическая цензура мата в игровом чате (формат: п*****с)
+        String censoredLegacy = VanillaBridge.censorProfanity(rawText);
+        if (!censoredLegacy.equals(rawText)) {
+            event.setMessage(censoredLegacy);
+            rawText = censoredLegacy;
         }
         if (rawText.startsWith("!")) {
             String messageToSend = rawText.substring(1).trim();

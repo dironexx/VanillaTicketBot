@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import re
 import time
@@ -103,6 +104,8 @@ class LogsCog(commands.Cog, name="Логирование и Защита"):
     def __init__(self, bot: commands.Bot, db: DatabaseManager):
         self.bot = bot
         self.db = db
+        self._event_lock = asyncio.Lock()
+        self._mem_events: dict[str, float] = {}
 
     def get_log_channel(self, guild: discord.Guild) -> Optional[discord.TextChannel]:
         # 1. Из базы данных
@@ -345,17 +348,42 @@ class LogsCog(commands.Cog, name="Логирование и Защита"):
         except Exception:
             pass
 
-    # --- ЛОГ ВХОДА УЧАСТНИКА (С ПРОВЕРКОЙ ВОЗРАСТА АККАУНТА И ДЕДУПЛИКАЦИЕЙ) ---
+    # --- ЛОГ ВХОДА УЧАСТНИКА (С ТРОЙНОЙ ЗАЩИТОЙ ОТ ДУБЛИРОВАНИЯ) ---
     @commands.Cog.listener()
     async def on_member_join(self, member: discord.Member):
-        # Дедупликация: исключаем задваивание логов при дубликатах событий Discord или параллельных процессах
-        if hasattr(self.db, "claim_member_event") and not self.db.claim_member_event(member.id, "join", window_sec=30.0):
-            logger.debug("Игнорирование дублирующего события входа для %s (%s)", member.name, member.id)
+        now = time.time()
+        evt_key = f"{member.id}:join"
+
+        # 1. In-memory дедупликация (мгновенная блокировка повторных вызовов gateway)
+        async with self._event_lock:
+            last_t = self._mem_events.get(evt_key, 0.0)
+            if (now - last_t) < 45.0:
+                logger.debug("Игнорирование in-memory дубликата входа для %s (%s)", member.name, member.id)
+                return
+            self._mem_events[evt_key] = now
+            # Очистка устаревших ключей раз в 100 записей
+            if len(self._mem_events) > 100:
+                self._mem_events = {k: v for k, v in self._mem_events.items() if (now - v) < 120.0}
+
+        # 2. SQLite атомарная дедупликация (защита между потоками и процессами)
+        if hasattr(self.db, "claim_member_event") and not self.db.claim_member_event(member.id, "join", window_sec=45.0):
+            logger.debug("Игнорирование DB дублирующего события входа для %s (%s)", member.name, member.id)
             return
 
         log_ch = self.get_log_channel(member.guild)
         if not log_ch:
             return
+
+        # 3. Дедупликация на уровне Discord канала (защита на случай параллельно работающего старого инстанса)
+        try:
+            async for last_msg in log_ch.history(limit=6):
+                if last_msg.author.id == self.bot.user.id and last_msg.embeds:
+                    for emb in last_msg.embeds:
+                        if emb.title == "Новый участник" and str(member.id) in (emb.description or ""):
+                            logger.warning("Лог входа для %s (%s) уже присутствует в канале, пропуск дубля.", member.name, member.id)
+                            return
+        except Exception as hist_err:
+            logger.debug("History check note: %s", hist_err)
 
         created_ts = int(member.created_at.timestamp())
         account_age_days = (datetime.now(member.created_at.tzinfo) - member.created_at).days
@@ -383,13 +411,32 @@ class LogsCog(commands.Cog, name="Логирование и Защита"):
     # --- ЛОГ ВЫХОДА УЧАСТНИКА ---
     @commands.Cog.listener()
     async def on_member_remove(self, member: discord.Member):
-        # Дедупликация: исключаем задваивание логов
-        if hasattr(self.db, "claim_member_event") and not self.db.claim_member_event(member.id, "remove", window_sec=30.0):
-            logger.debug("Игнорирование дублирующего события выхода для %s (%s)", member.name, member.id)
+        now = time.time()
+        evt_key = f"{member.id}:remove"
+
+        async with self._event_lock:
+            last_t = self._mem_events.get(evt_key, 0.0)
+            if (now - last_t) < 45.0:
+                logger.debug("Игнорирование in-memory дубликата выхода для %s (%s)", member.name, member.id)
+                return
+            self._mem_events[evt_key] = now
+
+        if hasattr(self.db, "claim_member_event") and not self.db.claim_member_event(member.id, "remove", window_sec=45.0):
+            logger.debug("Игнорирование DB дублирующего события выхода для %s (%s)", member.name, member.id)
             return
+
         log_ch = self.get_log_channel(member.guild)
         if not log_ch:
             return
+
+        try:
+            async for last_msg in log_ch.history(limit=6):
+                if last_msg.author.id == self.bot.user.id and last_msg.embeds:
+                    for emb in last_msg.embeds:
+                        if emb.title == "Участник покинул сервер" and str(member.id) in (emb.description or ""):
+                            return
+        except Exception:
+            pass
 
         roles = [r.name for r in member.roles if r.name != "@everyone"]
         roles_str = ", ".join(roles[:5]) if roles else "Нет"

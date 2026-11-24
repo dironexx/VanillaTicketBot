@@ -41,6 +41,7 @@ public class BridgeClient implements WebSocket.Listener {
     private final AtomicBoolean isSending = new AtomicBoolean(false);
     private volatile long lastHeartbeatTime = System.currentTimeMillis();
     private volatile String lastWorkingUrl = null;
+    private volatile long lastOfflineLogTime = 0L;
 
     public BridgeClient(VanillaBridge plugin) {
         this.plugin = plugin;
@@ -68,6 +69,7 @@ public class BridgeClient implements WebSocket.Listener {
 
     /**
      * Формирует полный приоритетный список маршрутов (способов) подключения с обходом блокировок РКН.
+     * Приоритет оптимизирован под размещение бота и сервера на одном хостинге с автоматическим фоллбэком.
      */
     public List<String> buildCandidates() {
         ArrayList<String> raw = new ArrayList<>();
@@ -93,13 +95,29 @@ public class BridgeClient implements WebSocket.Listener {
             }
         }
 
-        // 4. Главные защищенные WSS маршруты Cloudflare (Порт 443 — стандартный HTTPS, проверенный обход блокировок РКН)
+        // 4. Локальные петли и шлюзы Docker (наивысшая надежность при работе на одном VPS/хосте)
+        raw.add("ws://127.0.0.1:25007/ws");
+        raw.add("ws://127.0.0.1:25549/ws");
+        raw.add("ws://172.17.0.1:25007/ws");
+        raw.add("ws://172.17.0.1:25549/ws");
+        raw.add("ws://host.docker.internal:25007/ws");
+        raw.add("ws://host.docker.internal:25549/ws");
+        raw.add("ws://10.0.0.1:25007/ws");
+        raw.add("ws://10.0.0.1:25549/ws");
+
+        // 5. Прямые выделенные порты публичного домена сервера (213.171.18.142)
+        raw.add("ws://play.vanillaland.fun:25007/ws");
+        raw.add("ws://play.vanillaland.fun:25549/ws");
+        raw.add("ws://213.171.18.142:25007/ws");
+        raw.add("ws://213.171.18.142:25549/ws");
+
+        // 6. Главные защищенные WSS маршруты Cloudflare (Порт 443 — стандартный HTTPS, обход РКН при внешнем хосте)
         raw.add("wss://bridge.vanillaland.fun/ws");
         raw.add("wss://play.vanillaland.fun/ws");
         raw.add("wss://vanillaland.fun/ws");
         raw.add("wss://vanillaland.store/ws");
 
-        // 5. Альтернативные HTTPS/WSS порты Cloudflare (обход блокировок конкретно 443 порта ТСПУ)
+        // 7. Альтернативные HTTPS/WSS порты Cloudflare
         raw.add("wss://bridge.vanillaland.fun:8443/ws");
         raw.add("wss://bridge.vanillaland.fun:2053/ws");
         raw.add("wss://bridge.vanillaland.fun:2083/ws");
@@ -107,7 +125,7 @@ public class BridgeClient implements WebSocket.Listener {
         raw.add("wss://bridge.vanillaland.fun:2096/ws");
         raw.add("wss://play.vanillaland.fun:8443/ws");
 
-        // 6. Альтернативные HTTP/WS порты Cloudflare (стандартный HTTP трафик)
+        // 8. Альтернативные HTTP/WS порты Cloudflare
         raw.add("ws://bridge.vanillaland.fun:80/ws");
         raw.add("ws://bridge.vanillaland.fun:8080/ws");
         raw.add("ws://bridge.vanillaland.fun:8880/ws");
@@ -118,33 +136,9 @@ public class BridgeClient implements WebSocket.Listener {
         raw.add("ws://play.vanillaland.fun:80/ws");
         raw.add("ws://play.vanillaland.fun:8080/ws");
 
-        // 7. Прямые выделенные порты Bot-Hosting (Pterodactyl контейнер)
-        raw.add("ws://fi4.bot-hosting.cloud:25549/ws");
-        raw.add("ws://fi4.bot-hosting.cloud:25007/ws");
-        raw.add("ws://65.21.202.154:25549/ws");
-        raw.add("ws://65.21.202.154:25007/ws");
-
-        // 8. Прямые порты публичного сервера VPS
-        raw.add("ws://81.30.105.141:25007/ws");
-        raw.add("ws://81.30.105.141:25549/ws");
-        raw.add("ws://play.vanillaland.fun:25007/ws");
-        raw.add("ws://play.vanillaland.fun:25549/ws");
+        // 9. Дополнительные порты домена bridge
         raw.add("ws://bridge.vanillaland.fun:25007/ws");
         raw.add("ws://bridge.vanillaland.fun:25549/ws");
-
-        // 9. Локальные петли и шлюзы Docker (при размещении бота на том же VPS/хосте)
-        raw.add("ws://127.0.0.1:25007/ws");
-        raw.add("ws://127.0.0.1:25549/ws");
-        raw.add("ws://172.17.0.1:25007/ws");
-        raw.add("ws://172.17.0.1:25549/ws");
-        raw.add("ws://172.18.0.1:25007/ws");
-        raw.add("ws://172.18.0.1:25549/ws");
-        raw.add("ws://172.19.0.1:25007/ws");
-        raw.add("ws://172.20.0.1:25007/ws");
-        raw.add("ws://host.docker.internal:25007/ws");
-        raw.add("ws://host.docker.internal:25549/ws");
-        raw.add("ws://10.0.0.1:25007/ws");
-        raw.add("ws://10.0.0.1:25549/ws");
 
         // Дедупликация с сохранением строгого порядка приоритетов
         ArrayList<String> unique = new ArrayList<>();
@@ -172,7 +166,7 @@ public class BridgeClient implements WebSocket.Listener {
 
         List<String> candidates = this.buildCandidates();
         if (candidates.isEmpty()) {
-            candidates.add("wss://bridge.vanillaland.fun/ws");
+            candidates.add("ws://127.0.0.1:25007/ws");
         }
 
         int idx = Math.abs(this.candidateIndex.get()) % candidates.size();
@@ -180,7 +174,10 @@ public class BridgeClient implements WebSocket.Listener {
         String token = this.plugin.getConfig().getString("bridge.token", "vanillaland_secret_2026");
         String fullUrl = targetWsUrl + (targetWsUrl.contains("?") ? "&" : "?") + "token=" + token;
 
-        this.plugin.getLogger().info("[Мост] Попытка подключения (" + (idx + 1) + "/" + candidates.size() + "): " + targetWsUrl);
+        boolean debug = this.plugin.getConfig().getBoolean("bridge.debug", false);
+        if (debug) {
+            this.plugin.getLogger().info("[Мост Debug] Попытка подключения (" + (idx + 1) + "/" + candidates.size() + "): " + targetWsUrl);
+        }
 
         UniversalScheduler.runAsync(this.plugin, () -> {
             try {
@@ -200,7 +197,15 @@ public class BridgeClient implements WebSocket.Listener {
                         .whenComplete((ws, throwable) -> {
                             this.isConnecting.set(false);
                             if (throwable != null) {
-                                this.plugin.getLogger().warning("[Мост] Способ (" + (idx + 1) + "/" + candidates.size() + ") недоступен (" + targetWsUrl + "): " + throwable.getMessage());
+                                if (debug) {
+                                    this.plugin.getLogger().warning("[Мост Debug] Способ (" + (idx + 1) + "/" + candidates.size() + ") недоступен (" + targetWsUrl + "): " + throwable.getMessage());
+                                } else {
+                                    long now = System.currentTimeMillis();
+                                    if (now - this.lastOfflineLogTime > 30000L) {
+                                        this.lastOfflineLogTime = now;
+                                        this.plugin.getLogger().warning("[Мост] Соединение с Discord ботом отсутствует. Выполняется автоматический фоновый подбор рабочего маршрута...");
+                                    }
+                                }
                                 this.candidateIndex.incrementAndGet();
                                 this.handleDisconnect("Connect failed: " + throwable.getMessage(), true);
                             } else {
@@ -219,7 +224,9 @@ public class BridgeClient implements WebSocket.Listener {
                         });
             } catch (Exception e) {
                 this.isConnecting.set(false);
-                this.plugin.getLogger().warning("[Мост] Ошибка инициализации сокета для " + targetWsUrl + ": " + e.getMessage());
+                if (debug) {
+                    this.plugin.getLogger().warning("[Мост Debug] Ошибка инициализации сокета для " + targetWsUrl + ": " + e.getMessage());
+                }
                 this.candidateIndex.incrementAndGet();
                 this.handleDisconnect("Init exception: " + e.getMessage(), true);
             }
@@ -419,12 +426,16 @@ public class BridgeClient implements WebSocket.Listener {
         }
         int delaySec;
         if (fastFailover) {
-            delaySec = 2;
+            // Быстрый перебор следующего кандидата (1 сек) без спама в консоль
+            delaySec = 1;
         } else {
             int attempt = this.reconnectAttempts.getAndIncrement();
-            delaySec = Math.min(10, Math.max(3, 3 + attempt * 2));
+            delaySec = Math.min(15, Math.max(3, 3 + attempt * 2));
         }
-        this.plugin.getLogger().info("[Мост] Повторное подключение запланировано через " + delaySec + " сек...");
+        boolean debug = this.plugin.getConfig().getBoolean("bridge.debug", false);
+        if (debug) {
+            this.plugin.getLogger().info("[Мост Debug] Повторное подключение запланировано через " + delaySec + " сек...");
+        }
         this.reconnectTask = UniversalScheduler.runAsyncLater(this.plugin, () -> {
             this.reconnectTask = null;
             if (!this.plugin.isEnabled()) {

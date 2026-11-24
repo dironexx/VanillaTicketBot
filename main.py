@@ -105,6 +105,12 @@ class VanillaSupportBot(commands.Bot):
         self.db = DatabaseManager(Config.DB_PATH, Config.TRANSCRIPTS_DIR)
 
     async def setup_hook(self):
+        # Гарантируем, что счётчик тикетов не обнуляется при рестарте контейнера и продолжается с 100+
+        try:
+            self.db.ensure_ticket_counter_at_least(100)
+        except Exception as cnt_err:
+            logger.debug("Ensure counter note: %s", cnt_err)
+
         # Персистентные кнопки (тикеты + верификация)
         self.add_view(TicketPanel(self.db))
         self.add_view(InsideTicketView(self.db))

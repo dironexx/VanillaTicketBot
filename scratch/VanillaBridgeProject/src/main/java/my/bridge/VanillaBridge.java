@@ -1211,6 +1211,13 @@ implements CommandExecutor {
             });
             return;
         }
+        if ("reset_top_cache".equalsIgnoreCase(type)) {
+            this.cachedTopJson = null;
+            this.lastTopCacheTime = 0L;
+            UniversalScheduler.runAsync(this, this::updateTopCache);
+            this.getLogger().info("\u26a1 [Вайп] Кэш топа и лидеров успешно сброшен по запросу от Discord бота.");
+            return;
+        }
         if ("query_chunks".equalsIgnoreCase(type)) {
             String queryId = this.extractField(rawJson, "query_id");
             UniversalScheduler.runGlobal(this, () -> {
@@ -1601,10 +1608,11 @@ implements CommandExecutor {
             return;
         }
         String author = this.extractField(rawJson, "author");
-        String content = this.extractField(rawJson, "content");
-        if (author.isEmpty() || content.isEmpty()) {
+        String rawContent = this.extractField(rawJson, "content");
+        if (author.isEmpty() || rawContent.isEmpty()) {
             return;
         }
+        final String content = censorProfanity(rawContent);
         boolean useIcon = this.getConfig().getBoolean("discord-format.use-icon", true);
         String icon = useIcon ? this.getConfig().getString("discord-format.icon", "\u0152") : "";
         String iconPart = useIcon && !icon.isEmpty() ? icon + " " : "";
@@ -2000,6 +2008,53 @@ implements CommandExecutor {
         catch (Throwable t) {
             this.getLogger().warning("\u041e\u0448\u0438\u0431\u043a\u0430 \u043f\u0440\u0438 \u0444\u043e\u043d\u043e\u0432\u043e\u043c \u0440\u0430\u0441\u0447\u0435\u0442\u0435 \u0442\u043e\u043f\u0430: " + t.getMessage());
         }
+    }
+
+    private static final Pattern PROFANITY_PATTERN = Pattern.compile(
+            "(?iu)\\b([а-яa-zё]*?(?:[хx][уy][йjеяиюё]|п[иеё]зд|[её]б[аеёилытнщ]|бл[яе]д|бл[яе]т|[сs][уy][кk][аеиоу]|п[иеё]д[аое]р|г[ао]нд[оа]н|м[уy]д[аое]к|д[оа]лб[оа][её]б|шл[юе]х|дроч)[а-яa-zё]*)\\b"
+    );
+
+    private static final Set<String> PROFANITY_EXCEPTIONS = Set.of(
+            "страховка", "страховой", "страхование", "подстраховка",
+            "колебание", "колебания", "колебаться",
+            "гребля", "гребной", "сабля", "употребление", "стебель",
+            "рубль", "рубля", "рублями", "рублях",
+            "ястреб", "теребить", "скрести", "погреб"
+    );
+
+    /**
+     * Цензура мата: маскирует нецензурные слова в формате первая буква + звездочки + последняя буква (например, п*****с).
+     */
+    public static String censorProfanity(String text) {
+        if (text == null || text.isEmpty()) {
+            return text;
+        }
+        Matcher matcher = PROFANITY_PATTERN.matcher(text);
+        StringBuilder sb = new StringBuilder();
+        while (matcher.find()) {
+            String word = matcher.group(1);
+            String low = word.toLowerCase(Locale.ROOT).replace('ё', 'е');
+            if (PROFANITY_EXCEPTIONS.contains(low)) {
+                matcher.appendReplacement(sb, Matcher.quoteReplacement(word));
+            } else {
+                matcher.appendReplacement(sb, Matcher.quoteReplacement(maskProfanityWord(word)));
+            }
+        }
+        matcher.appendTail(sb);
+        return sb.toString();
+    }
+
+    private static String maskProfanityWord(String word) {
+        if (word.length() <= 2) {
+            return word.length() == 2 ? word.charAt(0) + "*" : "*";
+        }
+        StringBuilder sb = new StringBuilder();
+        sb.append(word.charAt(0));
+        for (int i = 0; i < word.length() - 2; i++) {
+            sb.append('*');
+        }
+        sb.append(word.charAt(word.length() - 1));
+        return sb.toString();
     }
 }
 

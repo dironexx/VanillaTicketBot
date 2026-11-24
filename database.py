@@ -23,7 +23,31 @@ class DatabaseManager:
     def __init__(self, db_path: str = "tickets.db", transcripts_dir: str = "transcripts"):
         self.db_path = db_path
         self.transcripts_dir = transcripts_dir
+        self.counter_file = os.path.join(os.path.dirname(os.path.abspath(self.db_path)), "ticket_counter.txt")
         self.init_db()
+
+    def _read_external_counter(self) -> int:
+        """Читает значение счётчика из независимого текстового файла (защита от потери при пересоздании БД)."""
+        try:
+            if os.path.exists(self.counter_file):
+                with open(self.counter_file, "r", encoding="utf-8") as f:
+                    content = f.read().strip()
+                    if content.isdigit():
+                        return int(content)
+        except Exception as e:
+            logger.debug("Counter file read note: %s", e)
+        return 0
+
+    def _write_external_counter(self, val: int) -> None:
+        """Атомарно сохраняет счётчик в текстовый файл, защищая от обнуления при аварийном завершении контейнера."""
+        try:
+            val_int = max(0, int(val))
+            tmp_path = f"{self.counter_file}.tmp"
+            with open(tmp_path, "w", encoding="utf-8") as f:
+                f.write(str(val_int))
+            os.replace(tmp_path, self.counter_file)
+        except Exception as e:
+            logger.debug("Counter file write note: %s", e)
 
     def _recover_corrupted_db(self, error: Exception) -> None:
         """
@@ -329,6 +353,27 @@ class DatabaseManager:
         conn.execute("INSERT OR IGNORE INTO ticket_counter (id, count) VALUES (1, 0)")
         conn.commit()
 
+        # Автоматическая синхронизация и защита счётчика тикетов (файл + БД + история)
+        try:
+            cursor = conn.cursor()
+            file_cnt = self._read_external_counter()
+            cursor.execute("SELECT count FROM ticket_counter WHERE id = 1")
+            r = cursor.fetchone()
+            db_cnt = int(r[0]) if r and r[0] is not None else 0
+            cursor.execute("SELECT COALESCE(MAX(ticket_num), 0) FROM ticket_history")
+            hist_max = int(cursor.fetchone()[0] or 0)
+            cursor.execute("SELECT COALESCE(MAX(ticket_num), 0) FROM active_tickets")
+            act_max = int(cursor.fetchone()[0] or 0)
+            # Синхронизация максимума из файла, БД и истории обращений
+            target_count = max(file_cnt, db_cnt, hist_max, act_max)
+            cursor.execute("UPDATE ticket_counter SET count = ? WHERE id = 1", (target_count,))
+            conn.commit()
+            if target_count > 0:
+                self._write_external_counter(target_count)
+            logger.info("Счётчик тикетов инициализирован со значением: %d", target_count)
+        except Exception as sync_err:
+            logger.debug("Ticket counter init note: %s", sync_err)
+
         # Автоматическая миграция active_vc_bans для существующих баз данных
         try:
             cursor = conn.cursor()
@@ -401,11 +446,19 @@ class DatabaseManager:
         event_key = f"{member_id}:{event_type}"
         with self._get_connection() as conn:
             cursor = conn.cursor()
+            try:
+                cursor.execute("BEGIN IMMEDIATE")
+            except Exception:
+                pass
             cursor.execute("SELECT processed_at FROM processed_member_events WHERE event_key = ?", (event_key,))
             row = cursor.fetchone()
             if row:
                 last_time = float(row[0])
                 if (now - last_time) < window_sec:
+                    try:
+                        conn.rollback()
+                    except Exception:
+                        pass
                     return False  # Дубль, событие уже обработано недавно
 
             cursor.execute(
@@ -423,18 +476,19 @@ class DatabaseManager:
     def get_next_ticket_number(self) -> int:
         with self._get_connection() as conn:
             cursor = conn.cursor()
-            # 1. Авто-синхронизация счётчика: count никогда не должен быть меньше максимального номера в истории
+            # 1. Авто-синхронизация счётчика: count никогда не должен быть меньше максимального номера в истории или внешнем файле
             try:
                 cursor.execute("SELECT COALESCE(MAX(ticket_num), 0) FROM ticket_history")
                 max_hist = cursor.fetchone()[0] or 0
                 cursor.execute("SELECT COALESCE(MAX(ticket_num), 0) FROM active_tickets")
                 max_act = cursor.fetchone()[0] or 0
-                max_known = max(int(max_hist), int(max_act))
+                file_cnt = self._read_external_counter()
 
                 cursor.execute("SELECT count FROM ticket_counter WHERE id = 1")
                 row = cursor.fetchone()
                 current_count = int(row[0]) if row else 0
 
+                max_known = max(int(max_hist), int(max_act), file_cnt, current_count)
                 if current_count < max_known:
                     cursor.execute("UPDATE ticket_counter SET count = ? WHERE id = 1", (max_known,))
             except Exception as sync_err:
@@ -445,8 +499,10 @@ class DatabaseManager:
                 cursor.execute("UPDATE ticket_counter SET count = count + 1 WHERE id = 1 RETURNING count")
                 row = cursor.fetchone()
                 if row:
+                    new_count = int(row[0])
                     conn.commit()
-                    return int(row[0])
+                    self._write_external_counter(new_count)
+                    return new_count
             except (sqlite3.OperationalError, Exception) as ret_err:
                 logger.debug("RETURNING clause not available, using fallback transaction: %s", ret_err)
                 try:
@@ -463,12 +519,34 @@ class DatabaseManager:
             row = cursor.fetchone()
             new_count = int(row[0]) if row else 1
             conn.commit()
+            self._write_external_counter(new_count)
             return new_count
 
     def ensure_ticket_counter_at_least(self, min_val: int) -> None:
         """Гарантирует, что счётчик тикетов не меньше min_val (например, полученного из существующих каналов Discord)."""
         if min_val <= 0:
             return
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT count FROM ticket_counter WHERE id = 1")
+            row = cursor.fetchone()
+            current = int(row[0]) if row else 0
+            if current < min_val:
+                cursor.execute("UPDATE ticket_counter SET count = ? WHERE id = 1", (min_val,))
+                conn.commit()
+                self._write_external_counter(min_val)
+                logger.info("Счётчик тикетов обновлён с %d до %d на основе существующих данных.", current, min_val)
+
+    def set_ticket_counter(self, new_val: int) -> int:
+        """Принудительно выставляет счетчик тикетов в заданное число (команда администратора)."""
+        val = max(1, int(new_val))
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("UPDATE ticket_counter SET count = ? WHERE id = 1", (val,))
+            conn.commit()
+        self._write_external_counter(val)
+        logger.info("Счётчик тикетов вручную установлен на: %d", val)
+        return val
         with self._get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("SELECT count FROM ticket_counter WHERE id = 1")
@@ -787,6 +865,19 @@ class DatabaseManager:
             if row:
                 return (row[0], row[1] or "Неизвестно")
             return (0, "Нет смертей")
+
+    def reset_top_deaths(self) -> int:
+        """Сбрасывает статистику смертей игроков (вайп от 22 ноября)."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM player_deaths")
+            try:
+                cursor.execute("DELETE FROM player_death_coords")
+            except Exception:
+                pass
+            conn.commit()
+            logger.info("Таблица смертей игроков успешно очищена (вайп от 22 ноября)")
+            return 1
 
     def is_automod_enabled(self) -> bool:
         val = self.get_setting("automod_enabled", "true")

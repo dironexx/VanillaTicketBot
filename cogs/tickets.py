@@ -1001,10 +1001,10 @@ class TicketsCog(commands.Cog, name="Тикеты"):
         await asyncio.sleep(2)
         for guild in self.bot.guilds:
             try:
-                # Синхронизируем счётчик тикетов с существующими каналами тикет-NNN в Discord
+                # Синхронизируем счётчик тикетов с существующими каналами тикетов в Discord (тикет-NNN, ticket-NNN)
                 max_found = 0
                 for ch in guild.text_channels:
-                    m = re.match(r"^тикет-(\d+)$", ch.name, re.IGNORECASE)
+                    m = re.match(r"^(?:тикет|ticket)[-_]?0*(\d+)$", ch.name, re.IGNORECASE)
                     if m:
                         num = int(m.group(1))
                         if num > max_found:
@@ -1507,6 +1507,21 @@ class TicketsCog(commands.Cog, name="Тикеты"):
             footer=f"Vanilla Land • Показано {len(history)} последних тикетов",
         )
         await ctx.send(embed=embed, ephemeral=True)
+
+    @commands.hybrid_command(
+        name="ticket_set_counter",
+        aliases=["тикет_счетчик", "тикет_номер"],
+        description="[Админ] Установить текущий номер счетчика тикетов (например 105)",
+    )
+    @commands.has_permissions(administrator=True)
+    @app_commands.describe(number="Новое значение счётчика тикетов")
+    async def ticket_set_counter_cmd(self, ctx: commands.Context, number: int):
+        if not is_mod_or_admin(ctx):
+            return await ctx.send("Эта команда доступна только администраторам.", ephemeral=True)
+        if ctx.interaction:
+            await ctx.defer(ephemeral=True)
+        val = await _async_db_call(self.db.set_ticket_counter, number)
+        await ctx.send(f"✅ Счётчик тикетов успешно установлен на: **{val}** (следующий созданный тикет будет `#тикет-{val + 1:03d}`).", ephemeral=True)
 
 
 async def setup(bot: commands.Bot):

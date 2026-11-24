@@ -33,6 +33,40 @@ def is_mod_or_admin(ctx) -> bool:
     return any(r_id in author_roles for r_id in Config.MOD_ROLE_IDS)
 
 
+PROFANITY_ROOTS = re.compile(
+    r'(?iu)\b([а-яa-zё]*?(?:[хx][уy][йjеяиюё]|п[иеё]зд|[её]б[аеёилытнщ]|бл[яе]д|бл[яе]т|[сs][уy][кk][аеиоу]|п[иеё]д[аое]р|г[ао]нд[оа]н|м[уy]д[аое]к|д[оа]лб[оа][её]б|шл[юе]х|дроч)[а-яa-zё]*)\b'
+)
+
+PROFANITY_FALSE_POSITIVES = {
+    'страховка', 'страховой', 'страхование', 'подстраховка',
+    'колебание', 'колебания', 'колебаться',
+    'гребля', 'гребной', 'сабля', 'употребление', 'стебель',
+    'рубль', 'рубля', 'рублями', 'рублях',
+    'ястреб', 'теребить', 'скрести', 'погреб',
+}
+
+
+def mask_profanity_word(word: str) -> str:
+    if len(word) <= 2:
+        return word[0] + '*' if len(word) == 2 else '*'
+    return word[0] + ('*' * (len(word) - 2)) + word[-1]
+
+
+def censor_profanity(text: str) -> str:
+    """Маскирует нецензурную лексику: первая буква + звёздочки + последняя буква (например, п*****с)."""
+    if not text:
+        return text
+
+    def replace_match(m):
+        w = m.group(1)
+        w_low = w.lower().replace('ё', 'е')
+        if w_low in PROFANITY_FALSE_POSITIVES:
+            return w
+        return mask_profanity_word(w)
+
+    return PROFANITY_ROOTS.sub(replace_match, text)
+
+
 def translate_death_message(death_msg: str, player_name: str) -> str:
     if not death_msg:
         return f"**{player_name}** погиб."
@@ -191,6 +225,10 @@ class BridgeCog(commands.Cog, name="Мост Minecraft"):
         # Кэш лидерборда и профилей игроков для надежности и нулевых задержек
         self.last_top_data: Optional[dict] = None
         self.cached_player_stats: Dict[str, Tuple[float, dict]] = {}
+
+        # Дедупликация сообщений чата (защита от повторной отправки при сбоях сокета)
+        self._recent_chat_in: Dict[str, float] = {}
+        self._recent_chat_out: Dict[str, float] = {}
 
         self.update_vc_loop.start()
         self.create_tracked_task(self.start_web_server())
@@ -444,9 +482,16 @@ class BridgeCog(commands.Cog, name="Мост Minecraft"):
             logger.warning("Попытка подключения к мосту с неверным токеном от %s", request.remote)
             return web.Response(status=401, text="Unauthorized: Invalid token")
 
-        # Очищаем закрытые сокеты потокобезопасно под блокировкой
+        # Принудительно очищаем и закрываем старые сокеты, предотвращая задваивание сообщений
         async with self._sockets_lock:
-            self.active_sockets = {s for s in self.active_sockets if not s.closed}
+            old_sockets = list(self.active_sockets)
+            self.active_sockets.clear()
+        for old_ws in old_sockets:
+            try:
+                if not old_ws.closed:
+                    await old_ws.close()
+            except Exception:
+                pass
 
         # heartbeat=25.0 поддерживает постоянную активность в NAT/фаерволе хостинга
         # receive_timeout=None предотвращает обрыв при временном молчании сервера
@@ -641,6 +686,17 @@ class BridgeCog(commands.Cog, name="Мост Minecraft"):
             message = data.get("message", "").strip()
             skin = data.get("skin", "").strip()
             item_data = data.get("item")
+
+            # Дедупликация входящих сообщений из Minecraft
+            chat_in_key = f"{player}:{message}"
+            now = time.time()
+            if (now - self._recent_chat_in.get(chat_in_key, 0.0)) < 4.0:
+                logger.debug("Игнорирование дублирующего сообщения чата из Minecraft от %s", player)
+                return
+            self._recent_chat_in[chat_in_key] = now
+            if len(self._recent_chat_in) > 200:
+                self._recent_chat_in = {k: v for k, v in self._recent_chat_in.items() if (now - v) < 60.0}
+
             if skin:
                 self.db.record_player_skin(player, skin)
             if message:
@@ -1570,10 +1626,23 @@ class BridgeCog(commands.Cog, name="Мост Minecraft"):
             return
 
         author_name = message.author.display_name
+
+        # Дедупликация исходящих сообщений из Discord в Minecraft
+        chat_out_key = f"{author_name}:{text}"
+        now_ts = time.time()
+        if (now_ts - self._recent_chat_out.get(chat_out_key, 0.0)) < 4.0:
+            return
+        self._recent_chat_out[chat_out_key] = now_ts
+        if len(self._recent_chat_out) > 200:
+            self._recent_chat_out = {k: v for k, v in self._recent_chat_out.items() if (now_ts - v) < 60.0}
+
+        # Цензура мата при отправке в чат игры (формат: п*****с)
+        censored_text = censor_profanity(text)
+
         payload = {
             "type": "discord_chat",
             "author": author_name,
-            "content": text,
+            "content": censored_text,
         }
         await self.broadcast_packet(payload)
 
@@ -1991,9 +2060,10 @@ class BridgeCog(commands.Cog, name="Мост Minecraft"):
         if not top_list:
             embed = discord.Embed(
                 title="🏆 Премия Дарвина • Vanilla Land",
-                description="На сервере пока никто не умирал! Все аккуратны и бдительны.",
+                description="После вайпа от 22 ноября на сервере пока никто не умирал! Все аккуратны и бдительны.",
                 color=Colors.BLUE,
             )
+            embed.set_footer(text="Vanilla Land • Вайп от 22 ноября 2026")
             return await ctx.send(embed=embed)
 
         medals = ["#1", "#2", "#3", "#4", "#5", "#6", "#7", "#8", "#9", "#10"]
@@ -2004,14 +2074,14 @@ class BridgeCog(commands.Cog, name="Мост Minecraft"):
 
         embed = discord.Embed(
             title="🏆 Премия Дарвина • Топ смертей Vanilla Land",
-            description="\n".join(lines),
+            description=f"**Сезон:** Вайп от 22 ноября\n\n" + "\n".join(lines),
             color=0xFEE75C,
             timestamp=datetime.now(timezone.utc),
         )
         if top_list:
             top_player = top_list[0][0]
             embed.set_thumbnail(url=get_skin_avatar_url(top_player, None, self.db))
-        embed.set_footer(text="Vanilla Land • Статистика")
+        embed.set_footer(text="Vanilla Land • Вайп от 22 ноября 2026")
         await ctx.send(embed=embed)
 
 
@@ -2636,6 +2706,23 @@ class BridgeCog(commands.Cog, name="Мост Minecraft"):
         view = TopLeaderboardView(data, category)
         embed = view.build_embed()
         await ctx.send(embed=embed, view=view)
+
+    # --- КОМАНДА /top_reset (СБРОС ТОПА И СМЕРТЕЙ ПОСЛЕ ВАЙПА) ---
+    @commands.hybrid_command(
+        name="top_reset",
+        aliases=["сброс_топа", "вайп_топ"],
+        description="[Админ] Сбросить кэш топа и статистику смертей после вайпа",
+    )
+    @commands.has_permissions(administrator=True)
+    async def top_reset_cmd(self, ctx: commands.Context):
+        if not is_mod_or_admin(ctx):
+            return await ctx.send("Эта команда доступна только администраторам.", ephemeral=True)
+        if ctx.interaction:
+            await ctx.defer(ephemeral=True)
+        self.last_top_data = None
+        self.db.reset_top_deaths()
+        await self.broadcast_packet({"type": "reset_top_cache"})
+        await ctx.send("✅ Статистика топа и смертей успешно сброшена! Новый отсчёт ведётся с вайпа от 22 ноября.", ephemeral=True)
 
     # --- КОМАНДА /profile ИЛИ !profile [ник] (КАРТОЧКА ИГРОКА) ---
     @commands.hybrid_command(
@@ -3888,7 +3975,7 @@ class TopLeaderboardView(ui.View):
         embed = discord.Embed(
             title="Доска почёта • Vanilla Land",
             description=(
-                "Главные рекорды и лидеры сервера по ключевым направлениям.\n"
+                "Главные рекорды и лидеры сервера (Сезон: Вайп от 22 ноября).\n"
                 "*Нажимайте кнопки ниже, чтобы открыть подробный ТОП-10 в каждой категории.*"
             ),
             color=Colors.GOLD,
@@ -3947,7 +4034,7 @@ class TopLeaderboardView(ui.View):
             top_skin = pt_list[0].get("skin")
             embed.set_thumbnail(url=get_skin_avatar_url(top_player, top_skin))
 
-        embed.set_footer(text="Vanilla Land • Статистика обновляется каждые 60 секунд")
+        embed.set_footer(text="Vanilla Land • Вайп от 22 ноября 2026")
         return embed
 
     def _build_category_embed(self, key: str, title: str, val_label: str, is_time: bool = False) -> discord.Embed:
@@ -3983,7 +4070,7 @@ class TopLeaderboardView(ui.View):
             if top_player:
                 embed.set_thumbnail(url=get_skin_avatar_url(top_player, top_skin))
 
-        embed.set_footer(text="Vanilla Land • Лидерборд сервера")
+        embed.set_footer(text="Vanilla Land • Вайп от 22 ноября 2026")
         return embed
 
     @ui.button(label="Общий", style=discord.ButtonStyle.success, custom_id="top:cat_all")
