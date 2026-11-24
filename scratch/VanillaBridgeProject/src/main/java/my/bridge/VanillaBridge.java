@@ -1144,6 +1144,33 @@ implements CommandExecutor {
             });
             return;
         }
+        if ("ping_probe".equalsIgnoreCase(type)) {
+            String queryId = this.extractField(rawJson, "query_id");
+            String sId = this.getConfig().getString("server-id", "main");
+            String route = this.bridgeClient != null ? this.bridgeClient.getLastWorkingUrl() : "";
+            if (this.bridgeClient != null && this.bridgeClient.isConnected()) {
+                String ack = String.format(
+                        Locale.US,
+                        "{\"type\":\"ping_probe_ack\",\"query_id\":\"%s\",\"server_id\":\"%s\",\"ws_url\":\"%s\"}",
+                        VanillaBridge.escapeJson(queryId),
+                        VanillaBridge.escapeJson(sId),
+                        VanillaBridge.escapeJson(route)
+                );
+                this.bridgeClient.send(ack);
+            }
+            return;
+        }
+        if ("query_season3".equalsIgnoreCase(type)) {
+            String queryId = this.extractField(rawJson, "query_id");
+            UniversalScheduler.runAsync(this, () -> {
+                String jsonTemplate = this.getOrBuildSeason3Json();
+                if (jsonTemplate != null && this.bridgeClient != null && this.bridgeClient.isConnected()) {
+                    String toSend = jsonTemplate.replace("\"%QUERY_ID%\"", "\"" + VanillaBridge.escapeJson(queryId) + "\"");
+                    this.bridgeClient.send(toSend);
+                }
+            });
+            return;
+        }
         if ("query_top".equalsIgnoreCase(type)) {
             String queryId = this.extractField(rawJson, "query_id");
             long now = System.currentTimeMillis();
@@ -1440,11 +1467,141 @@ implements CommandExecutor {
         }
     }
 
+    private static final long EXCLUDE_SEASON3_START_MS = java.time.Instant.parse("2026-11-20T21:00:00Z").toEpochMilli();
+    private static final long EXCLUDE_SEASON3_END_MS = java.time.Instant.parse("2026-11-24T20:59:59.999Z").toEpochMilli();
+
+    public synchronized String getOrBuildSeason3Json() {
+        File season3File = new File(this.getDataFolder(), "top_season3.json");
+        if (season3File.exists()) {
+            try {
+                String content = Files.readString(season3File.toPath(), StandardCharsets.UTF_8);
+                if (content != null && content.contains("\"season3_data\"")) {
+                    return content;
+                }
+            }
+            catch (Exception ignored) {}
+        }
+        return this.buildAndSaveSeason3Json();
+    }
+
+    public synchronized String buildAndSaveSeason3Json() {
+        class S3Entry {
+            final String name;
+            final long value;
+            final String skin;
+
+            S3Entry(String name, long value, String skin) {
+                this.name = name;
+                this.value = value;
+                this.skin = skin;
+            }
+        }
+        ArrayList<S3Entry> playtimeList = new ArrayList<>();
+        ArrayList<S3Entry> diamondList = new ArrayList<>();
+        ArrayList<S3Entry> debrisList = new ArrayList<>();
+        ArrayList<S3Entry> killList = new ArrayList<>();
+        ArrayList<S3Entry> deathList = new ArrayList<>();
+
+        for (OfflinePlayer op : Bukkit.getOfflinePlayers()) {
+            String name = op.getName();
+            if (name == null || name.isEmpty()) continue;
+
+            // Исключаем период 21-24 ноября 2026 из 3 сезона
+            long fp = 0L;
+            long lp = 0L;
+            try {
+                fp = op.getFirstPlayed();
+                lp = op.getLastPlayed();
+            } catch (Throwable ignored) {}
+            if (fp >= EXCLUDE_SEASON3_START_MS) {
+                continue;
+            }
+            if (fp <= 0L && lp >= EXCLUDE_SEASON3_START_MS && lp <= EXCLUDE_SEASON3_END_MS) {
+                continue;
+            }
+
+            String keyPrefix = name.toLowerCase(Locale.ROOT) + ".";
+            int pt = 0;
+            int dia = 0;
+            int deb = 0;
+            int kills = 0;
+            int deaths = 0;
+
+            String basePt = this.topBaseline.getProperty(keyPrefix + "pt");
+            if (basePt != null && !basePt.isEmpty()) {
+                try {
+                    pt = Integer.parseInt(basePt.trim());
+                    dia = Integer.parseInt(this.topBaseline.getProperty(keyPrefix + "dia", "0").trim());
+                    deb = Integer.parseInt(this.topBaseline.getProperty(keyPrefix + "deb", "0").trim());
+                    kills = Integer.parseInt(this.topBaseline.getProperty(keyPrefix + "kills", "0").trim());
+                    deaths = Integer.parseInt(this.topBaseline.getProperty(keyPrefix + "deaths", "0").trim());
+                } catch (NumberFormatException ignored) {}
+            } else {
+                try {
+                    pt = op.getStatistic(Statistic.PLAY_ONE_MINUTE);
+                    dia = op.getStatistic(Statistic.MINE_BLOCK, Material.DIAMOND_ORE) + op.getStatistic(Statistic.MINE_BLOCK, Material.DEEPSLATE_DIAMOND_ORE);
+                    deb = op.getStatistic(Statistic.MINE_BLOCK, Material.ANCIENT_DEBRIS);
+                    kills = op.getStatistic(Statistic.PLAYER_KILLS);
+                    deaths = op.getStatistic(Statistic.DEATHS);
+                } catch (Throwable ignored) {}
+            }
+
+            String skin = this.getCachedPlayerSkin(name);
+            if (pt > 0) playtimeList.add(new S3Entry(name, pt, skin));
+            if (dia > 0) diamondList.add(new S3Entry(name, dia, skin));
+            if (deb > 0) debrisList.add(new S3Entry(name, deb, skin));
+            if (kills > 0) killList.add(new S3Entry(name, kills, skin));
+            if (deaths > 0) deathList.add(new S3Entry(name, deaths, skin));
+        }
+
+        playtimeList.sort((a, b) -> Long.compare(b.value, a.value));
+        diamondList.sort((a, b) -> Long.compare(b.value, a.value));
+        debrisList.sort((a, b) -> Long.compare(b.value, a.value));
+        killList.sort((a, b) -> Long.compare(b.value, a.value));
+        deathList.sort((a, b) -> Long.compare(b.value, a.value));
+
+        Function<List<S3Entry>, String> toJson = list -> {
+            StringBuilder sb = new StringBuilder("[");
+            int limit = Math.min(10, list.size());
+            for (int i = 0; i < limit; i++) {
+                S3Entry e = list.get(i);
+                if (i > 0) sb.append(",");
+                sb.append(String.format(Locale.US, "{\"player\":\"%s\",\"value\":%d,\"skin\":\"%s\"}", VanillaBridge.escapeJson(e.name), e.value, VanillaBridge.escapeJson(e.skin)));
+            }
+            sb.append("]");
+            return sb.toString();
+        };
+
+        String jsonTemplate = String.format(
+                Locale.US,
+                "{\"type\":\"season3_data\",\"query_id\":\"%%QUERY_ID%%\",\"playtime\":%s,\"diamonds\":%s,\"debris\":%s,\"kills\":%s,\"deaths\":%s}",
+                toJson.apply(playtimeList),
+                toJson.apply(diamondList),
+                toJson.apply(debrisList),
+                toJson.apply(killList),
+                toJson.apply(deathList)
+        );
+        try {
+            File season3File = new File(this.getDataFolder(), "top_season3.json");
+            if (season3File.getParentFile() != null) {
+                season3File.getParentFile().mkdirs();
+            }
+            Files.writeString(season3File.toPath(), jsonTemplate, StandardCharsets.UTF_8);
+        } catch (Exception e) {
+            this.getLogger().warning("Не удалось сохранить top_season3.json: " + e.getMessage());
+        }
+        return jsonTemplate;
+    }
+
     public synchronized void loadOrInitTopBaseline() {
         this.topBaseline.clear();
         File baselineFile = new File(this.getDataFolder(), "top_baseline.properties");
         if (!baselineFile.exists()) {
             this.snapshotTopBaseline();
+            File season3File = new File(this.getDataFolder(), "top_season3.json");
+            if (!season3File.exists()) {
+                this.buildAndSaveSeason3Json();
+            }
             return;
         }
         try (FileInputStream fis = new FileInputStream(baselineFile)) {
@@ -1452,6 +1609,10 @@ implements CommandExecutor {
         }
         catch (Exception e) {
             this.getLogger().warning("Не удалось загрузить top_baseline.properties: " + e.getMessage());
+        }
+        File season3File = new File(this.getDataFolder(), "top_season3.json");
+        if (!season3File.exists()) {
+            this.buildAndSaveSeason3Json();
         }
     }
 

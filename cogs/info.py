@@ -92,7 +92,7 @@ def build_bridge_embed(guild: Optional[discord.Guild]) -> discord.Embed:
         name="Статистика и профили",
         value=(
             "• `!online` (`!онлайн`) — Список игроков в сети и текущий TPS\n"
-            "• `!top [категория]` (`!топ`, `!лидеры`) — Зал славы (время, алмазы, незерит, PvP, смерти)\n"
+            "• `!top [категория] [сезон]` (`!топ`, `!лидеры`, `/top_archive`) — Таблица лидеров (`3 сезон` и `4 сезон`)\n"
             "• `!profile [ник]` (`!профиль`, `!стата`) — Карточка игрока (скин, руды, K/D, дата первого входа)\n"
             "• `!skin <ник>` (`!скин`) — Рендер скина и ссылка на исходный файл скина\n"
             "• `!deaths` (`!смерти`) — Таблица смертей («Премия Дарвина»)"
@@ -320,7 +320,9 @@ def build_mod_help_embed(guild: Optional[discord.Guild]) -> discord.Embed:
             "• `/healthcheck` (`!статус`, `!status`, `!heatlhcheck`) — Gaming HUD аудит сервера, TPS, памяти, прав и моста `[Тех. Админ+]`\n"
             "• `/panic_whitelist [on/off] [kickall]` — Режим изоляции сервера (Panic Whitelist)\n"
             "• `/backup_status` / `/backup_create` — Статус и создание бэкапа (DriveBackupV2)\n"
-            "• `/top_reset` — Сбросить топ и статистику смертей после вайпа\n"
+            "• `/db_backup [now|list|send|channel]` — Бэкап и ротация базы данных `tickets.db`\n"
+            "• `/bridge_status` (`!мост_статус`) — Диагностика WebSocket-моста, RTT пинг и история разрывов\n"
+            "• `/top_reset` — Закрыть текущий сезон в архив и начать новый\n"
             "• `/rules_sync` — Синхронизация правил из VanillaRules в Discord\n"
             "• `!alts_channel [#канал]` — Настройка канала оповещений о твинках\n"
             "• `!alts_panel` — Панель защиты от твинков и обхода банов"

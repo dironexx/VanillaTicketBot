@@ -1,4 +1,6 @@
+import json
 import os
+import shutil
 import sqlite3
 import logging
 import time
@@ -251,6 +253,14 @@ class DatabaseManager:
                 z INTEGER NOT NULL,
                 reason TEXT,
                 time TEXT NOT NULL
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS top_seasons (
+                season INTEGER PRIMARY KEY,
+                name TEXT NOT NULL,
+                data_json TEXT NOT NULL,
+                archived_at TEXT NOT NULL
             )
         """)
         conn.execute("""
@@ -867,7 +877,7 @@ class DatabaseManager:
             return (0, "Нет смертей")
 
     def reset_top_deaths(self) -> int:
-        """Сбрасывает статистику смертей игроков (вайп от 22 ноября)."""
+        """Сбрасывает статистику смертей игроков."""
         with self._get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("DELETE FROM player_deaths")
@@ -876,8 +886,114 @@ class DatabaseManager:
             except Exception:
                 pass
             conn.commit()
-            logger.info("Таблица смертей игроков успешно очищена (вайп от 22 ноября)")
+            logger.info("Таблица смертей игроков успешно очищена.")
             return 1
+
+    # --- СЕЗОНЫ И АРХИВ ЛИДЕРБОРДА ---
+    def get_active_season(self) -> int:
+        raw = self.get_setting("active_top_season", "4")
+        try:
+            return max(1, int(str(raw).strip()))
+        except (TypeError, ValueError):
+            return 4
+
+    def set_active_season(self, season: int) -> None:
+        self.set_setting("active_top_season", str(max(1, int(season))))
+
+    def save_season_leaderboard(self, season: int, name: str, data: dict) -> None:
+        now_str = get_msk_now_str()
+        clean_data = {
+            "playtime": list(data.get("playtime", [])),
+            "diamonds": list(data.get("diamonds", [])),
+            "debris": list(data.get("debris", [])),
+            "kills": list(data.get("kills", [])),
+            "deaths": list(data.get("deaths", [])),
+        }
+        payload_json = json.dumps(clean_data, ensure_ascii=False)
+        with self._get_connection() as conn:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO top_seasons (season, name, data_json, archived_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                (int(season), str(name), payload_json, now_str),
+            )
+            conn.commit()
+
+    def get_season_leaderboard(self, season: int) -> Optional[dict]:
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT season, name, data_json, archived_at FROM top_seasons WHERE season = ?",
+                (int(season),),
+            )
+            row = cursor.fetchone()
+            if not row:
+                return None
+            try:
+                parsed = json.loads(row[2]) if row[2] else {}
+            except Exception:
+                parsed = {}
+            return {
+                "season": row[0],
+                "name": row[1],
+                "data": parsed,
+                "archived_at": row[3],
+            }
+
+    def list_seasons(self) -> list[dict]:
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT season, name, archived_at FROM top_seasons ORDER BY season DESC")
+            return [
+                {"season": row[0], "name": row[1], "archived_at": row[2]}
+                for row in cursor.fetchall()
+            ]
+
+    def merge_season_mc_data(self, season: int, name: str, mc_data: dict) -> dict:
+        """Объединяет статистику из Minecraft с архивом сезона (не затирая сохранённые категории)."""
+        existing = self.get_season_leaderboard(season)
+        base = dict(existing["data"]) if existing and isinstance(existing.get("data"), dict) else {}
+        for key in ("playtime", "diamonds", "debris", "kills"):
+            if mc_data.get(key):
+                base[key] = list(mc_data[key])
+            else:
+                base.setdefault(key, [])
+        if mc_data.get("deaths") and not base.get("deaths"):
+            base["deaths"] = list(mc_data["deaths"])
+        else:
+            base.setdefault("deaths", [])
+        self.save_season_leaderboard(season, name, base)
+        return base
+
+    def archive_deaths_to_season3(self) -> int:
+        """
+        Переносит накопленные смерти из player_deaths в архив 3 сезона,
+        полностью исключая записи за период 2026-11-21 .. 2026-11-24.
+        """
+        excluded_dates = ("2026-11-21", "2026-11-22", "2026-11-23", "2026-11-24")
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT player_name, death_count, last_death_time FROM player_deaths ORDER BY death_count DESC"
+            )
+            rows = cursor.fetchall()
+
+        filtered_deaths = []
+        for p_name, count, last_time in rows:
+            date_prefix = str(last_time or "").strip()[:10]
+            if date_prefix in excluded_dates:
+                continue
+            filtered_deaths.append({"player": p_name, "value": int(count or 0), "skin": ""})
+
+        existing = self.get_season_leaderboard(3)
+        base = dict(existing["data"]) if existing and isinstance(existing.get("data"), dict) else {}
+        if filtered_deaths or "deaths" not in base:
+            base["deaths"] = filtered_deaths[:10]
+        for key in ("playtime", "diamonds", "debris", "kills"):
+            base.setdefault(key, [])
+        self.save_season_leaderboard(3, "3 сезон", base)
+        return len(filtered_deaths)
 
     def is_automod_enabled(self) -> bool:
         val = self.get_setting("automod_enabled", "true")
@@ -1682,25 +1798,114 @@ class DatabaseManager:
         }
 
     # --- РЕЗЕРВНОЕ КОПИРОВАНИЕ И САЛЬВАЖ ДАННЫХ ПРИ СБОЯХ ---
-    def backup_db(self, backup_dir: Optional[str] = None) -> Optional[str]:
-        """Создает онлайн неблокирующий бэкап базы данных SQLite через API conn.backup."""
+    def backup_db(self, backup_dir: Optional[str] = None, keep_last: int = 7, rotate: bool = False) -> Optional[str]:
+        """Создает онлайн неблокирующий бэкап SQLite через conn.backup с проверкой целостности и ротацией."""
         if not os.path.exists(self.db_path):
             return None
         if backup_dir is None:
             backup_dir = os.path.join(os.path.dirname(os.path.abspath(self.db_path)), "backups")
         os.makedirs(backup_dir, exist_ok=True)
-        backup_file = os.path.join(backup_dir, "tickets_auto_backup.db")
+        auto_file = os.path.join(backup_dir, "tickets_auto_backup.db")
+        tmp_file = os.path.join(backup_dir, f"tickets_tmp_{int(time.time() * 1000)}.db")
         try:
             with self._get_connection() as src_conn:
-                bck_conn = sqlite3.connect(backup_file)
+                try:
+                    src_conn.execute("PRAGMA wal_checkpoint(PASSIVE);")
+                except Exception:
+                    pass
+                bck_conn = sqlite3.connect(tmp_file)
                 with bck_conn:
                     src_conn.backup(bck_conn)
+                chk = bck_conn.execute("PRAGMA quick_check;").fetchone()
                 bck_conn.close()
-            logger.debug("Резервная копия базы данных успешно создана: %s", backup_file)
-            return backup_file
+            if not chk or str(chk[0]).lower() != "ok":
+                if os.path.exists(tmp_file):
+                    os.remove(tmp_file)
+                logger.warning("Бэкап БД не прошёл PRAGMA quick_check: %s", chk)
+                return None
+
+            shutil.copy2(tmp_file, auto_file)
+            result_path = auto_file
+
+            if rotate:
+                stamp = get_msk_now().strftime("%Y%m%d_%H%M%S")
+                rotated_file = os.path.join(backup_dir, f"tickets_{stamp}.db")
+                idx = 1
+                while os.path.exists(rotated_file):
+                    rotated_file = os.path.join(backup_dir, f"tickets_{stamp}_{idx}.db")
+                    idx += 1
+                os.replace(tmp_file, rotated_file)
+                result_path = rotated_file
+
+                # Ротация старых копий: сохраняем только последние keep_last
+                try:
+                    rotated_list = sorted(
+                        [
+                            os.path.join(backup_dir, f)
+                            for f in os.listdir(backup_dir)
+                            if f.startswith("tickets_") and f.endswith(".db") and f != "tickets_auto_backup.db"
+                        ],
+                        key=lambda p: os.path.getmtime(p),
+                        reverse=True,
+                    )
+                    for old_path in rotated_list[max(1, int(keep_last)):]:
+                        try:
+                            os.remove(old_path)
+                        except Exception:
+                            pass
+                except Exception as rot_err:
+                    logger.debug("Backup rotation cleanup note: %s", rot_err)
+            else:
+                if os.path.exists(tmp_file):
+                    os.remove(tmp_file)
+
+            logger.debug("Резервная копия базы данных успешно создана: %s", result_path)
+            return result_path
         except Exception as e:
+            if os.path.exists(tmp_file):
+                try:
+                    os.remove(tmp_file)
+                except Exception:
+                    pass
             logger.warning("Ошибка создания бэкапа БД: %s", e)
             return None
+
+    def list_backups(self, backup_dir: Optional[str] = None) -> list[dict]:
+        """Возвращает список доступных бэкапов (от новых к старым)."""
+        if backup_dir is None:
+            backup_dir = os.path.join(os.path.dirname(os.path.abspath(self.db_path)), "backups")
+        if not os.path.isdir(backup_dir):
+            return []
+        items = []
+        for fn in os.listdir(backup_dir):
+            if fn.endswith(".db"):
+                fp = os.path.join(backup_dir, fn)
+                try:
+                    st = os.stat(fp)
+                    items.append({
+                        "name": fn,
+                        "path": fp,
+                        "size_bytes": st.st_size,
+                        "mtime": st.st_mtime,
+                    })
+                except Exception:
+                    pass
+        items.sort(key=lambda x: x["mtime"], reverse=True)
+        return items
+
+    def get_db_summary(self) -> dict:
+        """Возвращает сводку записей в основных таблицах БД."""
+        tables = ("active_tickets", "ticket_history", "linked_accounts", "player_ips", "top_seasons", "active_mutes")
+        summary = {"size_bytes": os.path.getsize(self.db_path) if os.path.exists(self.db_path) else 0}
+        with self._get_connection() as conn:
+            cur = conn.cursor()
+            for tbl in tables:
+                try:
+                    cur.execute(f"SELECT COUNT(*) FROM {tbl}")
+                    summary[tbl] = int(cur.fetchone()[0])
+                except Exception:
+                    summary[tbl] = 0
+        return summary
 
     def salvage_corrupted_file(self, corrupted_path: str) -> int:
         """
@@ -1728,6 +1933,7 @@ class DatabaseManager:
             ("active_mutes", "INSERT OR IGNORE INTO active_mutes (user_id, guild_id, unmute_timestamp, reason) VALUES (?, ?, ?, ?)"),
             ("ticket_blacklist", "INSERT OR IGNORE INTO ticket_blacklist (user_id, reason, banned_by, banned_at) VALUES (?, ?, ?, ?)"),
             ("bot_settings", "INSERT OR REPLACE INTO bot_settings (key, value) VALUES (?, ?)"),
+            ("top_seasons", "INSERT OR REPLACE INTO top_seasons (season, name, data_json, archived_at) VALUES (?, ?, ?, ?)"),
             ("offline_mail", "INSERT OR IGNORE INTO offline_mail (id, sender, recipient, message, sent_at, is_read) VALUES (?, ?, ?, ?, ?, ?)"),
             ("player_ips", "INSERT OR IGNORE INTO player_ips (player_name, ip, last_seen) VALUES (?, ?, ?)"),
             ("security_whitelist", "INSERT OR IGNORE INTO security_whitelist (target, target_type, reason, added_by, added_at) VALUES (?, ?, ?, ?, ?)"),

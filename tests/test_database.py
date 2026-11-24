@@ -98,6 +98,37 @@ class DatabaseTests(unittest.TestCase):
         recovered = self.db.salvage_corrupted_file(backup_file)
         self.assertGreaterEqual(recovered, 1)
 
+    def test_backup_rotation_keeps_last_seven(self):
+        for _ in range(9):
+            path = self.db.backup_db(keep_last=7, rotate=True)
+            self.assertIsNotNone(path)
+            self.assertTrue(os.path.exists(path))
+        backups = self.db.list_backups()
+        rotated = [b for b in backups if b["name"] != "tickets_auto_backup.db"]
+        self.assertLessEqual(len(rotated), 7)
+        self.assertTrue(any(b["name"] == "tickets_auto_backup.db" for b in backups))
+
+    def test_season3_archive_excludes_nov21_to_24(self):
+        with self.db._get_connection() as conn:
+            conn.execute(
+                "INSERT INTO player_deaths (player_name, death_count, last_death_reason, last_death_time) VALUES (?, ?, ?, ?)",
+                ("Veteran", 5, "упал", "2026-11-18 14:20:00"),
+            )
+            for idx, d_str in enumerate(("2026-11-21 09:00:00", "2026-11-22 12:00:00", "2026-11-23 18:00:00", "2026-11-24 23:59:59")):
+                conn.execute(
+                    "INSERT INTO player_deaths (player_name, death_count, last_death_reason, last_death_time) VALUES (?, ?, ?, ?)",
+                    (f"WipePlayer{idx}", 3, "лава", d_str),
+                )
+            conn.commit()
+
+        archived_cnt = self.db.archive_deaths_to_season3()
+        self.assertEqual(archived_cnt, 1)
+        s3 = self.db.get_season_leaderboard(3)
+        self.assertIsNotNone(s3)
+        self.assertEqual(s3["name"], "3 сезон")
+        deaths = s3["data"].get("deaths", [])
+        self.assertEqual([d["player"] for d in deaths], ["Veteran"])
+
 
 if __name__ == "__main__":
     unittest.main()

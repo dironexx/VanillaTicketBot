@@ -283,6 +283,49 @@ class BridgeLogicTests(unittest.TestCase):
         self.assertTrue(data.startswith(b"\x89PNG\r\n\x1a\n"))
         self.assertGreater(len(data), 5000)
 
+    def test_bridge_status_embed_and_top_season_view(self):
+        from cogs.bridge import TopLeaderboardView
+
+        fake = SimpleNamespace(
+            active_sockets={1},
+            bot=SimpleNamespace(start_time=0.0),
+            bot_start_time=0.0,
+            sites=[],
+            db=SimpleNamespace(get_active_season=lambda: 4),
+            _socket_meta={
+                1: {
+                    "server_id": "main",
+                    "ws_url": "wss://bridge.vanillaland.fun/ws",
+                    "remote_ip": "127.0.0.1",
+                    "connected_at": 0.0,
+                    "last_packet_at": 10.0,
+                    "last_packet_type": "stats",
+                    "packets_rx": 12,
+                    "last_rtt_ms": 14.5,
+                    "client_disconnect_reason": "Heartbeat timeout",
+                }
+            },
+            _socket_stats={1: {"online": 5, "max": 100, "tps": 19.95, "mspt": 11.2, "mem_used": 2048, "mem_max": 8192}},
+            _disconnect_history=[{"time_str": "2026-11-24 20:00:00", "server_id": "main", "duration_sec": 300, "reason": "WS close=1006"}],
+            last_stats_time=10.0,
+        )
+        status_emb = BridgeCog._build_bridge_status_embed(fake, {1: 14.5})
+        self.assertIn("Диагностика WebSocket-моста", status_emb.title)
+        self.assertIn("4 сезон", status_emb.description)
+        self.assertTrue(any("main" in f.name for f in status_emb.fields))
+
+        async def _build_views():
+            v3 = TopLeaderboardView({"playtime": [{"player": "Veteran", "value": 72000, "skin": ""}]}, season=3)
+            v4 = TopLeaderboardView({"playtime": [{"player": "NewPlayer", "value": 36000, "skin": ""}]}, season=4)
+            return v3.build_embed(), v4.build_embed()
+
+        e3, e4 = asyncio.run(_build_views())
+        self.assertIn("3 сезон", e3.title)
+        self.assertIn("4 сезон", e4.title)
+        combined = f"{e3.title} {e3.description} {e3.footer.text} {e4.title} {e4.description} {e4.footer.text}".lower()
+        self.assertNotIn("старый", combined)
+        self.assertNotIn("новый", combined)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -41,6 +41,7 @@ public class BridgeClient implements WebSocket.Listener {
     private final AtomicBoolean isSending = new AtomicBoolean(false);
     private volatile long lastHeartbeatTime = System.currentTimeMillis();
     private volatile String lastWorkingUrl = null;
+    private volatile String lastDisconnectReason = "";
     private volatile long lastOfflineLogTime = 0L;
 
     public BridgeClient(VanillaBridge plugin) {
@@ -190,7 +191,7 @@ public class BridgeClient implements WebSocket.Listener {
 
                 this.httpClient.newWebSocketBuilder()
                         .connectTimeout(timeout)
-                        .header("User-Agent", "Mozilla/5.0 VanillaBridge/1.3 (Minecraft Server; Anti-RKN)")
+                        .header("User-Agent", "Mozilla/5.0 VanillaBridge/1.4 (Minecraft Server; Anti-RKN)")
                         .header("Host", host)
                         .header("Origin", "https://vanillaland.fun")
                         .buildAsync(URI.create(fullUrl), this)
@@ -269,6 +270,14 @@ public class BridgeClient implements WebSocket.Listener {
         return this.isConnected.get();
     }
 
+    public String getLastWorkingUrl() {
+        return this.lastWorkingUrl != null ? this.lastWorkingUrl : "";
+    }
+
+    public String getLastDisconnectReason() {
+        return this.lastDisconnectReason != null ? this.lastDisconnectReason : "";
+    }
+
     public void send(String jsonPayload) {
         if (!this.isConnected.get() || this.webSocket == null) {
             return;
@@ -335,7 +344,13 @@ public class BridgeClient implements WebSocket.Listener {
     }
 
     public synchronized void handleDisconnect(String reason, boolean fastFailover) {
-        if (!this.isConnected.get() && !this.isConnecting.get() && (this.reconnectTask != null && !this.reconnectTask.isCancelled())) {
+        boolean wasOpen = this.isConnected.get();
+        if (wasOpen && reason != null && !reason.isEmpty()) {
+            this.lastDisconnectReason = reason;
+        } else if ((this.lastDisconnectReason == null || this.lastDisconnectReason.isEmpty()) && reason != null && !reason.isEmpty()) {
+            this.lastDisconnectReason = reason;
+        }
+        if (!wasOpen && !this.isConnecting.get() && (this.reconnectTask != null && !this.reconnectTask.isCancelled())) {
             return;
         }
         this.isConnected.set(false);
@@ -358,7 +373,15 @@ public class BridgeClient implements WebSocket.Listener {
         webSocket.request(1L);
         try {
             String sId = this.plugin.getConfig().getString("server-id", "main");
-            String hs = String.format(Locale.US, "{\"type\":\"handshake\",\"server_id\":\"%s\"}", sId);
+            String route = this.lastWorkingUrl != null ? this.lastWorkingUrl : this.plugin.getConfig().getString("bridge.ws-url", "");
+            String discReason = this.lastDisconnectReason != null ? this.lastDisconnectReason : "";
+            String hs = String.format(
+                    Locale.US,
+                    "{\"type\":\"handshake\",\"server_id\":\"%s\",\"ws_url\":\"%s\",\"last_disconnect_reason\":\"%s\"}",
+                    VanillaBridge.escapeJson(sId),
+                    VanillaBridge.escapeJson(route),
+                    VanillaBridge.escapeJson(discReason)
+            );
             this.send(hs);
             this.plugin.sendServerStats();
         } catch (Exception ignored) {}

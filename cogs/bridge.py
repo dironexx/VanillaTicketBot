@@ -16,7 +16,7 @@ from discord import app_commands, ui
 from discord.ext import commands, tasks
 
 from config import Config
-from database import DatabaseManager
+from database import DatabaseManager, MSK, get_msk_now_str
 from design import AG, Colors
 
 logger = logging.getLogger("VanillaBot.Bridge")
@@ -175,6 +175,8 @@ class BridgeCog(commands.Cog, name="Мост Minecraft"):
         self.mc_tps: float = 20.0
         self.mc_players: List[str] = []
         self._socket_stats: Dict[int, dict] = {}
+        self._socket_meta: Dict[int, dict] = {}
+        self._disconnect_history: List[dict] = []
         self.last_stats_time: float = 0.0
         self.mc_server_start_time: float = 0.0
 
@@ -216,16 +218,23 @@ class BridgeCog(commands.Cog, name="Мост Minecraft"):
         self.last_top_data: Optional[dict] = None
         self.cached_player_stats: Dict[str, Tuple[float, dict]] = {}
 
-        # Одноразовый автоматический сброс топа смертей после вайпа (v1.4)
-        if not self.db.get_setting("wipe_2026_11_24_done"):
+        # Одноразовая инициализация сезонов топа (3 сезон в архив без 21-24 ноября, 4 сезон активный)
+        if not self.db.get_setting("wipe_season4_v14_done"):
             try:
+                archived_cnt = self.db.archive_deaths_to_season3()
                 self.db.reset_top_deaths()
+                self.db.set_active_season(4)
+                self.db.set_setting("wipe_season4_v14_done", "1")
                 self.db.set_setting("wipe_2026_11_24_done", "1")
-                logger.info("Выполнен автоматический сброс статистики смертей для нового топа (v1.4).")
+                logger.info(
+                    "Инициализированы сезоны топа (v1.4): в 3 сезон перенесено записей смертей=%d (без 21-24.11), активен 4 сезон.",
+                    archived_cnt,
+                )
             except Exception as e:
-                logger.warning(f"Не удалось выполнить автосброс топа v1.4: {e}")
+                logger.warning(f"Не удалось инициализировать сезоны топа v1.4: {e}")
 
         self.update_vc_loop.start()
+        self.db_backup_loop.start()
         self.create_tracked_task(self.start_web_server())
 
     def create_tracked_task(self, coro) -> asyncio.Task:
@@ -398,6 +407,8 @@ class BridgeCog(commands.Cog, name="Мост Minecraft"):
 
     def cog_unload(self):
         self.update_vc_loop.cancel()
+        if self.db_backup_loop.is_running():
+            self.db_backup_loop.cancel()
         self.create_tracked_task(self.cleanup())
 
     async def cleanup(self):
@@ -491,6 +502,20 @@ class BridgeCog(commands.Cog, name="Мост Minecraft"):
             or request.headers.get("X-Forwarded-For", "").split(",")[0].strip()
             or request.remote
         )
+        sid = id(ws)
+        now_conn = time.time()
+        self._socket_meta[sid] = {
+            "server_id": "pending",
+            "ws_url": "",
+            "remote_ip": str(client_ip or "unknown"),
+            "port": request.url.port or Config.BRIDGE_PORT,
+            "connected_at": now_conn,
+            "last_packet_at": now_conn,
+            "last_packet_type": "connect",
+            "packets_rx": 0,
+            "last_rtt_ms": None,
+            "client_disconnect_reason": "",
+        }
         logger.info(f"Minecraft сервер успешно подключился к мосту ({Config.SERVER_IP} / {client_ip})")
 
         # Если на боте активен режим техработ, сразу передаем его серверу
@@ -524,6 +549,11 @@ class BridgeCog(commands.Cog, name="Мост Minecraft"):
                 if msg.type == aiohttp.WSMsgType.TEXT:
                     try:
                         data = json.loads(msg.data)
+                        meta = self._socket_meta.get(sid)
+                        if meta is not None:
+                            meta["last_packet_at"] = time.time()
+                            meta["last_packet_type"] = str(data.get("type", "unknown"))
+                            meta["packets_rx"] = int(meta.get("packets_rx", 0)) + 1
                         await self.handle_minecraft_packet(data, ws)
                     except json.JSONDecodeError as dec_err:
                         logger.debug("Получен невалидный JSON пакет от Minecraft: %s (ошибка: %s)", msg.data, dec_err)
@@ -534,11 +564,31 @@ class BridgeCog(commands.Cog, name="Мост Minecraft"):
         finally:
             async with self._sockets_lock:
                 self.active_sockets.discard(ws)
-            self._socket_stats.pop(id(ws), None)
+            self._socket_stats.pop(sid, None)
+            meta = self._socket_meta.pop(sid, None)
             self.last_disconnect_time = time.time()
+            ws_exc = None
+            try:
+                ws_exc = ws.exception()
+            except Exception:
+                pass
+            close_code = getattr(ws, "close_code", None)
+            disc_reason = f"WS close={close_code}" if close_code is not None else "Соединение разорвано"
+            if ws_exc:
+                disc_reason = f"{disc_reason} ({ws_exc})"
+            self._disconnect_history.append({
+                "timestamp": time.time(),
+                "time_str": get_msk_now_str(),
+                "server_id": (meta or {}).get("server_id", "main"),
+                "remote_ip": (meta or {}).get("remote_ip", str(client_ip or "?")),
+                "duration_sec": max(0, int(time.time() - (meta or {}).get("connected_at", time.time()))),
+                "reason": disc_reason,
+            })
+            if len(self._disconnect_history) > 10:
+                self._disconnect_history = self._disconnect_history[-10:]
             self._recompute_stats()
             if not self.active_sockets:
-                logger.info("Minecraft сервер отключился от моста.")
+                logger.info("Minecraft сервер отключился от моста (%s).", disc_reason)
                 self.create_tracked_task(self.update_bot_presence())
 
         return ws
@@ -622,8 +672,23 @@ class BridgeCog(commands.Cog, name="Мост Minecraft"):
 
         self.bot.dispatch("bridge_packet", p_type, data)
 
-        # 0. Application-level Keep-Alive Ping/Pong (гарантирует постоянную активность сокета)
-        if p_type == "ping":
+        # 0. Application-level Keep-Alive Ping/Pong & Handshake
+        if p_type == "handshake":
+            if ws is not None:
+                sid = id(ws)
+                meta = self._socket_meta.get(sid)
+                if meta is not None:
+                    meta["server_id"] = str(data.get("server_id", "main") or "main")
+                    meta["ws_url"] = str(data.get("ws_url", "") or "")
+                    client_reason = str(data.get("last_disconnect_reason", "") or "").strip()
+                    if client_reason:
+                        meta["client_disconnect_reason"] = client_reason
+                        if self._disconnect_history and not self._disconnect_history[-1].get("plugin_reason"):
+                            self._disconnect_history[-1]["plugin_reason"] = client_reason
+            # Синхронизируем архив 3 сезона из плагина при первом подключении
+            self.create_tracked_task(self.ensure_season3_synced())
+            return
+        elif p_type == "ping":
             await self.broadcast_packet({
                 "type": "pong",
                 "timestamp": data.get("time", time.time())
@@ -881,8 +946,8 @@ class BridgeCog(commands.Cog, name="Мост Minecraft"):
                     except Exception as e:
                         logger.error(f"Не удалось отправить mc_broadcast в канал событий: {e}")
 
-        # 9. Ответы на запросы данных из Minecraft (world_data, player_data, chunks_data, top_data)
-        elif p_type in ("world_data", "player_data", "chunks_data", "top_data"):
+        # 9. Ответы на запросы данных из Minecraft (world_data, player_data, chunks_data, top_data, season3_data, ping_probe_ack)
+        elif p_type in ("world_data", "player_data", "chunks_data", "top_data", "season3_data", "ping_probe_ack"):
             if p_type == "player_data":
                 p_name = data.get("player")
                 p_skin = data.get("skin")
@@ -1488,6 +1553,207 @@ class BridgeCog(commands.Cog, name="Мост Minecraft"):
             logger.error(f"Не удалось создать канал статистики '{name}': {e}")
             return None
 
+    async def ensure_season3_synced(self) -> Optional[dict]:
+        """Синхронизирует данные 3 сезона из плагина Minecraft, если ещё не сохранены."""
+        existing = self.db.get_season_leaderboard(3)
+        data = existing.get("data", {}) if existing else {}
+        has_mc_data = any(bool(data.get(k)) for k in ("playtime", "diamonds", "debris", "kills"))
+        if has_mc_data:
+            return data
+        if not self.active_sockets or self.db.get_setting("season3_mc_synced") == "1":
+            return data or None
+        mc_s3 = await self.query_minecraft({"type": "query_season3"}, timeout=7.0)
+        if mc_s3 and isinstance(mc_s3, dict):
+            merged = self.db.merge_season_mc_data(3, "3 сезон", mc_s3)
+            self.db.set_setting("season3_mc_synced", "1")
+            return merged
+        return data or None
+
+    async def get_season_top_data(self, season: int) -> Optional[dict]:
+        """Возвращает данные таблицы лидеров для указанного сезона."""
+        active_season = self.db.get_active_season()
+        if int(season) == int(active_season):
+            data = None
+            if self.active_sockets:
+                data = await self.query_minecraft({"type": "query_top"}, timeout=9.0)
+            if not data and self.last_top_data:
+                data = self.last_top_data
+            if data:
+                self.last_top_data = data
+            return data
+
+        if int(season) == 3:
+            synced = await self.ensure_season3_synced()
+            if synced:
+                return synced
+
+        archived = self.db.get_season_leaderboard(int(season))
+        if archived and isinstance(archived.get("data"), dict):
+            return archived["data"]
+        return None
+
+    async def _probe_sockets(self, timeout: float = 2.5) -> Dict[int, Optional[float]]:
+        """Измеряет реальную задержку (RTT в мс) до каждого подключённого сокета."""
+        rtts: Dict[int, Optional[float]] = {}
+        async with self._sockets_lock:
+            sockets = [ws for ws in self.active_sockets if not ws.closed]
+        if not sockets:
+            return rtts
+
+        loop = asyncio.get_running_loop()
+        tasks_map: Dict[int, Tuple[str, asyncio.Future, float]] = {}
+        for ws in sockets:
+            sid = id(ws)
+            qid = uuid.uuid4().hex
+            fut = loop.create_future()
+            self.pending_queries[qid] = fut
+            t0 = time.monotonic()
+            tasks_map[sid] = (qid, fut, t0)
+            try:
+                await ws.send_str(json.dumps({"type": "ping_probe", "query_id": qid}))
+            except Exception:
+                self.pending_queries.pop(qid, None)
+                if not fut.done():
+                    fut.set_result(None)
+
+        for sid, (qid, fut, t0) in tasks_map.items():
+            try:
+                res = await asyncio.wait_for(fut, timeout=timeout)
+                if res:
+                    rtt_ms = round((time.monotonic() - t0) * 1000.0, 1)
+                    rtts[sid] = rtt_ms
+                    if sid in self._socket_meta:
+                        self._socket_meta[sid]["last_rtt_ms"] = rtt_ms
+                else:
+                    rtts[sid] = None
+            except (asyncio.TimeoutError, Exception):
+                rtts[sid] = None
+            finally:
+                self.pending_queries.pop(qid, None)
+        return rtts
+
+    def _build_bridge_status_embed(self, rtts: Dict[int, Optional[float]]) -> discord.Embed:
+        now = time.time()
+        sockets_count = len(self.active_sockets)
+        status_label = "🟢 Подключён" if sockets_count > 0 else "🔴 Отключён"
+        color = Colors.GREEN if sockets_count > 0 else Colors.RED
+        bot_uptime = max(0, int(now - getattr(self.bot, "start_time", self.bot_start_time)))
+        up_h, up_rem = divmod(bot_uptime, 3600)
+        up_m = up_rem // 60
+
+        bound_ports = [str(getattr(s, "_port", Config.BRIDGE_PORT)) for s in getattr(self, "sites", [])] if hasattr(self, "sites") else [str(Config.BRIDGE_PORT)]
+        active_season = self.db.get_active_season()
+
+        embed = discord.Embed(
+            title="📡 Диагностика WebSocket-моста • Vanilla Land",
+            description=(
+                f"• **Состояние:** `{status_label}` (сокетов: `{sockets_count}`)\n"
+                f"• **Порты моста:** `{', '.join(bound_ports) or Config.BRIDGE_PORT}`\n"
+                f"• **Аптайм бота:** `{up_h} ч. {up_m} мин.` | **Сезон топа:** `{active_season} сезон`"
+            ),
+            color=color,
+            timestamp=datetime.now(timezone.utc),
+        )
+
+        if self._socket_meta:
+            for sid, meta in list(self._socket_meta.items()):
+                st = self._socket_stats.get(sid, {})
+                srv_id = meta.get("server_id", "main")
+                ws_url = meta.get("ws_url") or "—"
+                remote_ip = meta.get("remote_ip", "?")
+                conn_sec = max(0, int(now - meta.get("connected_at", now)))
+                last_pkt_sec = max(0, int(now - meta.get("last_packet_at", now)))
+                pkt_type = meta.get("last_packet_type", "—")
+                pkts = meta.get("packets_rx", 0)
+                rtt_val = rtts.get(sid, meta.get("last_rtt_ms"))
+                rtt_str = f"{rtt_val:.1f} мс" if rtt_val is not None else "нет ответа"
+
+                online = st.get("online", 0)
+                mx = st.get("max", 0)
+                tps = st.get("tps", 20.0)
+                mspt = st.get("mspt", 0.0)
+                mem_u = st.get("mem_used", 0)
+                mem_m = st.get("mem_max", 0)
+
+                last_drop = meta.get("client_disconnect_reason") or "—"
+                val = (
+                    f"• **Маршрут:** `{ws_url}`\n"
+                    f"• **IP / Пинг (RTT):** `{remote_ip}` | `{rtt_str}`\n"
+                    f"• **Сервер:** Онлайн `{online}/{mx}` | TPS `{tps:.2f}` (`{mspt:.1f} mspt`) | ОЗУ `{mem_u}/{mem_m} МБ`\n"
+                    f"• **Пакеты:** `{pkts}` шт. (посл. `{pkt_type}` `{last_pkt_sec}с` назад)\n"
+                    f"• **Сессия:** `{conn_sec // 60} мин. {conn_sec % 60} сек.` | Прошл. обрыв: `{last_drop}`"
+                )
+                embed.add_field(name=f"Узел `{srv_id}`", value=val, inline=False)
+        else:
+            last_stats_age = f"{int(now - self.last_stats_time)}с назад" if self.last_stats_time > 0 else "не поступали"
+            embed.add_field(
+                name="Активные подключения",
+                value=f"Нет активных подключений.\nПоследние метрики: `{last_stats_age}`.",
+                inline=False,
+            )
+
+        if self._disconnect_history:
+            hist_lines = []
+            for item in reversed(self._disconnect_history[-5:]):
+                dur = item.get("duration_sec", 0)
+                p_reason = f" / плагин: {item['plugin_reason']}" if item.get("plugin_reason") else ""
+                hist_lines.append(
+                    f"• `{item.get('time_str', '?')}` **[{item.get('server_id', 'main')}]** "
+                    f"({dur}с) — `{item.get('reason', '?')}{p_reason}`"
+                )
+            embed.add_field(name="Последние разрывы связи", value="\n".join(hist_lines), inline=False)
+
+        embed.set_footer(text="Vanilla Land • Диагностика моста")
+        return embed
+
+    @tasks.loop(hours=6)
+    async def db_backup_loop(self):
+        """Автоматически делает ротируемый бэкап tickets.db каждые 24 часа."""
+        now = time.time()
+        raw_last = self.db.get_setting("last_auto_db_backup_ts")
+        try:
+            last_ts = float(raw_last) if raw_last else 0.0
+        except (TypeError, ValueError):
+            last_ts = 0.0
+
+        if (now - last_ts) < 86400.0:
+            return
+
+        backup_path = await asyncio.to_thread(self.db.backup_db, None, 7, True)
+        if not backup_path:
+            return
+
+        self.db.set_setting("last_auto_db_backup_ts", str(int(now)))
+        logger.info("Выполнен автоматический бэкап БД с ротацией: %s", backup_path)
+
+        ch_id_raw = self.db.get_setting("db_backup_channel_id")
+        if ch_id_raw and str(ch_id_raw).isdigit():
+            ch = self.bot.get_channel(int(ch_id_raw))
+            if isinstance(ch, discord.TextChannel):
+                try:
+                    import os
+                    size_bytes = os.path.getsize(backup_path)
+                    summary = self.db.get_db_summary()
+                    emb = AG.embed(
+                        title="💾 Автоматический бэкап базы данных • Vanilla Land",
+                        description=(
+                            f"• **Файл:** `{os.path.basename(backup_path)}` (`{size_bytes / 1024:.1f} КБ`)\n"
+                            f"• **История тикетов:** `{summary.get('ticket_history', 0)}` | **Привязок:** `{summary.get('linked_accounts', 0)}`"
+                        ),
+                        color=Colors.GREEN,
+                        footer="Vanilla Land • Ротация последних 7 копий",
+                    )
+                    if size_bytes <= 8 * 1024 * 1024:
+                        await ch.send(embed=emb, file=discord.File(backup_path, filename=os.path.basename(backup_path)))
+                    else:
+                        await ch.send(embed=emb)
+                except Exception as e:
+                    logger.warning("Не удалось отправить автобэкап БД в канал %s: %s", ch_id_raw, e)
+
+    @db_backup_loop.before_loop
+    async def before_db_backup_loop(self):
+        await self.bot.wait_until_ready()
+
     @update_vc_loop.before_loop
     async def before_update_vc_loop(self):
         await self.bot.wait_until_ready()
@@ -1497,6 +1763,120 @@ class BridgeCog(commands.Cog, name="Мост Minecraft"):
                 await self.cleanup_and_sync_stats_channels(g)
             except Exception as e:
                 logger.warning(f"Ошибка при первичной очистке каналов статистики в {g.name}: {e}")
+
+    # --- КОМАНДА /bridge_status (ДИАГНОСТИКА МОСТА И ПОДКЛЮЧЕНИЙ) ---
+    @commands.hybrid_command(
+        name="bridge_status",
+        aliases=["мост_статус", "bridge_diag", "мост"],
+        description="[Персонал] Детальная диагностика WebSocket-моста, RTT пинг и история обрывов",
+    )
+    async def bridge_status_cmd(self, ctx: commands.Context):
+        if not is_mod_or_admin(ctx):
+            return await ctx.send("Эта команда доступна только персоналу сервера.", ephemeral=True)
+        if ctx.interaction:
+            await ctx.defer(ephemeral=True)
+        rtts = await self._probe_sockets(timeout=2.5)
+        embed = self._build_bridge_status_embed(rtts)
+        view = BridgeStatusView(self)
+        await ctx.send(embed=embed, view=view, ephemeral=True)
+
+    # --- КОМАНДА /db_backup (УПРАВЛЕНИЕ БЭКАПАМИ БАЗЫ ДАННЫХ) ---
+    @commands.hybrid_command(
+        name="db_backup",
+        aliases=["бэкап_бд", "бд_бэкап"],
+        description="[Админ] Создать бэкап tickets.db, посмотреть копии или настроить автоотправку",
+    )
+    @app_commands.describe(
+        action="Действие: now (создать сейчас), list (список), send (отправить файл), channel (канал авто-бэкапов)",
+        channel="Текстовый канал для ежедневных бэкапов (при action=channel)",
+    )
+    @app_commands.choices(
+        action=[
+            app_commands.Choice(name="Создать бэкап сейчас (now)", value="now"),
+            app_commands.Choice(name="Список и статус (list)", value="list"),
+            app_commands.Choice(name="Отправить последний файл в чат (send)", value="send"),
+            app_commands.Choice(name="Назначить канал авто-бэкапов (channel)", value="channel"),
+        ]
+    )
+    async def db_backup_cmd(
+        self,
+        ctx: commands.Context,
+        action: Optional[str] = "now",
+        channel: Optional[discord.TextChannel] = None,
+    ):
+        if not is_mod_or_admin(ctx):
+            return await ctx.send("Эта команда доступна только персоналу сервера.", ephemeral=True)
+        if ctx.interaction:
+            await ctx.defer(ephemeral=True)
+
+        act = (action or "now").strip().lower()
+        if act == "channel":
+            if channel:
+                self.db.set_setting("db_backup_channel_id", str(channel.id))
+                return await ctx.send(
+                    f"✅ Канал автоматических суточных бэкапов `tickets.db` установлен: {channel.mention}.",
+                    ephemeral=True,
+                )
+            else:
+                self.db.set_setting("db_backup_channel_id", "")
+                return await ctx.send(
+                    "✅ Автоматическая отправка файла БД в Discord отключена (локальные копии в `backups/` сохраняются).",
+                    ephemeral=True,
+                )
+
+        if act == "send":
+            import os
+            backups = self.db.list_backups()
+            if not backups:
+                new_p = await asyncio.to_thread(self.db.backup_db, None, 7, True)
+                backups = self.db.list_backups() if new_p else []
+            if not backups:
+                return await ctx.send("❌ Не удалось найти или создать бэкап БД.", ephemeral=True)
+            latest = backups[0]
+            if latest["size_bytes"] > 8 * 1024 * 1024:
+                return await ctx.send(
+                    f"⚠️ Файл `{latest['name']}` ({latest['size_bytes'] / (1024 * 1024):.1f} МБ) превышает лимит вложения Discord 8 МБ.",
+                    ephemeral=True,
+                )
+            return await ctx.send(
+                content=f"💾 Последний бэкап БД: `{latest['name']}` (`{latest['size_bytes'] / 1024:.1f} КБ`)",
+                file=discord.File(latest["path"], filename=latest["name"]),
+                ephemeral=True,
+            )
+
+        created_name = None
+        if act in ("now", "create", "создать"):
+            b_path = await asyncio.to_thread(self.db.backup_db, None, 7, True)
+            if b_path:
+                import os
+                created_name = os.path.basename(b_path)
+                self.db.set_setting("last_auto_db_backup_ts", str(int(time.time())))
+
+        backups = self.db.list_backups()
+        summary = self.db.get_db_summary()
+        ch_id_raw = self.db.get_setting("db_backup_channel_id")
+        ch_label = f"<#{ch_id_raw}>" if ch_id_raw and str(ch_id_raw).isdigit() else "*Только локально (`backups/`)*"
+
+        lines = []
+        for b in backups[:8]:
+            dt_str = datetime.fromtimestamp(b["mtime"], tz=MSK).strftime("%d.%m.%Y %H:%M")
+            lines.append(f"• `{b['name']}` — `{b['size_bytes'] / 1024:.1f} КБ` ({dt_str} МСК)")
+
+        desc = (
+            (f"✅ Создана новая копия: **`{created_name}`**\n\n" if created_name else "")
+            + f"• **Размер текущей БД:** `{summary.get('size_bytes', 0) / 1024:.1f} КБ`\n"
+            + f"• **Записей:** тикетов `{summary.get('ticket_history', 0)}` (активных `{summary.get('active_tickets', 0)}`), привязок `{summary.get('linked_accounts', 0)}`, сезонов `{summary.get('top_seasons', 0)}`\n"
+            + f"• **Канал авто-бэкапа:** {ch_label}\n\n"
+            + "**Доступные копии (ротация 7 шт.):**\n"
+            + ("\n".join(lines) if lines else "*Копий пока нет.*")
+        )
+        embed = AG.embed(
+            title="💾 Резервное копирование базы данных • Vanilla Land",
+            description=desc,
+            color=Colors.GREEN if created_name else Colors.BLUE,
+            footer="Vanilla Land • SQLite Backup",
+        )
+        await ctx.send(embed=embed, ephemeral=True)
 
     # --- КОМАНДА /online ДЛЯ ИГРОКОВ (ГИБРИДНАЯ: СЛЭШ + ПРЕФИКС) ---
     @commands.hybrid_command(
@@ -2188,43 +2568,59 @@ class BridgeCog(commands.Cog, name="Мост Minecraft"):
         aliases=["топ", "лидеры", "рекорды", "leaderboard", "статистика_сервера"],
         description="Таблица лидеров сервера: наигранное время, алмазы, незерит, PvP и смерти",
     )
-    @app_commands.describe(category="Категория: playtime, diamonds, debris, kills, deaths (или пусто для общего топа)")
-    async def top_cmd(self, ctx: commands.Context, category: Optional[str] = None):
+    @app_commands.describe(
+        category="Категория: playtime, diamonds, debris, kills, deaths (или пусто для общего топа)",
+        season="Номер сезона (например: 3 или 4)",
+    )
+    async def top_cmd(self, ctx: commands.Context, category: Optional[str] = None, season: Optional[int] = None):
         if ctx.interaction:
             await ctx.defer()
 
-        data = None
-        if self.active_sockets:
-            data = await self.query_minecraft({"type": "query_top"}, timeout=9.0)
-
-        if not data and self.last_top_data:
-            data = self.last_top_data
+        active_season = self.db.get_active_season()
+        selected_season = season if (season is not None and season >= 1) else active_season
+        data = await self.get_season_top_data(selected_season)
 
         if not data:
-            if not self.active_sockets:
+            if selected_season == active_season and not self.active_sockets:
                 embed = discord.Embed(
                     title="Сервер оффлайн",
                     description="Сервер Minecraft сейчас не подключен к мосту.",
                     color=Colors.RED,
                 )
-            else:
+            elif selected_season == active_season:
                 embed = discord.Embed(
                     title="⏳ Обновление статистики",
                     description="Сервер сейчас подготавливает свежие данные лидерборда. Попробуйте через пару секунд.",
                     color=Colors.YELLOW,
                 )
-            return await ctx.send(embed=embed)
+            else:
+                embed = discord.Embed(
+                    title=f"Доска почёта • {selected_season} сезон",
+                    description=f"За `{selected_season} сезон` сохранённых данных пока нет.",
+                    color=Colors.DARK,
+                )
+            view = TopLeaderboardView(data or {}, category, season=selected_season, bridge_cog=self, db=self.db)
+            return await ctx.send(embed=embed, view=view)
 
-        self.last_top_data = data
-        view = TopLeaderboardView(data, category)
+        view = TopLeaderboardView(data, category, season=selected_season, bridge_cog=self, db=self.db)
         embed = view.build_embed()
         await ctx.send(embed=embed, view=view)
 
-    # --- КОМАНДА /top_reset (СБРОС ТОПА И СМЕРТЕЙ ПОСЛЕ ВАЙПА) ---
+    # --- КОМАНДА /top_archive (АРХИВ 3 СЕЗОНА) ---
+    @commands.hybrid_command(
+        name="top_archive",
+        aliases=["архив_топа", "топ_архив", "top3", "топ3"],
+        description="Зал славы 3 сезона (время, алмазы, незерит, PvP и смерти)",
+    )
+    @app_commands.describe(category="Категория: playtime, diamonds, debris, kills, deaths")
+    async def top_archive_cmd(self, ctx: commands.Context, category: Optional[str] = None):
+        await self.top_cmd(ctx, category=category, season=3)
+
+    # --- КОМАНДА /top_reset (ЗАКРЫТИЕ СЕЗОНА И СБРОС ТОПА) ---
     @commands.hybrid_command(
         name="top_reset",
         aliases=["сброс_топа", "вайп_топ"],
-        description="[Админ] Сбросить кэш топа и статистику смертей после вайпа",
+        description="[Админ] Сохранить текущий сезон в архив и начать новый сезон топа",
     )
     @commands.has_permissions(administrator=True)
     async def top_reset_cmd(self, ctx: commands.Context):
@@ -2232,10 +2628,21 @@ class BridgeCog(commands.Cog, name="Мост Minecraft"):
             return await ctx.send("Эта команда доступна только администраторам.", ephemeral=True)
         if ctx.interaction:
             await ctx.defer(ephemeral=True)
+
+        current_season = self.db.get_active_season()
+        current_data = await self.get_season_top_data(current_season) or {}
+        if any(current_data.get(k) for k in ("playtime", "diamonds", "debris", "kills", "deaths")):
+            self.db.save_season_leaderboard(current_season, f"{current_season} сезон", current_data)
+
+        new_season = current_season + 1
+        self.db.set_active_season(new_season)
         self.last_top_data = None
         self.db.reset_top_deaths()
         await self.broadcast_packet({"type": "reset_top_cache"})
-        await ctx.send("✅ Статистика топа и смертей успешно сброшена! Новый отсчёт ведётся с вайпа от 22 ноября.", ephemeral=True)
+        await ctx.send(
+            f"✅ **{current_season} сезон** сохранён в архив, статистика топа и смертей сброшена. Активен **{new_season} сезон**.",
+            ephemeral=True,
+        )
 
     # --- КОМАНДА /profile ИЛИ !profile [ник] (КАРТОЧКА ИГРОКА) ---
     @commands.hybrid_command(
@@ -3379,35 +3786,65 @@ class ShulkerSelectView(ui.View):
 
 
 
-class TopLeaderboardView(ui.View):
-    """Интерактивное меню таблицы рекордов сервера Vanilla Land"""
-    def __init__(self, data: dict, initial_category: Optional[str] = None):
+class BridgeStatusView(ui.View):
+    """Кнопка живого обновления диагностики WebSocket-моста."""
+    def __init__(self, bridge_cog: "BridgeCog"):
         super().__init__(timeout=180)
-        self.data = data
+        self.bridge_cog = bridge_cog
+
+    @ui.button(label="🔄 Обновить / Пинг", style=discord.ButtonStyle.primary)
+    async def refresh_btn(self, interaction: discord.Interaction, button: ui.Button):
+        await interaction.response.defer()
+        rtts = await self.bridge_cog._probe_sockets(timeout=2.5)
+        embed = self.bridge_cog._build_bridge_status_embed(rtts)
+        await interaction.edit_original_response(embed=embed, view=self)
+
+
+class TopLeaderboardView(ui.View):
+    """Интерактивное меню таблицы рекордов сервера Vanilla Land по сезонам"""
+    def __init__(
+        self,
+        data: dict,
+        initial_category: Optional[str] = None,
+        season: int = 4,
+        bridge_cog: Optional["BridgeCog"] = None,
+        db: Optional[DatabaseManager] = None,
+    ):
+        super().__init__(timeout=180)
+        self.data = data or {}
         self.current_cat = (initial_category or "all").lower().strip()
+        self.season = int(season)
+        self.bridge_cog = bridge_cog
+        self.db = db
         self.update_buttons()
 
     def update_buttons(self):
         for child in self.children:
             if isinstance(child, ui.Button):
-                cat = child.custom_id.replace("top:cat_", "")
-                if cat == self.current_cat or (cat == "all" and self.current_cat in ("all", "summary", "общий")):
-                    child.style = discord.ButtonStyle.success
-                else:
-                    child.style = discord.ButtonStyle.secondary
+                cid = child.custom_id or ""
+                if cid.startswith("top:cat_"):
+                    cat = cid.replace("top:cat_", "")
+                    if cat == self.current_cat or (cat == "all" and self.current_cat in ("all", "summary", "общий")):
+                        child.style = discord.ButtonStyle.success
+                    else:
+                        child.style = discord.ButtonStyle.secondary
+                elif cid == "top:season_3":
+                    child.style = discord.ButtonStyle.primary if self.season == 3 else discord.ButtonStyle.secondary
+                elif cid == "top:season_4":
+                    child.style = discord.ButtonStyle.primary if self.season == 4 else discord.ButtonStyle.secondary
 
     def build_embed(self) -> discord.Embed:
         cat = self.current_cat
         if cat in ("playtime", "время", "онлайн"):
-            return self._build_category_embed("playtime", "Топ по наигранному времени • Vanilla Land", "Время в игре", is_time=True)
+            return self._build_category_embed("playtime", f"Топ по наигранному времени • {self.season} сезон", "Время в игре", is_time=True)
         elif cat in ("diamonds", "алмазы", "алмаз"):
-            return self._build_category_embed("diamonds", "Топ шахтёров (Добыто алмазов) • Vanilla Land", "Добыто алмазной руды")
+            return self._build_category_embed("diamonds", f"Топ шахтёров (Добыто алмазов) • {self.season} сезон", "Добыто алмазной руды")
         elif cat in ("debris", "обломки", "незерит"):
-            return self._build_category_embed("debris", "Топ искателей незерита (Древние обломки) • Vanilla Land", "Добыто древних обломков")
+            return self._build_category_embed("debris", f"Топ искателей незерита • {self.season} сезон", "Добыто древних обломков")
         elif cat in ("kills", "киллы", "убийства", "pvp"):
-            return self._build_category_embed("kills", "Топ дуэлянтов (PvP Убийства) • Vanilla Land", "Убийств игроков")
+            return self._build_category_embed("kills", f"Топ дуэлянтов (PvP) • {self.season} сезон", "Убийств игроков")
         elif cat in ("deaths", "смерти"):
-            return self._build_category_embed("deaths", "Статистика смертей • Vanilla Land", "Всего смертей")
+            return self._build_category_embed("deaths", f"Статистика смертей • {self.season} сезон", "Всего смертей")
         else:
             return self._build_summary_embed()
 
@@ -3426,10 +3863,10 @@ class TopLeaderboardView(ui.View):
 
     def _build_summary_embed(self) -> discord.Embed:
         embed = discord.Embed(
-            title="Доска почёта • Vanilla Land",
+            title=f"Доска почёта • {self.season} сезон",
             description=(
-                "Главные рекорды и лидеры сервера (Сезон: Вайп от 22 ноября).\n"
-                "*Нажимайте кнопки ниже, чтобы открыть подробный ТОП-10 в каждой категории.*"
+                f"Главные рекорды и лидеры сервера (**{self.season} сезон**).\n"
+                "*Нажимайте кнопки ниже, чтобы открыть подробный ТОП-10 или переключить сезон.*"
             ),
             color=Colors.GOLD,
             timestamp=datetime.now(timezone.utc),
@@ -3482,12 +3919,18 @@ class TopLeaderboardView(ui.View):
                 lines.append(f"`{m}` **{it['player']}** — {it.get('value', 0):,} раз")
             embed.add_field(name="Смерти игроков", value="\n".join(lines), inline=True)
 
+        if not any((pt_list, dia_list, deb_list, kills_list, deaths_list)):
+            embed.description = (
+                f"*В {self.season} сезоне пока нет записанных рекордов.*\n"
+                "*Используйте кнопки ниже для переключения сезона.*"
+            )
+
         if pt_list and pt_list[0].get("player"):
             top_player = pt_list[0]["player"]
             top_skin = pt_list[0].get("skin")
             embed.set_thumbnail(url=get_skin_avatar_url(top_player, top_skin))
 
-        embed.set_footer(text="Vanilla Land • Вайп от 22 ноября 2026")
+        embed.set_footer(text=f"Vanilla Land • {self.season} сезон")
         return embed
 
     def _build_category_embed(self, key: str, title: str, val_label: str, is_time: bool = False) -> discord.Embed:
@@ -3501,7 +3944,7 @@ class TopLeaderboardView(ui.View):
         medals = {1: "#1", 2: "#2", 3: "#3"}
 
         if not items:
-            embed.description = "*В этой категории пока нет записанных данных.*"
+            embed.description = f"*В этой категории ({self.season} сезон) пока нет записанных данных.*"
         else:
             lines = []
             for i, it in enumerate(items[:10], 1):
@@ -3516,45 +3959,69 @@ class TopLeaderboardView(ui.View):
                 badge = medals.get(i, f"#{i}")
                 lines.append(f"`{badge}` **{p_name}** — `{formatted_val}`")
 
-            embed.description = f"**Топ игроков сервера по критерию: {val_label}**\n\n" + "\n".join(lines)
+            embed.description = f"**Топ игроков ({self.season} сезон) по критерию: {val_label}**\n\n" + "\n".join(lines)
 
             top_player = items[0].get("player", "")
             top_skin = items[0].get("skin", "")
             if top_player:
                 embed.set_thumbnail(url=get_skin_avatar_url(top_player, top_skin))
 
-        embed.set_footer(text="Vanilla Land • Вайп от 22 ноября 2026")
+        embed.set_footer(text=f"Vanilla Land • {self.season} сезон")
         return embed
 
-    @ui.button(label="Общий", style=discord.ButtonStyle.success, custom_id="top:cat_all")
+    async def _switch_season(self, interaction: discord.Interaction, target_season: int):
+        if target_season == self.season:
+            self.update_buttons()
+            return await interaction.response.edit_message(embed=self.build_embed(), view=self)
+        await interaction.response.defer()
+        new_data = None
+        if self.bridge_cog is not None:
+            new_data = await self.bridge_cog.get_season_top_data(target_season)
+        elif self.db is not None:
+            arch = self.db.get_season_leaderboard(target_season)
+            new_data = arch.get("data") if arch else None
+        self.season = int(target_season)
+        self.data = new_data or {}
+        self.update_buttons()
+        await interaction.edit_original_response(embed=self.build_embed(), view=self)
+
+    @ui.button(label="Общий", style=discord.ButtonStyle.success, custom_id="top:cat_all", row=0)
     async def btn_all(self, interaction: discord.Interaction, button: ui.Button):
         self.current_cat = "all"
         self.update_buttons()
         await interaction.response.edit_message(embed=self.build_embed(), view=self)
 
-    @ui.button(label="Время", style=discord.ButtonStyle.secondary, custom_id="top:cat_playtime")
+    @ui.button(label="Время", style=discord.ButtonStyle.secondary, custom_id="top:cat_playtime", row=0)
     async def btn_playtime(self, interaction: discord.Interaction, button: ui.Button):
         self.current_cat = "playtime"
         self.update_buttons()
         await interaction.response.edit_message(embed=self.build_embed(), view=self)
 
-    @ui.button(label="Алмазы", style=discord.ButtonStyle.secondary, custom_id="top:cat_diamonds")
+    @ui.button(label="Алмазы", style=discord.ButtonStyle.secondary, custom_id="top:cat_diamonds", row=0)
     async def btn_diamonds(self, interaction: discord.Interaction, button: ui.Button):
         self.current_cat = "diamonds"
         self.update_buttons()
         await interaction.response.edit_message(embed=self.build_embed(), view=self)
 
-    @ui.button(label="Незерит", style=discord.ButtonStyle.secondary, custom_id="top:cat_debris")
+    @ui.button(label="Незерит", style=discord.ButtonStyle.secondary, custom_id="top:cat_debris", row=0)
     async def btn_debris(self, interaction: discord.Interaction, button: ui.Button):
         self.current_cat = "debris"
         self.update_buttons()
         await interaction.response.edit_message(embed=self.build_embed(), view=self)
 
-    @ui.button(label="PvP", style=discord.ButtonStyle.secondary, custom_id="top:cat_kills")
+    @ui.button(label="PvP", style=discord.ButtonStyle.secondary, custom_id="top:cat_kills", row=0)
     async def btn_kills(self, interaction: discord.Interaction, button: ui.Button):
         self.current_cat = "kills"
         self.update_buttons()
         await interaction.response.edit_message(embed=self.build_embed(), view=self)
+
+    @ui.button(label="3 сезон", style=discord.ButtonStyle.secondary, custom_id="top:season_3", row=1)
+    async def btn_season_3(self, interaction: discord.Interaction, button: ui.Button):
+        await self._switch_season(interaction, 3)
+
+    @ui.button(label="4 сезон", style=discord.ButtonStyle.primary, custom_id="top:season_4", row=1)
+    async def btn_season_4(self, interaction: discord.Interaction, button: ui.Button):
+        await self._switch_season(interaction, 4)
 
 
 class ProfileView(ui.View):
