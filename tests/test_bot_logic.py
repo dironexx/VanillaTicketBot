@@ -332,6 +332,13 @@ class BridgeLogicTests(unittest.TestCase):
         self.assertIn("Единая настройка каналов бота", ch_emb.title)
         self.assertTrue(any("123456" in f.value for f in ch_emb.fields))
 
+        # Проверяем перевод смертей и отсутствие двойного экранирования **
+        from cogs.bridge import translate_death_message
+        d1 = translate_death_message("natadey was skewered by a falling stalactite", "natadey")
+        self.assertEqual(d1, "**natadey** проткнут падающим сталактитом")
+        d2 = translate_death_message("EvgeniiZloy111 was slain by Zombie", "EvgeniiZloy111")
+        self.assertEqual(d2, "**EvgeniiZloy111** погиб в бою с **Зомби**")
+
 
 if __name__ == "__main__":
     unittest.main()

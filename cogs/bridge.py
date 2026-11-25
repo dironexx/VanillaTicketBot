@@ -68,14 +68,14 @@ def censor_profanity(text: str) -> str:
 
 
 def translate_death_message(death_msg: str, player_name: str) -> str:
+    safe_player = discord.utils.escape_markdown(str(player_name or "Игрок"))
     if not death_msg:
-        return f"**{player_name}** погиб."
+        return f"**{safe_player}** погиб."
 
     msg = death_msg.strip()
 
-    # Замена имени игрока на жирный ник
     def p():
-        return f"**{player_name}**"
+        return f"**{safe_player}**"
 
     # Поиск моба
     killer = ""
@@ -87,15 +87,31 @@ def translate_death_message(death_msg: str, player_name: str) -> str:
     low = msg.lower()
 
     if "was slain by" in low:
-        target = killer if killer else msg.split("was slain by")[-1].strip()
+        target = killer if killer else discord.utils.escape_markdown(msg.split("was slain by")[-1].strip())
         return f"{p()} погиб в бою с **{target}**"
     if "was shot by" in low:
-        target = killer if killer else msg.split("was shot by")[-1].strip()
+        target = killer if killer else discord.utils.escape_markdown(msg.split("was shot by")[-1].strip())
         return f"{p()} был застрелен **{target}**"
+    if "was fireballed by" in low:
+        target = killer if killer else discord.utils.escape_markdown(msg.split("was fireballed by")[-1].strip())
+        return f"{p()} сожжён огненным шаром **{target}**"
+    if "was pummeled by" in low:
+        target = killer if killer else discord.utils.escape_markdown(msg.split("was pummeled by")[-1].strip())
+        return f"{p()} забит **{target}**"
     if "was blown up by creeper" in low:
         return f"{p()} взорван крипером"
-    if "was blown up by" in low:
+    if "was blown up by" in low or "blew up" in low:
         return f"{p()} погиб от взрыва"
+    if "was skewered by a falling stalactite" in low:
+        return f"{p()} проткнут падающим сталактитом"
+    if "was impaled on a stalagmite" in low:
+        return f"{p()} напоролся на сталагмит"
+    if "was obliterated by a sonically-charged shriek" in low:
+        return f"{p()} уничтожен звуковым ударом Вардена"
+    if "was stung to death" in low:
+        return f"{p()} зажален пчёлами насмерть"
+    if "was killed trying to hurt" in low:
+        return f"{p()} погиб от шипов"
     if "fell from a high place" in low or "fell off a high place" in low:
         return f"{p()} разбился при падении с высоты"
     if "hit the ground too hard" in low:
@@ -106,19 +122,23 @@ def translate_death_message(death_msg: str, player_name: str) -> str:
         return f"{p()} упал со строительных лесов"
     if "fell while climbing" in low:
         return f"{p()} сорвался с высоты"
+    if "fell out of the world" in low:
+        return f"{p()} выпал из мира"
     if "tried to swim in lava" in low:
         return f"{p()} утонул в лаве"
-    if "burned to death" in low:
+    if "burned to death" in low or "went up in flames" in low:
         return f"{p()} сгорел заживо"
-    if "walked into fire whilst fighting" in low or "walked into a fire" in low:
+    if "walked into fire whilst fighting" in low or "walked into a fire" in low or "walked on danger zone" in low:
         return f"{p()} сгорел в огне"
     if "drowned" in low:
         return f"{p()} утонул"
     if "suffocated in a wall" in low:
         return f"{p()} задохнулся в стене"
+    if "was squished too much" in low:
+        return f"{p()} раздавлен в лепёшку"
     if "starved to death" in low:
         return f"{p()} умер от голода"
-    if "was killed by magic" in low:
+    if "was killed by even more magic" in low or "was killed by magic" in low:
         return f"{p()} погиб от магии"
     if "was poked to death by a sweet berry bush" in low:
         return f"{p()} заколот ягодным кустом"
@@ -129,18 +149,21 @@ def translate_death_message(death_msg: str, player_name: str) -> str:
     if "withered away" in low:
         return f"{p()} иссушен"
     if "was struck by lightning" in low:
-        return f"{p()} поражен молнией"
+        return f"{p()} поражён молнией"
     if "froze to death" in low:
-        return f"{p()} замерз насмерть"
+        return f"{p()} замёрз насмерть"
     if "was squashed by a falling anvil" in low:
         return f"{p()} раздавлен наковальней"
-    if "was squashed by a falling block" in low:
+    if "was squashed by a falling block" in low or "was squashed by" in low:
         return f"{p()} раздавлен упавшим блоком"
+    if "was killed by" in low:
+        target = killer if killer else discord.utils.escape_markdown(msg.split("was killed by")[-1].strip())
+        return f"{p()} убит **{target}**"
     if "died" in low:
         return f"{p()} погиб"
 
-    # Если неизвестный формат — оставляем аккуратно с выделением ника
-    return msg.replace(player_name, f"**{player_name}**")
+    safe_msg = discord.utils.escape_markdown(msg)
+    return safe_msg.replace(safe_player, f"**{safe_player}**")
 
 
 # --- МОДАЛЬНОЕ ОКНО И КНОПКА ДЛЯ ЛИЧНЫХ СООБЩЕНИЙ (DM) ---
@@ -232,6 +255,43 @@ class BridgeCog(commands.Cog, name="Мост Minecraft"):
                 )
             except Exception as e:
                 logger.warning(f"Не удалось инициализировать сезоны топа v1.4: {e}")
+
+        # Заполнение 3 сезона точными рекордами до вайпа (если ещё не заполнены)
+        if not self.db.get_setting("season3_seeded_v14"):
+            try:
+                season3_seed = {
+                    "playtime": [
+                        {"player": "MrFresh", "value": 63244800, "skin": ""},
+                        {"player": "Frozeech", "value": 52162800, "skin": ""},
+                        {"player": "KRON1S", "value": 51687600, "skin": ""},
+                    ],
+                    "diamonds": [
+                        {"player": "umurzakov", "value": 5384, "skin": ""},
+                        {"player": "wertywerty12345", "value": 5171, "skin": ""},
+                        {"player": "FROGD3", "value": 4561, "skin": ""},
+                    ],
+                    "debris": [
+                        {"player": "upstartatol228ki", "value": 637, "skin": ""},
+                        {"player": "homeshok", "value": 453, "skin": ""},
+                        {"player": "sdfgsfsef", "value": 432, "skin": ""},
+                    ],
+                    "kills": [
+                        {"player": "MrFresh", "value": 664, "skin": ""},
+                        {"player": "deptlailul", "value": 525, "skin": ""},
+                        {"player": "bolbez123", "value": 426, "skin": ""},
+                    ],
+                    "deaths": [
+                        {"player": "NKS_56852", "value": 1158, "skin": ""},
+                        {"player": "minty1daze", "value": 655, "skin": ""},
+                        {"player": "676767", "value": 482, "skin": ""},
+                    ],
+                }
+                self.db.save_season_leaderboard(3, "3 сезон", season3_seed)
+                self.db.set_setting("season3_seeded_v14", "1")
+                self.db.set_setting("season3_mc_synced", "1")
+                logger.info("Загружены данные 3 сезона в архив top_seasons.")
+            except Exception as e:
+                logger.warning(f"Не удалось загрузить данные 3 сезона: {e}")
 
         self.update_vc_loop.start()
         self.db_backup_loop.start()
@@ -899,11 +959,10 @@ class BridgeCog(commands.Cog, name="Мост Minecraft"):
 
             events_ch = self.get_events_channel()
             if events_ch:
-                clean_death = discord.utils.escape_markdown(str(translated_death))
                 skin_url = get_skin_avatar_url(player, None, self.db)
                 world_ru = {"world": "Верхний мир", "world_nether": "Незер", "world_the_end": "Энд"}.get(str(world), str(world))
                 embed = discord.Embed(
-                    description=f"💀 {clean_death}",
+                    description=f"💀 {translated_death}",
                     color=Colors.RED,
                     timestamp=datetime.now(timezone.utc),
                 )
@@ -3914,6 +3973,33 @@ class BridgeStatusView(ui.View):
         await interaction.edit_original_response(embed=embed, view=self)
 
 
+class SeasonSelect(ui.Select):
+    """Удобный выпадающий список выбора сезона лидерборда."""
+    def __init__(self, view_ref: "TopLeaderboardView", active_season: int, available_seasons: List[int]):
+        options = []
+        for s in sorted(set(available_seasons), reverse=True):
+            options.append(
+                discord.SelectOption(
+                    label=f"{s} сезон",
+                    value=str(s),
+                    default=(int(s) == int(view_ref.season)),
+                )
+            )
+        super().__init__(
+            placeholder=f"Сезон: {view_ref.season} сезон",
+            min_values=1,
+            max_values=1,
+            options=options,
+            custom_id="top:season_select",
+            row=1,
+        )
+        self.view_ref = view_ref
+
+    async def callback(self, interaction: discord.Interaction):
+        target_season = int(self.values[0])
+        await self.view_ref._switch_season(interaction, target_season)
+
+
 class TopLeaderboardView(ui.View):
     """Интерактивное меню таблицы рекордов сервера Vanilla Land по сезонам"""
     def __init__(
@@ -3930,6 +4016,19 @@ class TopLeaderboardView(ui.View):
         self.season = int(season)
         self.bridge_cog = bridge_cog
         self.db = db
+
+        seasons_list = [3, 4]
+        if self.db is not None:
+            try:
+                active_s = self.db.get_active_season()
+                seasons_list.append(active_s)
+                for row in self.db.list_seasons():
+                    seasons_list.append(int(row["season"]))
+            except Exception:
+                pass
+        self.available_seasons = sorted(set(seasons_list), reverse=True)
+        self.season_select = SeasonSelect(self, self.season, self.available_seasons)
+        self.add_item(self.season_select)
         self.update_buttons()
 
     def update_buttons(self):
@@ -3942,10 +4041,10 @@ class TopLeaderboardView(ui.View):
                         child.style = discord.ButtonStyle.success
                     else:
                         child.style = discord.ButtonStyle.secondary
-                elif cid == "top:season_3":
-                    child.style = discord.ButtonStyle.primary if self.season == 3 else discord.ButtonStyle.secondary
-                elif cid == "top:season_4":
-                    child.style = discord.ButtonStyle.primary if self.season == 4 else discord.ButtonStyle.secondary
+            elif isinstance(child, SeasonSelect):
+                child.placeholder = f"Сезон: {self.season} сезон"
+                for opt in child.options:
+                    opt.default = (opt.value == str(self.season))
 
     def build_embed(self) -> discord.Embed:
         cat = self.current_cat
@@ -3956,7 +4055,7 @@ class TopLeaderboardView(ui.View):
         elif cat in ("debris", "обломки", "незерит"):
             return self._build_category_embed("debris", f"Топ искателей незерита • {self.season} сезон", "Добыто древних обломков")
         elif cat in ("kills", "киллы", "убийства", "pvp"):
-            return self._build_category_embed("kills", f"Топ дуэлянтов (PvP) • {self.season} сезон", "Убийств игроков")
+            return self._build_category_embed("kills", f"Топ дуэлянтов (PvP Убийства) • {self.season} сезон", "Убийств игроков")
         elif cat in ("deaths", "смерти"):
             return self._build_category_embed("deaths", f"Статистика смертей • {self.season} сезон", "Всего смертей")
         else:
@@ -3977,66 +4076,59 @@ class TopLeaderboardView(ui.View):
 
     def _build_summary_embed(self) -> discord.Embed:
         embed = discord.Embed(
-            title=f"🏆 Доска почёта • {self.season} сезон",
+            title=f"Доска почёта • {self.season} сезон",
             description=(
-                f"Ключевые рекорды игроков сервера **Vanilla Land** (**{self.season} сезон**).\n"
-                "> Нажимайте кнопки ниже, чтобы открыть подробный ТОП-10 или переключить сезон."
+                f"Главные рекорды и лидеры сервера по ключевым направлениям ({self.season} сезон).\n"
+                "*Нажимайте кнопки ниже, чтобы открыть подробный ТОП-10 или переключить сезон.*"
             ),
             color=Colors.GOLD,
             timestamp=datetime.now(timezone.utc),
         )
-
-        medals = ["🥇", "🥈", "🥉"]
 
         # 1. Время
         pt_list = self.data.get("playtime", [])
         if pt_list:
             lines = []
             for i, it in enumerate(pt_list[:3]):
-                m = medals[i] if i < 3 else f"`#{i+1}`"
-                lines.append(f"{m} **{it['player']}** — `{self._format_time(it.get('value', 0))}`")
-            embed.add_field(name="⏱️ Время в игре", value="\n".join(lines), inline=True)
+                lines.append(f"`#{i+1}` **{it['player']}** — {self._format_time(it.get('value', 0))}")
+            embed.add_field(name="Время в игре", value="\n".join(lines), inline=True)
 
         # 2. Алмазы
         dia_list = self.data.get("diamonds", [])
         if dia_list:
             lines = []
             for i, it in enumerate(dia_list[:3]):
-                m = medals[i] if i < 3 else f"`#{i+1}`"
-                lines.append(f"{m} **{it['player']}** — `{it.get('value', 0):,} шт.`")
-            embed.add_field(name="💎 Алмазные руды", value="\n".join(lines), inline=True)
+                lines.append(f"`#{i+1}` **{it['player']}** — {it.get('value', 0):,} шт.")
+            embed.add_field(name="Алмазные руды", value="\n".join(lines), inline=True)
 
         # 3. Незерит
         deb_list = self.data.get("debris", [])
         if deb_list:
             lines = []
             for i, it in enumerate(deb_list[:3]):
-                m = medals[i] if i < 3 else f"`#{i+1}`"
-                lines.append(f"{m} **{it['player']}** — `{it.get('value', 0):,} шт.`")
-            embed.add_field(name="🔥 Древние обломки", value="\n".join(lines), inline=True)
+                lines.append(f"`#{i+1}` **{it['player']}** — {it.get('value', 0):,} шт.")
+            embed.add_field(name="Древние обломки", value="\n".join(lines), inline=True)
 
         # 4. PvP Убийства
         kills_list = self.data.get("kills", [])
         if kills_list:
             lines = []
             for i, it in enumerate(kills_list[:3]):
-                m = medals[i] if i < 3 else f"`#{i+1}`"
-                lines.append(f"{m} **{it['player']}** — `{it.get('value', 0):,} киллов`")
-            embed.add_field(name="⚔️ PvP Убийства", value="\n".join(lines), inline=True)
+                lines.append(f"`#{i+1}` **{it['player']}** — {it.get('value', 0):,} киллов")
+            embed.add_field(name="PvP Убийства", value="\n".join(lines), inline=True)
 
         # 5. Смерти
         deaths_list = self.data.get("deaths", [])
         if deaths_list:
             lines = []
             for i, it in enumerate(deaths_list[:3]):
-                m = medals[i] if i < 3 else f"`#{i+1}`"
-                lines.append(f"{m} **{it['player']}** — `{it.get('value', 0):,} раз`")
-            embed.add_field(name="💀 Смерти игроков", value="\n".join(lines), inline=True)
+                lines.append(f"`#{i+1}` **{it['player']}** — {it.get('value', 0):,} раз")
+            embed.add_field(name="Смерти игроков", value="\n".join(lines), inline=True)
 
         if not any((pt_list, dia_list, deb_list, kills_list, deaths_list)):
             embed.description = (
                 f"*В {self.season} сезоне пока нет записанных рекордов.*\n"
-                "*Используйте кнопки ниже для переключения сезона.*"
+                "*Используйте список ниже для переключения сезона.*"
             )
 
         if pt_list and pt_list[0].get("player"):
@@ -4050,12 +4142,10 @@ class TopLeaderboardView(ui.View):
     def _build_category_embed(self, key: str, title: str, val_label: str, is_time: bool = False) -> discord.Embed:
         items = self.data.get(key, [])
         embed = discord.Embed(
-            title=f"🏆 {title}",
+            title=title,
             color=Colors.BLUE,
             timestamp=datetime.now(timezone.utc),
         )
-
-        medals = {1: "🥇", 2: "🥈", 3: "🥉"}
 
         if not items:
             embed.description = f"*В этой категории ({self.season} сезон) пока нет записанных данных.*"
@@ -4070,10 +4160,9 @@ class TopLeaderboardView(ui.View):
                 elif key == "deaths":
                     formatted_val = f"{raw_val:,} смертей"
 
-                badge = medals.get(i, f"`#{i:02d}`")
-                lines.append(f"{badge} **{p_name}** — `{formatted_val}`")
+                lines.append(f"`#{i}` **{p_name}** — {formatted_val}")
 
-            embed.description = f"**Рейтинг ТОП-10 ({self.season} сезон) • {val_label}**\n\n" + "\n".join(lines)
+            embed.description = f"**Топ игроков ({self.season} сезон) по критерию: {val_label}**\n\n" + "\n".join(lines)
 
             top_player = items[0].get("player", "")
             top_skin = items[0].get("skin", "")
@@ -4129,13 +4218,21 @@ class TopLeaderboardView(ui.View):
         self.update_buttons()
         await interaction.response.edit_message(embed=self.build_embed(), view=self)
 
-    @ui.button(label="3 сезон", style=discord.ButtonStyle.secondary, custom_id="top:season_3", row=1)
-    async def btn_season_3(self, interaction: discord.Interaction, button: ui.Button):
-        await self._switch_season(interaction, 3)
+    @ui.button(label="Смерти", style=discord.ButtonStyle.secondary, custom_id="top:cat_deaths", row=2)
+    async def btn_deaths(self, interaction: discord.Interaction, button: ui.Button):
+        self.current_cat = "deaths"
+        self.update_buttons()
+        await interaction.response.edit_message(embed=self.build_embed(), view=self)
 
-    @ui.button(label="4 сезон", style=discord.ButtonStyle.primary, custom_id="top:season_4", row=1)
-    async def btn_season_4(self, interaction: discord.Interaction, button: ui.Button):
-        await self._switch_season(interaction, 4)
+    @ui.button(label="🔄 Обновить", style=discord.ButtonStyle.primary, custom_id="top:refresh", row=2)
+    async def btn_refresh(self, interaction: discord.Interaction, button: ui.Button):
+        await interaction.response.defer()
+        if self.bridge_cog is not None:
+            refreshed = await self.bridge_cog.get_season_top_data(self.season)
+            if refreshed:
+                self.data = refreshed
+        self.update_buttons()
+        await interaction.edit_original_response(embed=self.build_embed(), view=self)
 
 
 class ProfileView(ui.View):
