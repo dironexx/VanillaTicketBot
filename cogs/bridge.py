@@ -3991,7 +3991,7 @@ class SeasonSelect(ui.Select):
             max_values=1,
             options=options,
             custom_id="top:season_select",
-            row=1,
+            row=2,
         )
         self.view_ref = view_ref
 
@@ -4085,45 +4085,41 @@ class TopLeaderboardView(ui.View):
             timestamp=datetime.now(timezone.utc),
         )
 
-        # 1. Время
+        # 1. Время (во всю ширину, чтобы не было рваных переносов строк)
         pt_list = self.data.get("playtime", [])
         if pt_list:
             lines = []
             for i, it in enumerate(pt_list[:3]):
                 lines.append(f"`#{i+1}` **{it['player']}** — {self._format_time(it.get('value', 0))}")
-            embed.add_field(name="Время в игре", value="\n".join(lines), inline=True)
+            embed.add_field(name="Время в игре", value="\n".join(lines), inline=False)
 
-        # 2. Алмазы
+        # 2-3. Алмазы и Незерит (ровный ряд, неразрывные пробелы)
         dia_list = self.data.get("diamonds", [])
-        if dia_list:
-            lines = []
-            for i, it in enumerate(dia_list[:3]):
-                lines.append(f"`#{i+1}` **{it['player']}** — {it.get('value', 0):,} шт.")
-            embed.add_field(name="Алмазные руды", value="\n".join(lines), inline=True)
-
-        # 3. Незерит
         deb_list = self.data.get("debris", [])
-        if deb_list:
-            lines = []
-            for i, it in enumerate(deb_list[:3]):
-                lines.append(f"`#{i+1}` **{it['player']}** — {it.get('value', 0):,} шт.")
-            embed.add_field(name="Древние обломки", value="\n".join(lines), inline=True)
+        if dia_list or deb_list:
+            if dia_list:
+                lines = [f"`#{i+1}` **{it['player']}** — {it.get('value', 0):,}\u00A0шт." for i, it in enumerate(dia_list[:3])]
+                embed.add_field(name="Алмазные руды", value="\n".join(lines), inline=True)
+            if deb_list:
+                lines = [f"`#{i+1}` **{it['player']}** — {it.get('value', 0):,}\u00A0шт." for i, it in enumerate(deb_list[:3])]
+                embed.add_field(name="Древние обломки", value="\n".join(lines), inline=True)
+            if not (dia_list and deb_list):
+                embed.add_field(name="\u200b", value="\u200b", inline=True)
+            embed.add_field(name="\u200b", value="\u200b", inline=True)
 
-        # 4. PvP Убийства
+        # 4-5. PvP и Смерти (ровный ряд, неразрывные пробелы)
         kills_list = self.data.get("kills", [])
-        if kills_list:
-            lines = []
-            for i, it in enumerate(kills_list[:3]):
-                lines.append(f"`#{i+1}` **{it['player']}** — {it.get('value', 0):,} киллов")
-            embed.add_field(name="PvP Убийства", value="\n".join(lines), inline=True)
-
-        # 5. Смерти
         deaths_list = self.data.get("deaths", [])
-        if deaths_list:
-            lines = []
-            for i, it in enumerate(deaths_list[:3]):
-                lines.append(f"`#{i+1}` **{it['player']}** — {it.get('value', 0):,} раз")
-            embed.add_field(name="Смерти игроков", value="\n".join(lines), inline=True)
+        if kills_list or deaths_list:
+            if kills_list:
+                lines = [f"`#{i+1}` **{it['player']}** — {it.get('value', 0):,}\u00A0киллов" for i, it in enumerate(kills_list[:3])]
+                embed.add_field(name="PvP Убийства", value="\n".join(lines), inline=True)
+            if deaths_list:
+                lines = [f"`#{i+1}` **{it['player']}** — {it.get('value', 0):,}\u00A0раз" for i, it in enumerate(deaths_list[:3])]
+                embed.add_field(name="Смерти игроков", value="\n".join(lines), inline=True)
+            if not (kills_list and deaths_list):
+                embed.add_field(name="\u200b", value="\u200b", inline=True)
+            embed.add_field(name="\u200b", value="\u200b", inline=True)
 
         if not any((pt_list, dia_list, deb_list, kills_list, deaths_list)):
             embed.description = (
@@ -4212,19 +4208,19 @@ class TopLeaderboardView(ui.View):
         self.update_buttons()
         await interaction.response.edit_message(embed=self.build_embed(), view=self)
 
-    @ui.button(label="PvP", style=discord.ButtonStyle.secondary, custom_id="top:cat_kills", row=0)
+    @ui.button(label="PvP", style=discord.ButtonStyle.secondary, custom_id="top:cat_kills", row=1)
     async def btn_kills(self, interaction: discord.Interaction, button: ui.Button):
         self.current_cat = "kills"
         self.update_buttons()
         await interaction.response.edit_message(embed=self.build_embed(), view=self)
 
-    @ui.button(label="Смерти", style=discord.ButtonStyle.secondary, custom_id="top:cat_deaths", row=2)
+    @ui.button(label="Смерти", style=discord.ButtonStyle.secondary, custom_id="top:cat_deaths", row=1)
     async def btn_deaths(self, interaction: discord.Interaction, button: ui.Button):
         self.current_cat = "deaths"
         self.update_buttons()
         await interaction.response.edit_message(embed=self.build_embed(), view=self)
 
-    @ui.button(label="🔄 Обновить", style=discord.ButtonStyle.primary, custom_id="top:refresh", row=2)
+    @ui.button(label="🔄 Обновить", style=discord.ButtonStyle.primary, custom_id="top:refresh", row=1)
     async def btn_refresh(self, interaction: discord.Interaction, button: ui.Button):
         await interaction.response.defer()
         if self.bridge_cog is not None:

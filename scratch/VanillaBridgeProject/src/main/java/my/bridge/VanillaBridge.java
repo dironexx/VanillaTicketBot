@@ -1596,19 +1596,22 @@ implements CommandExecutor {
     public synchronized void loadOrInitTopBaseline() {
         this.topBaseline.clear();
         File baselineFile = new File(this.getDataFolder(), "top_baseline.properties");
-        if (!baselineFile.exists()) {
-            this.snapshotTopBaseline();
-            File season3File = new File(this.getDataFolder(), "top_season3.json");
-            if (!season3File.exists()) {
-                this.buildAndSaveSeason3Json();
+        if (baselineFile.exists()) {
+            try (FileInputStream fis = new FileInputStream(baselineFile)) {
+                this.topBaseline.load(fis);
             }
-            return;
-        }
-        try (FileInputStream fis = new FileInputStream(baselineFile)) {
-            this.topBaseline.load(fis);
-        }
-        catch (Exception e) {
-            this.getLogger().warning("Не удалось загрузить top_baseline.properties: " + e.getMessage());
+            catch (Exception e) {
+                this.getLogger().warning("Не удалось загрузить top_baseline.properties: " + e.getMessage());
+            }
+            // Если baseline был создан автоматически при старте (не вручную через /bridge resettop), сбрасываем его,
+            // чтобы 4 сезон отображал полную статистику мира с вайпа без вычитания.
+            if (!"true".equalsIgnoreCase(this.topBaseline.getProperty("__manual_reset__", "false"))) {
+                this.topBaseline.clear();
+                try {
+                    Files.deleteIfExists(baselineFile.toPath());
+                } catch (Exception ignored) {}
+                this.cachedTopJson = null;
+            }
         }
         File season3File = new File(this.getDataFolder(), "top_season3.json");
         if (!season3File.exists()) {
@@ -1618,6 +1621,7 @@ implements CommandExecutor {
 
     public synchronized int snapshotTopBaseline() {
         this.topBaseline.clear();
+        this.topBaseline.setProperty("__manual_reset__", "true");
         int count = 0;
         for (OfflinePlayer op : Bukkit.getOfflinePlayers()) {
             String name = op.getName();
