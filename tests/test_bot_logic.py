@@ -358,6 +358,20 @@ class BridgeLogicTests(unittest.TestCase):
         )
         self.assertTrue(png_buf.getvalue().startswith(b"\x89PNG\r\n\x1a\n"))
 
+        # Проверяем лимит Discord 1024 символа в каждом поле всех справка-эмбедов
+        from cogs.info import (
+            build_overview_embed,
+            build_bridge_embed,
+            build_security_embed,
+            build_tickets_embed,
+            build_utility_embed,
+            build_mod_help_embed,
+        )
+        for builder in (build_overview_embed, build_bridge_embed, build_security_embed, build_tickets_embed, build_utility_embed, build_mod_help_embed):
+            emb = builder(None, True) if builder is build_overview_embed else builder(None)
+            for idx, field in enumerate(emb.fields):
+                self.assertLessEqual(len(field.value), 1024, f"{builder.__name__} field[{idx}] exceeded 1024 chars")
+
 
 if __name__ == "__main__":
     unittest.main()

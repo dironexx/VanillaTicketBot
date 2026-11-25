@@ -667,18 +667,12 @@ async def close_ticket_process(
         saved_file: Optional[str] = None
         channel_already_deleted = False
         try:
-            saved_file = await save_transcript_html(channel, closed_by_name, reason)
+            saved_file = await save_transcript_to_file(channel)
         except discord.NotFound:
             channel_already_deleted = True
             logger.info("Канал тикета %s (%s) уже удален до сохранения транскрипта.", channel.name, channel.id)
         except Exception as e:
-            logger.error("Ошибка создания HTML-транскрипта %s: %s", channel.name, e)
-            try:
-                saved_file = await save_transcript_to_file(channel)
-            except discord.NotFound:
-                channel_already_deleted = True
-            except Exception as e2:
-                logger.error("Ошибка создания txt-транскрипта %s: %s", channel.name, e2)
+            logger.error("Ошибка создания txt-транскрипта %s: %s", channel.name, e)
 
         file_exists = bool(saved_file and await asyncio.to_thread(os.path.exists, saved_file))
 
@@ -689,7 +683,7 @@ async def close_ticket_process(
                     guild_icon = channel.guild.icon.url if channel.guild and channel.guild.icon else None
                     closed_ts = int(time.time())
                     file_note = (
-                        "Архив переписки прикреплён к этому сообщению — откройте `.html` файл в браузере для удобного просмотра."
+                        "Текстовый лог переписки (`.txt`) прикреплён к этому сообщению."
                         if file_exists and saved_file
                         else "В этом обращении не было текстовых сообщений для архива."
                     )
@@ -795,7 +789,7 @@ class CloseReasonModal(ui.Modal, title="Закрытие обращения"):
             await _safe_send_interaction(interaction, "Обращение уже закрывается.", ephemeral=True)
             return
 
-        await _safe_send_interaction(interaction, "Закрываем обращение и сохраняем HTML-лог...", ephemeral=True)
+        await _safe_send_interaction(interaction, "Закрываем обращение и сохраняем лог переписки...", ephemeral=True)
         await close_ticket_process(interaction.client, self.db, interaction.channel, interaction.user.name, reason)
 
     async def on_error(self, interaction: discord.Interaction, error: Exception) -> None:

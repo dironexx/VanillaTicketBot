@@ -314,24 +314,29 @@ def build_mod_help_embed(guild: Optional[discord.Guild]) -> discord.Embed:
     )
 
     embed.add_field(
-        name="Безопасность и администрирование",
+        name="Безопасность и диагностика",
         value=(
             "• `/verification_lockdown [on/off] [причина]` — Экстренная блокировка верификации (защита от рейдов)\n"
-            "• `/healthcheck` (`!статус`, `!status`, `!heatlhcheck`) — Gaming HUD аудит сервера, TPS, памяти, прав и моста `[Тех. Админ+]`\n"
+            "• `/healthcheck` (`!статус`) — Аудит сервера, TPS, памяти, прав и моста `[Тех. Админ+]`\n"
             "• `/panic_whitelist [on/off] [kickall]` — Режим изоляции сервера (Panic Whitelist)\n"
-            "• `/backup_status` / `/backup_create` — Статус и создание бэкапа (DriveBackupV2)\n"
-            "• `/db_backup [now|list|send|channel]` — Бэкап и ротация базы данных `tickets.db`\n"
+            "• `/audit_perms` — Аудит прав ролей и каналов Discord-сервера\n"
+            "• `/bridge_status` (`!мост_статус`) — Диагностика WebSocket-моста, RTT пинг и история разрывов\n"
+            "• `/stats_graph [24h|7d]` — График онлайна и TPS сервера\n"
+            "• `!alts_channel [#канал]` / `!alts_panel` — Оповещения о твинках и обходе банов"
+        ),
+        inline=False,
+    )
+
+    embed.add_field(
+        name="Управление, бэкапы и ивенты",
+        value=(
             "• `/setup_channels` — Единая настройка всех каналов бота и категории тикетов\n"
-            "• `/ticket_reply [add|list|remove|test]` — Умные автоответы в тикетах (точные и похожие фразы)\n"
+            "• `/db_backup [now|list|send|channel]` — Бэкап и ротация базы данных `tickets.db`\n"
+            "• `/backup_status` / `/backup_create` — Статус и создание бэкапа мира (DriveBackupV2)\n"
+            "• `/ticket_reply [add|list|remove|test]` — Автоответы в тикетах (точные и похожие фразы)\n"
             "• `/ticket_roles` — Просмотр всех ролей доступа и пинга в тикетах\n"
             "• `/giveaway` — GUI-конструктор создания и запуска розыгрышей\n"
-            "• `/audit_perms` — Аудит прав ролей и каналов сервера\n"
-            "• `/stats_graph [24h|7d]` — График онлайна и TPS сервера\n"
-            "• `/bridge_status` (`!мост_статус`) — Диагностика WebSocket-моста, RTT пинг и история разрывов\n"
-            "• `/top_reset` — Закрыть текущий сезон в архив и начать новый\n"
-            "• `/rules_sync` — Синхронизация правил из VanillaRules в Discord\n"
-            "• `!alts_channel [#канал]` — Настройка канала оповещений о твинках\n"
-            "• `!alts_panel` — Панель защиты от твинков и обхода банов"
+            "• `/top_reset` / `/rules_sync` — Закрытие сезона топа / синхронизация правил"
         ),
         inline=False,
     )
