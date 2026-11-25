@@ -44,11 +44,11 @@ def _db_call(func: Callable[..., T], *args: Any, retries: int = 3, delay: float 
 
 
 async def _async_db_call(func: Callable[..., T], *args: Any, retries: int = 3, delay: float = 0.04, **kwargs: Any) -> T:
-    """Неблокирующий event loop вызов БД с асинхронным ожиданием при занятости SQLite WAL."""
+    """Неблокирующий event loop вызов БД через to_thread с backoff при занятости SQLite WAL."""
     attempt = 0
     while True:
         try:
-            return func(*args, **kwargs)
+            return await asyncio.to_thread(func, *args, **kwargs)
         except sqlite3.OperationalError as err:
             if not _is_sqlite_busy(err) or attempt >= retries:
                 raise
@@ -184,8 +184,15 @@ async def sync_spec_role_to_tickets(guild: Optional[discord.Guild], spec_role: O
         return
 
     # 1. Права на категории тикетов
-    if Config.TICKETS_CATEGORY_ID:
-        category = guild.get_channel(Config.TICKETS_CATEGORY_ID)
+    cat_id = Config.TICKETS_CATEGORY_ID
+    try:
+        saved_cat = await _async_db_call(db.get_setting, "tickets_category_id")
+        if saved_cat and str(saved_cat).isdigit():
+            cat_id = int(saved_cat)
+    except Exception:
+        pass
+    if cat_id:
+        category = guild.get_channel(cat_id)
         if category and isinstance(category, discord.CategoryChannel):
             try:
                 current_ow = category.overwrites_for(spec_role)
@@ -682,12 +689,12 @@ async def close_ticket_process(
                     guild_icon = channel.guild.icon.url if channel.guild and channel.guild.icon else None
                     closed_ts = int(time.time())
                     file_note = (
-                        "📎 **Архив переписки** прикреплён к этому сообщению — откройте `.html` файл в браузере для удобного просмотра."
+                        "Архив переписки прикреплён к этому сообщению — откройте `.html` файл в браузере для удобного просмотра."
                         if file_exists and saved_file
-                        else "ℹ️ *В этом обращении не было текстовых сообщений для архива.*"
+                        else "В этом обращении не было текстовых сообщений для архива."
                     )
                     embed = discord.Embed(
-                        title=f"📩 Ваше обращение закрыто • #{channel.name}",
+                        title=f"Обращение закрыто • #{channel.name}",
                         description=(
                             f"Сотрудник **{closed_by_name}** завершил рассмотрение вашего обращения.\n\n"
                             f"{file_note}"
@@ -700,11 +707,11 @@ async def close_ticket_process(
                         embed.set_thumbnail(url=guild_icon)
                     else:
                         embed.set_author(name="Vanilla Land • Служба поддержки")
-                    embed.add_field(name="🎫 Обращение", value=f"`#{channel.name}`", inline=True)
-                    embed.add_field(name="👮 Закрыл", value=f"**{closed_by_name}**", inline=True)
-                    embed.add_field(name="🕒 Закрыто", value=f"<t:{closed_ts}:f>", inline=True)
-                    embed.add_field(name="📝 Причина закрытия", value=f"```{reason}```", inline=False)
-                    embed.set_footer(text="Vanilla Land • Спасибо за обращение! Если вопрос остался — создайте новый тикет.")
+                    embed.add_field(name="Обращение", value=f"`#{channel.name}`", inline=True)
+                    embed.add_field(name="Закрыл", value=f"**{closed_by_name}**", inline=True)
+                    embed.add_field(name="Закрыто", value=f"<t:{closed_ts}:f>", inline=True)
+                    embed.add_field(name="Причина закрытия", value=f"```{reason}```", inline=False)
+                    embed.set_footer(text="Vanilla Land • Если вопрос остался, создайте новое обращение.")
                     if file_exists and saved_file:
                         await user.send(embed=embed, file=discord.File(saved_file))
                     else:
@@ -731,13 +738,13 @@ async def close_ticket_process(
         if isinstance(log_ch, discord.TextChannel):
             user_display = f"<@{user_id}> (`{user_id}`)" if user_id else "*Неизвестен*"
             embed_log = discord.Embed(
-                title=f"📁 Архив обращения • #{channel.name}",
+                title=f"Архив обращения • #{channel.name}",
                 color=Colors.INDIGO,
                 timestamp=datetime.now(timezone.utc),
             )
-            embed_log.add_field(name="👤 Автор", value=user_display, inline=True)
-            embed_log.add_field(name="👮 Закрыл", value=f"**{closed_by_name}**", inline=True)
-            embed_log.add_field(name="📝 Причина", value=reason, inline=False)
+            embed_log.add_field(name="Автор", value=user_display, inline=True)
+            embed_log.add_field(name="Закрыл", value=f"**{closed_by_name}**", inline=True)
+            embed_log.add_field(name="Причина", value=reason, inline=False)
             embed_log.set_footer(text="Vanilla Land • Архив тикетов")
             try:
                 if file_exists and saved_file:
@@ -967,7 +974,7 @@ async def create_ticket_channel(
             await _async_db_call(db.save_ticket, ticket_channel.id, user.id, user.name, ticket_num)
 
         embed = discord.Embed(
-            title=f"🎫 Обращение #{ticket_num:03d} • Vanilla Land",
+            title=f"Обращение #{ticket_num:03d} • Vanilla Land",
             description=(
                 f"Здравствуйте, {user.mention}! Ваше обращение принято в работу.\n\n"
                 "**Чтобы мы помогли быстрее, пожалуйста, укажите:**\n"
@@ -980,9 +987,9 @@ async def create_ticket_channel(
         )
         embed.set_author(name="Vanilla Land • Служба поддержки", icon_url=guild.icon.url if guild.icon else None)
         embed.set_thumbnail(url=user.display_avatar.url)
-        embed.add_field(name="📌 Номер", value=f"`#{ticket_num:03d}`", inline=True)
-        embed.add_field(name="👤 Автор", value=user.mention, inline=True)
-        embed.add_field(name="🟢 Статус", value="`Открыт`", inline=True)
+        embed.add_field(name="Номер", value=f"`#{ticket_num:03d}`", inline=True)
+        embed.add_field(name="Автор", value=user.mention, inline=True)
+        embed.add_field(name="Статус", value="`Открыт`", inline=True)
         embed.set_footer(text="Vanilla Land • Поддержка | Управление: !add, !remove, !rename, !close")
 
         try:
@@ -1619,7 +1626,88 @@ class TicketsCog(commands.Cog, name="Тикеты"):
         if ctx.interaction:
             await ctx.defer(ephemeral=True)
         val = await _async_db_call(self.db.set_ticket_counter, number)
-        await ctx.send(f"✅ Счётчик тикетов успешно установлен на: **{val}** (следующий созданный тикет будет `#тикет-{val + 1:03d}`).", ephemeral=True)
+        await ctx.send(f"Счётчик тикетов установлен на **{val}** (следующий тикет: `#тикет-{val + 1:03d}`).", ephemeral=True)
+
+    @commands.hybrid_command(
+        name="ticket_roles",
+        aliases=["роли_тикетов", "тикет_роли"],
+        description="[Персонал] Показать все роли, которые получают доступ или пинг в тикетах",
+    )
+    async def ticket_roles_cmd(self, ctx: commands.Context):
+        if not ctx.guild:
+            return await ctx.send("Команда доступна только на сервере.", ephemeral=True)
+        if not is_mod_or_admin(ctx):
+            return await ctx.send("Эта команда доступна только персоналу сервера.", ephemeral=True)
+        if ctx.interaction:
+            await ctx.defer(ephemeral=True)
+
+        guild = ctx.guild
+        ping_ids = await _async_db_call(get_ticket_ping_role_ids, self.db)
+        ping_lines = []
+        for rid in ping_ids:
+            r = guild.get_role(rid)
+            ping_lines.append(f"• {r.mention} (`{rid}`)" if r else f"• *Удалённая роль* (`{rid}`)")
+
+        mod_lines = []
+        for rid in Config.MOD_ROLE_IDS:
+            r = guild.get_role(rid)
+            if r:
+                smm_note = " — *не пингуется (СММ)*" if any(w in r.name.lower() for w in ("смм", "smm")) else ""
+                mod_lines.append(f"• {r.mention} (`{rid}`){smm_note}")
+            else:
+                mod_lines.append(f"• *Не найдена на сервере* (`{rid}`)")
+
+        spec_matches = [r for r in guild.roles if r.name.strip().lower() in SPEC_ROLE_NAMES]
+        active_spec = get_spec_role(guild, self.db)
+        spec_lines = []
+        if active_spec:
+            spec_lines.append(f"• Активная: {active_spec.mention} (`{active_spec.id}`)")
+        else:
+            spec_lines.append("• *Не найдена (будет создана при следующем тикете)*")
+        if len(spec_matches) > 1:
+            dup_str = ", ".join(f"{r.mention} (`{r.id}`)" for r in spec_matches)
+            spec_lines.append(f"• **Найдены дубликаты ролей с таким названием:** {dup_str}")
+
+        cat_roles_lines = []
+        cat_id = Config.TICKETS_CATEGORY_ID
+        saved_cat = await _async_db_call(self.db.get_setting, "tickets_category_id")
+        if saved_cat and str(saved_cat).isdigit():
+            cat_id = int(saved_cat)
+        cat = guild.get_channel(cat_id) if cat_id else None
+        if isinstance(cat, discord.CategoryChannel):
+            for target_obj, ow in cat.overwrites.items():
+                if isinstance(target_obj, discord.Role) and not target_obj.is_default():
+                    if ow.view_channel is True:
+                        cat_roles_lines.append(f"• {target_obj.mention} (`{target_obj.id}`)")
+
+        embed = AG.embed(
+            title="Роли доступа в тикетах • Vanilla Land",
+            description="Список всех ролей, которые добавляются в права или пингуются при создании тикета.",
+            color=Colors.INDIGO,
+            footer="Управление: /ticket_ping_role и /spec_role",
+        )
+        embed.add_field(
+            name="Роли пинга (ticket_ping_role)",
+            value="\n".join(ping_lines) if ping_lines else "*Не заданы (пингуются роли модерации)*",
+            inline=False,
+        )
+        embed.add_field(
+            name="Роли модерации (MOD_ROLE_IDS)",
+            value="\n".join(mod_lines) if mod_lines else "*Не заданы*",
+            inline=False,
+        )
+        embed.add_field(
+            name="Роль Спек",
+            value="\n".join(spec_lines),
+            inline=False,
+        )
+        if cat_roles_lines:
+            embed.add_field(
+                name=f"Роли в правах категории ({cat.name})",
+                value="\n".join(cat_roles_lines),
+                inline=False,
+            )
+        await ctx.send(embed=embed, ephemeral=True)
 
     @commands.hybrid_command(
         name="ticket_reply",

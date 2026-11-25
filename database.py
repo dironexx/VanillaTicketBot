@@ -276,6 +276,42 @@ class DatabaseManager:
             )
         """)
         conn.execute("""
+            CREATE TABLE IF NOT EXISTS giveaways (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER NOT NULL,
+                channel_id INTEGER NOT NULL,
+                message_id INTEGER NOT NULL DEFAULT 0,
+                prize TEXT NOT NULL,
+                description TEXT DEFAULT '',
+                winners_count INTEGER NOT NULL DEFAULT 1,
+                end_timestamp REAL NOT NULL,
+                require_link INTEGER NOT NULL DEFAULT 0,
+                host_id INTEGER NOT NULL,
+                status TEXT NOT NULL DEFAULT 'active',
+                winners_json TEXT DEFAULT '[]',
+                created_at TEXT NOT NULL
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS giveaway_entries (
+                giveaway_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                joined_at REAL NOT NULL,
+                PRIMARY KEY (giveaway_id, user_id)
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS server_stats_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts REAL NOT NULL,
+                online INTEGER NOT NULL,
+                max_players INTEGER NOT NULL,
+                tps REAL NOT NULL,
+                mspt REAL NOT NULL
+            )
+        """)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_stats_hist_ts ON server_stats_history(ts);")
+        conn.execute("""
             CREATE TABLE IF NOT EXISTS player_ips (
                 player_name TEXT NOT NULL,
                 ip TEXT NOT NULL,
@@ -1120,6 +1156,193 @@ class DatabaseManager:
                     }
 
         return best_match
+
+    # --- РОЗЫГРЫШИ (GIVEAWAYS) ---
+    def create_giveaway(
+        self,
+        guild_id: int,
+        channel_id: int,
+        prize: str,
+        description: str,
+        winners_count: int,
+        end_timestamp: float,
+        require_link: bool,
+        host_id: int,
+    ) -> int:
+        now_str = get_msk_now_str()
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                INSERT INTO giveaways (
+                    guild_id, channel_id, message_id, prize, description,
+                    winners_count, end_timestamp, require_link, host_id, status, winners_json, created_at
+                )
+                VALUES (?, ?, 0, ?, ?, ?, ?, ?, ?, 'active', '[]', ?)
+                """,
+                (
+                    int(guild_id),
+                    int(channel_id),
+                    prize.strip(),
+                    description.strip(),
+                    max(1, int(winners_count)),
+                    float(end_timestamp),
+                    1 if require_link else 0,
+                    int(host_id),
+                    now_str,
+                ),
+            )
+            conn.commit()
+            return int(cursor.lastrowid)
+
+    def set_giveaway_message_id(self, giveaway_id: int, message_id: int) -> None:
+        with self._get_connection() as conn:
+            conn.execute(
+                "UPDATE giveaways SET message_id = ? WHERE id = ?",
+                (int(message_id), int(giveaway_id)),
+            )
+            conn.commit()
+
+    def _row_to_giveaway(self, row) -> dict:
+        try:
+            winners = json.loads(row[11]) if row[11] else []
+        except Exception:
+            winners = []
+        return {
+            "id": row[0],
+            "guild_id": row[1],
+            "channel_id": row[2],
+            "message_id": row[3],
+            "prize": row[4],
+            "description": row[5] or "",
+            "winners_count": int(row[6]),
+            "end_timestamp": float(row[7]),
+            "require_link": bool(row[8]),
+            "host_id": int(row[9]),
+            "status": row[10],
+            "winners": winners,
+            "created_at": row[12],
+        }
+
+    def get_giveaway(self, giveaway_id: int) -> Optional[dict]:
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT id, guild_id, channel_id, message_id, prize, description,
+                       winners_count, end_timestamp, require_link, host_id, status, winners_json, created_at
+                FROM giveaways WHERE id = ?
+                """,
+                (int(giveaway_id),),
+            )
+            row = cursor.fetchone()
+            return self._row_to_giveaway(row) if row else None
+
+    def get_giveaway_by_message(self, message_id: int) -> Optional[dict]:
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT id, guild_id, channel_id, message_id, prize, description,
+                       winners_count, end_timestamp, require_link, host_id, status, winners_json, created_at
+                FROM giveaways WHERE message_id = ?
+                """,
+                (int(message_id),),
+            )
+            row = cursor.fetchone()
+            return self._row_to_giveaway(row) if row else None
+
+    def get_active_giveaways(self) -> list[dict]:
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT id, guild_id, channel_id, message_id, prize, description,
+                       winners_count, end_timestamp, require_link, host_id, status, winners_json, created_at
+                FROM giveaways WHERE status = 'active' ORDER BY end_timestamp ASC
+                """
+            )
+            return [self._row_to_giveaway(r) for r in cursor.fetchall()]
+
+    def toggle_giveaway_entry(self, giveaway_id: int, user_id: int) -> tuple[bool, int]:
+        """Добавляет или удаляет участника. Возвращает (joined_now, total_count)."""
+        with self._get_connection() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT 1 FROM giveaway_entries WHERE giveaway_id = ? AND user_id = ?",
+                (int(giveaway_id), int(user_id)),
+            )
+            exists = cur.fetchone() is not None
+            if exists:
+                cur.execute(
+                    "DELETE FROM giveaway_entries WHERE giveaway_id = ? AND user_id = ?",
+                    (int(giveaway_id), int(user_id)),
+                )
+                joined = False
+            else:
+                cur.execute(
+                    "INSERT INTO giveaway_entries (giveaway_id, user_id, joined_at) VALUES (?, ?, ?)",
+                    (int(giveaway_id), int(user_id), time.time()),
+                )
+                joined = True
+            cur.execute("SELECT COUNT(*) FROM giveaway_entries WHERE giveaway_id = ?", (int(giveaway_id),))
+            cnt = int(cur.fetchone()[0])
+            conn.commit()
+            return joined, cnt
+
+    def get_giveaway_entries(self, giveaway_id: int) -> list[int]:
+        with self._get_connection() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT user_id FROM giveaway_entries WHERE giveaway_id = ? ORDER BY joined_at ASC",
+                (int(giveaway_id),),
+            )
+            return [int(r[0]) for r in cur.fetchall()]
+
+    def count_giveaway_entries(self, giveaway_id: int) -> int:
+        with self._get_connection() as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT COUNT(*) FROM giveaway_entries WHERE giveaway_id = ?", (int(giveaway_id),))
+            return int(cur.fetchone()[0])
+
+    def finish_giveaway(self, giveaway_id: int, winners: list[int]) -> None:
+        with self._get_connection() as conn:
+            conn.execute(
+                "UPDATE giveaways SET status = 'ended', winners_json = ? WHERE id = ?",
+                (json.dumps([int(w) for w in winners]), int(giveaway_id)),
+            )
+            conn.commit()
+
+    # --- ИСТОРИЯ ОНЛАЙНА И TPS ---
+    def record_server_stats_point(self, online: int, max_players: int, tps: float, mspt: float) -> None:
+        now = time.time()
+        cutoff = now - 14 * 86400.0
+        with self._get_connection() as conn:
+            conn.execute(
+                "INSERT INTO server_stats_history (ts, online, max_players, tps, mspt) VALUES (?, ?, ?, ?, ?)",
+                (now, int(online), int(max_players), float(tps), float(mspt)),
+            )
+            conn.execute("DELETE FROM server_stats_history WHERE ts < ?", (cutoff,))
+            conn.commit()
+
+    def get_server_stats_history(self, hours: int = 24) -> list[dict]:
+        since = time.time() - max(1, int(hours)) * 3600.0
+        with self._get_connection() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT ts, online, max_players, tps, mspt FROM server_stats_history WHERE ts >= ? ORDER BY ts ASC",
+                (since,),
+            )
+            return [
+                {
+                    "ts": float(r[0]),
+                    "online": int(r[1]),
+                    "max_players": int(r[2]),
+                    "tps": float(r[3]),
+                    "mspt": float(r[4]),
+                }
+                for r in cur.fetchall()
+            ]
 
     def is_automod_enabled(self) -> bool:
         val = self.get_setting("automod_enabled", "true")
@@ -2061,6 +2284,8 @@ class DatabaseManager:
             ("bot_settings", "INSERT OR REPLACE INTO bot_settings (key, value) VALUES (?, ?)"),
             ("top_seasons", "INSERT OR REPLACE INTO top_seasons (season, name, data_json, archived_at) VALUES (?, ?, ?, ?)"),
             ("ticket_auto_replies", "INSERT OR IGNORE INTO ticket_auto_replies (id, trigger_phrase, response_text, threshold, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?)"),
+            ("giveaways", "INSERT OR IGNORE INTO giveaways (id, guild_id, channel_id, message_id, prize, description, winners_count, end_timestamp, require_link, host_id, status, winners_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"),
+            ("giveaway_entries", "INSERT OR IGNORE INTO giveaway_entries (giveaway_id, user_id, joined_at) VALUES (?, ?, ?)"),
             ("offline_mail", "INSERT OR IGNORE INTO offline_mail (id, sender, recipient, message, sent_at, is_read) VALUES (?, ?, ?, ?, ?, ?)"),
             ("player_ips", "INSERT OR IGNORE INTO player_ips (player_name, ip, last_seen) VALUES (?, ?, ?)"),
             ("security_whitelist", "INSERT OR IGNORE INTO security_whitelist (target, target_type, reason, added_by, added_at) VALUES (?, ?, ?, ?, ?)"),

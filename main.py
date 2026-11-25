@@ -229,6 +229,7 @@ class VanillaSupportBot(commands.Bot):
         await self.load_extension("cogs.logs")
         await self.load_extension("cogs.bridge")
         await self.load_extension("cogs.security")
+        await self.load_extension("cogs.giveaways")
 
         # Глобальный обработчик ошибок слэш-команд (предотвращает зависания)
         async def on_tree_error(interaction: discord.Interaction, error: discord.app_commands.AppCommandError):

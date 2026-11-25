@@ -2685,6 +2685,78 @@ class SecurityCog(commands.Cog, name="Безопасность"):
         self.db.record_player_ip(player.strip(), clean_ip)
         await ctx.send(f"Успешно записан IP `{clean_ip}` для игрока `{player.strip()}`.", ephemeral=True)
 
+    @commands.hybrid_command(
+        name="audit_perms",
+        aliases=["аудит_прав", "проверка_прав"],
+        description="[Админ] Аудит прав ролей и каналов Discord-сервера на лишний доступ",
+    )
+    @commands.has_permissions(administrator=True)
+    async def audit_perms_cmd(self, ctx: commands.Context):
+        if not ctx.guild:
+            return await ctx.send("Команда доступна только на сервере.", ephemeral=True)
+        if not is_tech_admin_or_owner(ctx):
+            return await ctx.send("Эта команда доступна только администрации.", ephemeral=True)
+        if ctx.interaction:
+            await ctx.defer(ephemeral=True)
+
+        guild = ctx.guild
+        risky_role_lines = []
+        crit_flags = (
+            ("administrator", "Администратор"),
+            ("manage_guild", "Упр. сервером"),
+            ("manage_roles", "Упр. ролями"),
+            ("manage_channels", "Упр. каналами"),
+            ("ban_members", "Бан участников"),
+        )
+        for role in sorted(guild.roles, key=lambda r: r.position, reverse=True):
+            if role.is_default() or role.managed:
+                continue
+            perms = role.permissions
+            found = [label for attr, label in crit_flags if getattr(perms, attr, False)]
+            if found:
+                risky_role_lines.append(
+                    f"• {role.mention} (`{len(role.members)}` чел.) — {', '.join(found)}"
+                )
+
+        everyone_risks = []
+        sensitive_kw = ("админ", "admin", "лог", "log", "тикет", "ticket", "бэкап", "backup", "ban", "бан", "alert", "алерт")
+        for ch in guild.channels:
+            ow = ch.overwrites_for(guild.default_role)
+            issues = []
+            if ow.mention_everyone is True:
+                issues.append("mention_everyone")
+            if ow.manage_channels is True:
+                issues.append("manage_channels")
+            if ow.manage_permissions is True:
+                issues.append("manage_permissions")
+            if ow.manage_webhooks is True:
+                issues.append("manage_webhooks")
+            if ow.manage_messages is True:
+                issues.append("manage_messages")
+            if any(k in ch.name.lower() for k in sensitive_kw) and ow.view_channel is True:
+                issues.append("открыт просмотр для @everyone")
+            if issues:
+                everyone_risks.append(f"• {ch.mention if hasattr(ch, 'mention') else ch.name} — `{', '.join(issues)}`")
+
+        embed = discord.Embed(
+            title="Аудит прав Discord-сервера • Vanilla Land",
+            description=f"Проверено ролей: `{len(guild.roles)}` | Каналов и категорий: `{len(guild.channels)}`",
+            color=Colors.YELLOW if (everyone_risks or risky_role_lines) else Colors.GREEN,
+            timestamp=datetime.now(timezone.utc),
+        )
+        embed.add_field(
+            name="Роли с критическими правами (кроме интеграций)",
+            value="\n".join(risky_role_lines[:12]) if risky_role_lines else "Опасных ролей не найдено.",
+            inline=False,
+        )
+        embed.add_field(
+            name="Потенциальные проблемы в правах @everyone",
+            value="\n".join(everyone_risks[:12]) if everyone_risks else "Критичных перекосов для @everyone не найдено.",
+            inline=False,
+        )
+        embed.set_footer(text="Vanilla Land • Аудит безопасности")
+        await ctx.send(embed=embed, ephemeral=True)
+
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(SecurityCog(bot))

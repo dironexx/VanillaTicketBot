@@ -201,6 +201,7 @@ class BridgeCog(commands.Cog, name="Мост Minecraft"):
         self._socket_meta: Dict[int, dict] = {}
         self._disconnect_history: List[dict] = []
         self.last_stats_time: float = 0.0
+        self._last_stats_snapshot_ts: float = 0.0
         self.mc_server_start_time: float = 0.0
 
         # Мониторинг, алерты и техработы
@@ -1366,9 +1367,23 @@ class BridgeCog(commands.Cog, name="Мост Minecraft"):
         # 2. Очистка просроченных одноразовых кодов в SQLite раз в 5 минут
         if int(now) % 300 < 30:
             try:
-                self.db.cleanup_expired_codes()
+                await asyncio.to_thread(self.db.cleanup_expired_codes)
             except Exception as suppressed_exc:
                 logger.debug("Bridge non-fatal operation suppressed: %s", suppressed_exc)
+
+        # 2.1. Сохранение среза онлайна и TPS каждые 10 минут для /stats_graph
+        if self.active_sockets and (now - self._last_stats_snapshot_ts) >= 600.0:
+            self._last_stats_snapshot_ts = now
+            try:
+                await asyncio.to_thread(
+                    self.db.record_server_stats_point,
+                    self.mc_online,
+                    self.mc_max,
+                    self.mc_tps,
+                    self.mc_mspt,
+                )
+            except Exception as st_err:
+                logger.debug("Не удалось записать срез статистики для графика: %s", st_err)
 
         # 3. Сброс онлайна и алерт при потере соединения с сервером (только после истечения grace period 45s)
         if self.was_connected and len(self.active_sockets) == 0:
@@ -2015,6 +2030,150 @@ class BridgeCog(commands.Cog, name="Мост Minecraft"):
         embed = self._build_setup_channels_embed(ctx.guild)
         view = SetupChannelsView(self)
         await ctx.send(embed=embed, view=view, ephemeral=True)
+
+    @staticmethod
+    def _render_stats_graph_png(points: list[dict], period_label: str):
+        import io
+        import os
+        from PIL import Image, ImageDraw, ImageFont
+
+        W, H = 920, 520
+        img = Image.new("RGBA", (W, H), (24, 26, 32, 255))
+        draw = ImageDraw.Draw(img)
+
+        font_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "assets", "fonts", "font.ttf")
+        try:
+            font_title = ImageFont.truetype(font_path, 22)
+            font_sub = ImageFont.truetype(font_path, 15)
+            font_axis = ImageFont.truetype(font_path, 13)
+        except Exception:
+            font_title = ImageFont.load_default()
+            font_sub = ImageFont.load_default()
+            font_axis = ImageFont.load_default()
+
+        draw.text((28, 18), f"Vanilla Land • Статистика сервера ({period_label})", fill=(242, 244, 248, 255), font=font_title)
+
+        def _draw_panel(y_top: int, y_bot: int, title: str, values: list[float], y_max_fixed: Optional[float], line_rgb: tuple[int, int, int], fill_rgba: tuple[int, int, int, int], unit: str, warn_y: Optional[float] = None):
+            x_left, x_right = 72, W - 28
+            draw.rounded_rectangle([24, y_top, W - 20, y_bot], radius=12, fill=(33, 36, 45, 255), outline=(52, 57, 70, 255), width=1)
+            v_min = min(values)
+            v_max = max(values)
+            v_avg = sum(values) / len(values)
+            stats_txt = f"Мин: {v_min:.1f}{unit} | Средн: {v_avg:.1f}{unit} | Макс: {v_max:.1f}{unit}" if unit == "" else f"Мин: {int(v_min)} | Средн: {v_avg:.1f} | Макс: {int(v_max)}"
+            draw.text((38, y_top + 10), title, fill=(230, 234, 242, 255), font=font_sub)
+            draw.text((W - 36 - len(stats_txt) * 7, y_top + 11), stats_txt, fill=(160, 168, 184, 255), font=font_axis)
+
+            plot_top = y_top + 42
+            plot_bot = y_bot - 28
+            top_val = y_max_fixed if y_max_fixed is not None else max(5.0, v_max * 1.15)
+            bot_val = 0.0
+
+            for step in range(5):
+                frac = step / 4.0
+                gy = int(plot_bot - frac * (plot_bot - plot_top))
+                gv = bot_val + frac * (top_val - bot_val)
+                draw.line([(x_left, gy), (x_right, gy)], fill=(50, 55, 68, 255), width=1)
+                lbl = f"{gv:.0f}" if top_val >= 10 else f"{gv:.1f}"
+                draw.text((32, gy - 7), lbl, fill=(140, 148, 164, 255), font=font_axis)
+
+            if warn_y is not None and bot_val <= warn_y <= top_val:
+                wy = int(plot_bot - ((warn_y - bot_val) / max(0.001, top_val - bot_val)) * (plot_bot - plot_top))
+                draw.line([(x_left, wy), (x_right, wy)], fill=(239, 68, 68, 180), width=1)
+
+            n = len(values)
+            coords = []
+            for idx, val in enumerate(values):
+                px = x_left if n == 1 else int(x_left + (idx / (n - 1)) * (x_right - x_left))
+                clamped = max(bot_val, min(top_val, val))
+                py = int(plot_bot - ((clamped - bot_val) / max(0.001, top_val - bot_val)) * (plot_bot - plot_top))
+                coords.append((px, py))
+
+            if len(coords) >= 2:
+                poly = [(coords[0][0], plot_bot)] + coords + [(coords[-1][0], plot_bot)]
+                overlay = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+                od = ImageDraw.Draw(overlay)
+                od.polygon(poly, fill=fill_rgba)
+                img.alpha_composite(overlay)
+                draw.line(coords, fill=line_rgb + (255,), width=3, joint="curve")
+            elif coords:
+                cx, cy = coords[0]
+                draw.ellipse([cx - 4, cy - 4, cx + 4, cy + 4], fill=line_rgb + (255,))
+
+            # Метки времени по оси X
+            if points:
+                fmt = "%H:%M" if "24" in period_label else "%d.%m"
+                ticks = [0, len(points) // 2, len(points) - 1] if len(points) >= 3 else ([0, len(points) - 1] if len(points) == 2 else [0])
+                for ti in sorted(set(ticks)):
+                    px = x_left if n == 1 else int(x_left + (ti / max(1, n - 1)) * (x_right - x_left))
+                    t_lbl = datetime.fromtimestamp(points[ti]["ts"], tz=MSK).strftime(fmt)
+                    tx = min(x_right - 40, max(x_left, px - 16))
+                    draw.text((tx, plot_bot + 6), t_lbl, fill=(140, 148, 164, 255), font=font_axis)
+
+        onlines = [float(p["online"]) for p in points]
+        tpss = [float(p["tps"]) for p in points]
+        max_cap = max([float(p.get("max_players", 0)) for p in points] + [max(onlines) * 1.2, 10.0])
+
+        _draw_panel(62, 272, "Онлайн игроков", onlines, min(max_cap, max(10.0, max(onlines) * 1.35)), (59, 130, 246), (59, 130, 246, 55), " чел.")
+        _draw_panel(290, 500, "TPS сервера", tpss, 20.5, (34, 197, 94), (34, 197, 94, 50), "", warn_y=16.0)
+
+        buf = io.BytesIO()
+        img.convert("RGB").save(buf, format="PNG")
+        buf.seek(0)
+        return buf
+
+    # --- КОМАНДА /stats_graph (ГРАФИК ОНЛАЙНА И TPS) ---
+    @commands.hybrid_command(
+        name="stats_graph",
+        aliases=["график_онлайна", "график_тпс", "stats_chart"],
+        description="[Персонал] График онлайна и TPS сервера за 24 часа или 7 дней",
+    )
+    @app_commands.describe(period="Период: 24h (сутки) или 7d (неделя)")
+    @app_commands.choices(
+        period=[
+            app_commands.Choice(name="24 часа (24h)", value="24h"),
+            app_commands.Choice(name="7 дней (7d)", value="7d"),
+        ]
+    )
+    async def stats_graph_cmd(self, ctx: commands.Context, period: Optional[str] = "24h"):
+        if not is_mod_or_admin(ctx):
+            return await ctx.send("Эта команда доступна только персоналу сервера.", ephemeral=True)
+        if ctx.interaction:
+            await ctx.defer()
+
+        p_norm = (period or "24h").strip().lower()
+        hours = 168 if p_norm in ("7d", "7д", "week", "неделя") else 24
+        label = "7 дней" if hours == 168 else "24 часа"
+
+        points = await asyncio.to_thread(self.db.get_server_stats_history, hours)
+        if self.active_sockets:
+            now_pt = {
+                "ts": time.time(),
+                "online": self.mc_online,
+                "max_players": self.mc_max,
+                "tps": self.mc_tps,
+                "mspt": self.mc_mspt,
+            }
+            if not points or (now_pt["ts"] - points[-1]["ts"]) >= 60.0:
+                points.append(now_pt)
+
+        if not points:
+            return await ctx.send("История метрик пока пуста. Данные сохраняются каждые 10 минут при подключённом мосте.")
+
+        buf = await asyncio.to_thread(self._render_stats_graph_png, points, label)
+        file = discord.File(fp=buf, filename=f"stats_{hours}h.png")
+        avg_on = sum(p["online"] for p in points) / len(points)
+        max_on = max(p["online"] for p in points)
+        min_tps = min(p["tps"] for p in points)
+
+        embed = discord.Embed(
+            title=f"График онлайна и TPS • {label}",
+            description=f"Точек на графике: `{len(points)}` | Пик онлайна: `{max_on}` | Средний: `{avg_on:.1f}` | Мин. TPS: `{min_tps:.2f}`",
+            color=Colors.BLUE,
+            timestamp=datetime.now(timezone.utc),
+        )
+        embed.set_image(url=f"attachment://stats_{hours}h.png")
+        embed.set_footer(text="Vanilla Land • Мониторинг сервера")
+        await ctx.send(embed=embed, file=file)
 
     # --- КОМАНДА /online ДЛЯ ИГРОКОВ (ГИБРИДНАЯ: СЛЭШ + ПРЕФИКС) ---
     @commands.hybrid_command(

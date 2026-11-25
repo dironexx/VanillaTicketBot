@@ -339,6 +339,25 @@ class BridgeLogicTests(unittest.TestCase):
         d2 = translate_death_message("EvgeniiZloy111 was slain by Zombie", "EvgeniiZloy111")
         self.assertEqual(d2, "**EvgeniiZloy111** погиб в бою с **Зомби**")
 
+        # Проверяем /stats_graph рендер и парсер длительности розыгрышей
+        from cogs.giveaways import parse_giveaway_duration, build_giveaway_embed
+        self.assertEqual(parse_giveaway_duration("2h"), 7200)
+        self.assertEqual(parse_giveaway_duration("1d"), 86400)
+        gw_emb = build_giveaway_embed(
+            {"id": 1, "prize": "500 алмазов", "description": "", "winners_count": 1, "end_timestamp": 1800000000, "require_link": False, "host_id": 10, "status": "active", "winners": []},
+            5,
+        )
+        self.assertIn("Розыгрыш", gw_emb.title)
+
+        png_buf = BridgeCog._render_stats_graph_png(
+            [
+                {"ts": 1700000000.0, "online": 12, "max_players": 100, "tps": 19.9, "mspt": 11.0},
+                {"ts": 1700000600.0, "online": 24, "max_players": 100, "tps": 19.6, "mspt": 14.0},
+            ],
+            "24 часа",
+        )
+        self.assertTrue(png_buf.getvalue().startswith(b"\x89PNG\r\n\x1a\n"))
+
 
 if __name__ == "__main__":
     unittest.main()

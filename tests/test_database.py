@@ -155,6 +155,27 @@ class DatabaseTests(unittest.TestCase):
         self.assertTrue(self.db.delete_ticket_auto_reply(rid))
         self.assertEqual(self.db.get_ticket_auto_replies(), [])
 
+    def test_giveaways_and_stats_history(self):
+        gid = self.db.create_giveaway(1, 2, "VIP", "Тест", 1, 9999999999.0, False, 10)
+        self.assertGreater(gid, 0)
+        self.db.set_giveaway_message_id(gid, 555666)
+        gw = self.db.get_giveaway_by_message(555666)
+        self.assertIsNotNone(gw)
+        self.assertEqual(gw["prize"], "VIP")
+
+        joined, cnt = self.db.toggle_giveaway_entry(gid, 42)
+        self.assertTrue(joined)
+        self.assertEqual(cnt, 1)
+        self.db.finish_giveaway(gid, [42])
+        gw_end = self.db.get_giveaway(gid)
+        self.assertEqual(gw_end["status"], "ended")
+        self.assertEqual(gw_end["winners"], [42])
+
+        self.db.record_server_stats_point(25, 100, 19.9, 12.5)
+        hist = self.db.get_server_stats_history(24)
+        self.assertEqual(len(hist), 1)
+        self.assertEqual(hist[0]["online"], 25)
+
 
 if __name__ == "__main__":
     unittest.main()
