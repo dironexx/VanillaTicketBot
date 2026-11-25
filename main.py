@@ -2,6 +2,9 @@ import asyncio
 import atexit
 import logging
 import os
+import random
+import socket
+import struct
 import sys
 import time
 from pathlib import Path
@@ -86,6 +89,107 @@ logging.basicConfig(
     handlers=[logging.StreamHandler(sys.stdout)],
 )
 logger = logging.getLogger("VanillaBot")
+
+_ORIG_GETADDRINFO = socket.getaddrinfo
+_DNS_CACHE: dict[str, tuple[float, list[str]]] = {}
+
+
+def _resolve_via_public_dns(host: str, dns_servers: tuple[str, ...] = ("1.1.1.1", "8.8.8.8"), timeout: float = 2.0) -> list[str]:
+    """Минимальный UDP DNS-клиент (A-записи) как резерв при сбоях системного /etc/resolv.conf."""
+    if not host or any(c.isspace() for c in host):
+        return []
+    now = time.monotonic()
+    cached = _DNS_CACHE.get(host)
+    if cached and (now - cached[0]) < 300.0:
+        return cached[1]
+
+    labels = [p.encode("idna") for p in host.strip(".").split(".") if p]
+    if not labels:
+        return []
+    tx_id = random.randint(1, 65535)
+    header = struct.pack(">HHHHHH", tx_id, 0x0100, 1, 0, 0, 0)
+    qname = b"".join(bytes([len(lb)]) + lb for lb in labels) + b"\x00"
+    query = header + qname + struct.pack(">HH", 1, 1)
+
+    for server in dns_servers:
+        sock = None
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            sock.settimeout(timeout)
+            sock.sendto(query, (server, 53))
+            resp, _ = sock.recvfrom(1024)
+            if len(resp) < 12:
+                continue
+            r_id, _flags, qdcount, ancount, _ns, _ar = struct.unpack(">HHHHHH", resp[:12])
+            if r_id != tx_id or ancount == 0:
+                continue
+
+            offset = 12
+            for _ in range(qdcount):
+                while offset < len(resp):
+                    ln = resp[offset]
+                    if ln == 0:
+                        offset += 1
+                        break
+                    if (ln & 0xC0) == 0xC0:
+                        offset += 2
+                        break
+                    offset += 1 + ln
+                offset += 4
+
+            ips: list[str] = []
+            for _ in range(ancount):
+                if offset >= len(resp):
+                    break
+                if (resp[offset] & 0xC0) == 0xC0:
+                    offset += 2
+                else:
+                    while offset < len(resp):
+                        ln = resp[offset]
+                        if ln == 0:
+                            offset += 1
+                            break
+                        if (ln & 0xC0) == 0xC0:
+                            offset += 2
+                            break
+                        offset += 1 + ln
+                if offset + 10 > len(resp):
+                    break
+                rtype, _rclass, _ttl, rdlen = struct.unpack(">HHIH", resp[offset : offset + 10])
+                offset += 10
+                if rtype == 1 and rdlen == 4 and offset + 4 <= len(resp):
+                    ips.append(socket.inet_ntoa(resp[offset : offset + 4]))
+                offset += rdlen
+
+            if ips:
+                _DNS_CACHE[host] = (now, ips)
+                return ips
+        except Exception:
+            continue
+        finally:
+            if sock is not None:
+                try:
+                    sock.close()
+                except Exception:
+                    pass
+    return []
+
+
+def install_dns_fallback() -> None:
+    """Устанавливает резервный DNS (1.1.1.1 / 8.8.8.8) поверх socket.getaddrinfo при временных сбоях DNS хостинга."""
+    def _fallback_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
+        try:
+            return _ORIG_GETADDRINFO(host, port, family, type, proto, flags)
+        except socket.gaierror as orig_err:
+            if isinstance(host, str) and host and not host.replace(".", "").isdigit() and ":" not in host:
+                if family in (0, socket.AF_INET):
+                    ips = _resolve_via_public_dns(host)
+                    if ips:
+                        logger.warning("Системный DNS не ответил для %s (%s) — использован резервный DNS -> %s", host, orig_err, ips[0])
+                        return _ORIG_GETADDRINFO(ips[0], port, socket.AF_INET, type, proto, flags)
+            raise
+
+    socket.getaddrinfo = _fallback_getaddrinfo
 
 
 class VanillaSupportBot(commands.Bot):
@@ -205,6 +309,7 @@ class VanillaSupportBot(commands.Bot):
 
 
 async def main():
+    install_dns_fallback()
     if not acquire_process_lock():
         sys.exit(0)
 

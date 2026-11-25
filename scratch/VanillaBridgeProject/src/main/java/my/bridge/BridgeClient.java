@@ -101,6 +101,8 @@ public class BridgeClient implements WebSocket.Listener {
         raw.add("ws://127.0.0.1:25549/ws");
         raw.add("ws://172.17.0.1:25007/ws");
         raw.add("ws://172.17.0.1:25549/ws");
+        raw.add("ws://172.18.0.1:25007/ws");
+        raw.add("ws://172.18.0.1:25549/ws");
         raw.add("ws://host.docker.internal:25007/ws");
         raw.add("ws://host.docker.internal:25549/ws");
         raw.add("ws://10.0.0.1:25007/ws");
@@ -192,7 +194,6 @@ public class BridgeClient implements WebSocket.Listener {
                 this.httpClient.newWebSocketBuilder()
                         .connectTimeout(timeout)
                         .header("User-Agent", "Mozilla/5.0 VanillaBridge/1.4 (Minecraft Server; Anti-RKN)")
-                        .header("Host", host)
                         .header("Origin", "https://vanillaland.fun")
                         .buildAsync(URI.create(fullUrl), this)
                         .whenComplete((ws, throwable) -> {
@@ -225,8 +226,10 @@ public class BridgeClient implements WebSocket.Listener {
                         });
             } catch (Exception e) {
                 this.isConnecting.set(false);
-                if (debug) {
-                    this.plugin.getLogger().warning("[Мост Debug] Ошибка инициализации сокета для " + targetWsUrl + ": " + e.getMessage());
+                long now = System.currentTimeMillis();
+                if (debug || now - this.lastOfflineLogTime > 30000L) {
+                    this.lastOfflineLogTime = now;
+                    this.plugin.getLogger().warning("[Мост] Ошибка инициализации сокета для " + targetWsUrl + ": " + e.getMessage());
                 }
                 this.candidateIndex.incrementAndGet();
                 this.handleDisconnect("Init exception: " + e.getMessage(), true);
@@ -370,6 +373,8 @@ public class BridgeClient implements WebSocket.Listener {
     @Override
     public void onOpen(WebSocket webSocket) {
         WebSocket.Listener.super.onOpen(webSocket);
+        this.webSocket = webSocket;
+        this.isConnected.set(true);
         webSocket.request(1L);
         try {
             String sId = this.plugin.getConfig().getString("server-id", "main");
@@ -536,8 +541,7 @@ public class BridgeClient implements WebSocket.Listener {
                             HttpRequest req = HttpRequest.newBuilder()
                                     .uri(URI.create(healthUrl))
                                     .timeout(Duration.ofSeconds(3L))
-                                    .header("User-Agent", "VanillaBridge/1.3")
-                                    .header("Host", host)
+                                    .header("User-Agent", "VanillaBridge/1.4")
                                     .GET()
                                     .build();
                             HttpResponse<String> resp = this.httpClient.send(req, HttpResponse.BodyHandlers.ofString());
