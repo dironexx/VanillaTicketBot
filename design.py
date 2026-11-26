@@ -151,9 +151,12 @@ class AG:
         if duration:
             embed.add_field(name="Длительность", value=f"`{duration}`", inline=True)
 
+        safe_reason = (reason or "Не указана").strip()
+        if len(safe_reason) > 1020:
+            safe_reason = safe_reason[:1017] + "..."
         embed.add_field(
             name="Причина",
-            value=reason or "Не указана",
+            value=safe_reason,
             inline=False,
         )
         return embed

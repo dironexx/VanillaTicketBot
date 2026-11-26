@@ -53,7 +53,6 @@ def parse_giveaway_duration(raw: str) -> Optional[int]:
 def build_giveaway_embed(gw: dict, entries_count: int) -> discord.Embed:
     is_ended = gw.get("status") == "ended"
     end_ts = int(gw.get("end_timestamp", time.time()))
-    req_link = bool(gw.get("require_link"))
     desc_parts = []
     if gw.get("description"):
         desc_parts.append(gw["description"])
@@ -81,11 +80,6 @@ def build_giveaway_embed(gw: dict, entries_count: int) -> discord.Embed:
     embed.add_field(
         name="Завершение" if not is_ended else "Завершён",
         value=f"<t:{end_ts}:R> (<t:{end_ts}:f>)",
-        inline=True,
-    )
-    embed.add_field(
-        name="Условие",
-        value="Привязанный аккаунт (/link)" if req_link else "Без ограничений",
         inline=True,
     )
     embed.add_field(name="Организатор", value=f"<@{gw['host_id']}>", inline=True)
@@ -170,12 +164,9 @@ class GiveawayBuilderView(ui.View):
         self.duration_raw: str = "1d"
         self.duration_sec: int = 86400
         self.winners_count: int = 1
-        self.require_link: bool = False
         self.sync_controls()
 
     def sync_controls(self):
-        self.btn_toggle_link.label = f"Условие /link: {'Вкл' if self.require_link else 'Выкл'}"
-        self.btn_toggle_link.style = discord.ButtonStyle.success if self.require_link else discord.ButtonStyle.secondary
         self.btn_launch.disabled = not bool(self.prize)
 
     def build_preview_embed(self) -> discord.Embed:
@@ -192,11 +183,6 @@ class GiveawayBuilderView(ui.View):
         embed.add_field(name="Победителей", value=f"`{self.winners_count}`", inline=True)
         embed.add_field(name="Длительность", value=f"`{self.duration_raw}` (<t:{end_ts}:R>)", inline=True)
         embed.add_field(name="Канал отправки", value=self.target_channel.mention, inline=True)
-        embed.add_field(
-            name="Условие участия",
-            value="Привязанный аккаунт (/link)" if self.require_link else "Без ограничений",
-            inline=True,
-        )
         embed.set_footer(text="Vanilla Land • Предпросмотр розыгрыша")
         return embed
 
@@ -205,14 +191,6 @@ class GiveawayBuilderView(ui.View):
         if interaction.user.id != self.host.id:
             return await interaction.response.send_message("Этот конструктор открыт другим администратором.", ephemeral=True)
         await interaction.response.send_modal(GiveawaySetupModal(self))
-
-    @ui.button(label="Условие /link: Выкл", style=discord.ButtonStyle.secondary, row=0)
-    async def btn_toggle_link(self, interaction: discord.Interaction, button: ui.Button):
-        if interaction.user.id != self.host.id:
-            return await interaction.response.send_message("Этот конструктор открыт другим администратором.", ephemeral=True)
-        self.require_link = not self.require_link
-        self.sync_controls()
-        await interaction.response.edit_message(embed=self.build_preview_embed(), view=self)
 
     @ui.select(
         cls=ui.ChannelSelect,
@@ -238,6 +216,9 @@ class GiveawayBuilderView(ui.View):
         if not self.prize:
             return await interaction.response.send_message("Сначала укажите приз.", ephemeral=True)
 
+        if not interaction.guild:
+            return await interaction.response.send_message("Розыгрыш можно запустить только на сервере.", ephemeral=True)
+
         await interaction.response.defer(ephemeral=True)
         end_ts = time.time() + self.duration_sec
         gw_id = await asyncio.to_thread(
@@ -248,7 +229,7 @@ class GiveawayBuilderView(ui.View):
             self.description,
             self.winners_count,
             end_ts,
-            self.require_link,
+            False,
             self.host.id,
         )
         gw = await asyncio.to_thread(self.cog.db.get_giveaway, gw_id)
@@ -337,14 +318,6 @@ class GiveawayPublicView(ui.View):
             return await interaction.followup.send("Розыгрыш не найден в базе данных.", ephemeral=True)
         if gw["status"] != "active" or time.time() >= gw["end_timestamp"]:
             return await interaction.followup.send("Этот розыгрыш уже завершён.", ephemeral=True)
-
-        if gw["require_link"]:
-            linked = await asyncio.to_thread(self.db.get_linked_account_by_discord, interaction.user.id)
-            if not linked:
-                return await interaction.followup.send(
-                    "Для участия требуется привязать игровой аккаунт Minecraft через `/link`.",
-                    ephemeral=True,
-                )
 
         joined, total = await asyncio.to_thread(self.db.toggle_giveaway_entry, gw["id"], interaction.user.id)
         new_view = GiveawayPublicView(self.db, entries_count=total, ended=False)

@@ -64,8 +64,11 @@ def cleanup_project_junk(root_dir: Optional[Path] = None, db_manager=None) -> in
             except Exception as err:
                 logger.debug("Не удалось удалить папку %s: %s", d_name, err)
 
-    # 3. Очистка __pycache__ и скомпилированных .pyc файлов
+    # 3. Очистка __pycache__ и скомпилированных .pyc файлов (исключая .venv/venv/.git)
+    skip_dirs = {".venv", "venv", ".git", "node_modules"}
     for pycache in root_dir.rglob("__pycache__"):
+        if any(part in skip_dirs for part in pycache.parts):
+            continue
         if pycache.is_dir():
             try:
                 shutil.rmtree(pycache, ignore_errors=True)
@@ -73,6 +76,8 @@ def cleanup_project_junk(root_dir: Optional[Path] = None, db_manager=None) -> in
                 pass
 
     for pyc in root_dir.rglob("*.pyc"):
+        if any(part in skip_dirs for part in pyc.parts):
+            continue
         if pyc.is_file():
             try:
                 pyc.unlink()

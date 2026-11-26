@@ -25,7 +25,7 @@ bridge:
     - "ws://213.171.18.142:25549/ws"
     - "wss://bridge.vanillaland.fun/ws"
     - "wss://play.vanillaland.fun/ws"
-  token: "R6rU8Y9nNpZRC8w-X0J6EFwvkPTOi-BdGlhADYrrwPs"
+  token: "CHANGE_ME_SET_YOUR_BRIDGE_SECRET"
   reconnect-delay-seconds: 5
   # Режим отладки (вывод каждого маршрута в консоль, по умолчанию false чтобы не спамить)
   debug: false

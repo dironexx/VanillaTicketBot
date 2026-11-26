@@ -239,15 +239,12 @@ class Config:
     EVENTS_CHANNEL_ID: int = _env_int("EVENTS_CHANNEL_ID", 1556209087920873542)
     COMMANDS_CHANNEL_ID: int = _env_int("COMMANDS_CHANNEL_ID", 1555483142578770030)
     BRIDGE_PORT: int = _env_int("BRIDGE_PORT", 0) or _env_int("SERVER_PORT", 25007)
-    BRIDGE_SECRET: str = os.getenv("BRIDGE_SECRET", "vanillaland_secret_2026").strip()
+    BRIDGE_SECRET: str = os.getenv("BRIDGE_SECRET", "").strip()
     ONLINE_VOICE_CHANNEL_ID: int = _env_int("ONLINE_VOICE_CHANNEL_ID", 0)
     TPS_VOICE_CHANNEL_ID: int = _env_int("TPS_VOICE_CHANNEL_ID", 0)
     IP_VOICE_CHANNEL_ID: int = _env_int("IP_VOICE_CHANNEL_ID", 0)
     STATS_CATEGORY_ID: int = _env_int("STATS_CATEGORY_ID") or _env_int("STATS_VOICE_CATEGORY_ID", 0)
     STATS_VOICE_CATEGORY_ID: int = STATS_CATEGORY_ID
-
-    # Панель привязки аккаунта к Discord
-    LINK_PANEL_CHANNEL_ID: int = _env_int("LINK_PANEL_CHANNEL_ID", 0)
 
     # Модули совместимости моста с серверным ядром (Rahu / Flectone / MineGuard)
     # Если на сервере проверка твинков или техработы ведутся ядром, флаги отключают дублирование

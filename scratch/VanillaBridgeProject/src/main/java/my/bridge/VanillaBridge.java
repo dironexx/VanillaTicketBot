@@ -137,6 +137,7 @@ extends JavaPlugin
 implements CommandExecutor {
     private BridgeClient bridgeClient;
     private UniversalScheduler.TaskHandle statsTask;
+    private UniversalScheduler.TaskHandle topCacheTask;
     private final AtomicBoolean hasSentStartup = new AtomicBoolean(false);
     private long serverStartTime = 0L;
     private static final Pattern URL_PATTERN = Pattern.compile("https?://[a-zA-Z0-9.-]+(?:/[^\\s]*)?", 2);
@@ -199,6 +200,9 @@ implements CommandExecutor {
 
     public void cachePlayerSkin(String playerName, String skinHash) {
         if (playerName != null && skinHash != null && !skinHash.isEmpty()) {
+            if (this.skinCache.size() > 1000) {
+                this.skinCache.clear();
+            }
             this.skinCache.put(playerName.toLowerCase(Locale.ROOT), skinHash);
         }
     }
@@ -341,41 +345,6 @@ implements CommandExecutor {
         if (this.getCommand("bridge") != null) {
             this.getCommand("bridge").setExecutor((CommandExecutor)this);
         }
-        if (this.getCommand("link") != null) {
-            this.getCommand("link").setExecutor((sender, command, label, args) -> {
-                if (!(sender instanceof Player)) {
-                    sender.sendMessage("\u00a7c\u0422\u043e\u043b\u044c\u043a\u043e \u0434\u043b\u044f \u0438\u0433\u0440\u043e\u043a\u043e\u0432!");
-                    return true;
-                }
-                Player player = (Player)sender;
-                if (args.length == 0) {
-                    if (this.bridgeClient != null && this.bridgeClient.isConnected()) {
-                        String payload = String.format(Locale.US, "{\"type\":\"mc_request_link_code\",\"player\":\"%s\",\"uuid\":\"%s\"}", VanillaBridge.escapeJson(player.getName()), player.getUniqueId().toString());
-                        this.bridgeClient.send(payload);
-                    } else {
-                        player.sendMessage(MiniMessage.miniMessage().deserialize("<red>\u274c \u0421\u0432\u044f\u0437\u044c \u0441 Discord \u0431\u043e\u0442\u043e\u043c \u0432\u0440\u0435\u043c\u0435\u043d\u043d\u043e \u043d\u0435\u0434\u043e\u0441\u0442\u0443\u043f\u043d\u0430. \u041f\u043e\u043f\u0440\u043e\u0431\u0443\u0439\u0442\u0435 \u043f\u043e\u0437\u0436\u0435.</red>"));
-                    }
-                    return true;
-                }
-                String inputCode = args[0].trim();
-                if (!inputCode.matches("^\\d{6}$")) {
-                    player.sendMessage(MiniMessage.miniMessage().deserialize("<red>\u041a\u043e\u0434 \u0434\u043e\u043b\u0436\u0435\u043d \u0441\u043e\u0441\u0442\u043e\u044f\u0442\u044c \u0440\u043e\u0432\u043d\u043e \u0438\u0437 6 \u0446\u0438\u0444\u0440!</red>"));
-                    return true;
-                }
-                String ip = "127.0.0.1";
-                if (player.getAddress() != null && player.getAddress().getAddress() != null) {
-                    ip = player.getAddress().getAddress().getHostAddress();
-                }
-                if (this.bridgeClient != null && this.bridgeClient.isConnected()) {
-                    String payload = String.format(Locale.US, "{\"type\":\"link_attempt\",\"player\":\"%s\",\"uuid\":\"%s\",\"code\":\"%s\",\"ip\":\"%s\"}", VanillaBridge.escapeJson(player.getName()), player.getUniqueId().toString(), inputCode, VanillaBridge.escapeJson(ip));
-                    this.bridgeClient.send(payload);
-                    player.sendMessage(MiniMessage.miniMessage().deserialize("<gray>\u041f\u0440\u043e\u0432\u0435\u0440\u043a\u0430 \u043a\u043e\u0434\u0430 \u043f\u0440\u0438\u0432\u044f\u0437\u043a\u0438 \u0441 Discord \u0431\u043e\u0442\u043e\u043c...</gray>"));
-                } else {
-                    player.sendMessage(MiniMessage.miniMessage().deserialize("<red>\u0421\u0432\u044f\u0437\u044c \u0441 Discord \u0431\u043e\u0442\u043e\u043c \u0432\u0440\u0435\u043c\u0435\u043d\u043d\u043e \u043d\u0435\u0434\u043e\u0441\u0442\u0443\u043f\u043d\u0430. \u041f\u043e\u043f\u0440\u043e\u0431\u0443\u0439\u0442\u0435 \u043f\u043e\u0437\u0436\u0435.</red>"));
-                }
-                return true;
-            });
-        }
         if (this.getCommand("rd") != null) {
             this.getCommand("rd").setExecutor((sender, command, label, args) -> {
                 if (!(sender instanceof Player)) {
@@ -387,8 +356,15 @@ implements CommandExecutor {
                     sender.sendMessage(MiniMessage.miniMessage().deserialize("<red>\u0418\u0441\u043f\u043e\u043b\u044c\u0437\u043e\u0432\u0430\u043d\u0438\u0435: <gradient:#FFA500:#FF7700>/rd [\u0441\u043e\u043e\u0431\u0449\u0435\u043d\u0438\u0435]</gradient></red>"));
                     return true;
                 }
+                if (this.bridgeClient == null || !this.bridgeClient.isConnected()) {
+                    sender.sendMessage(MiniMessage.miniMessage().deserialize("<red>\u0421\u0432\u044f\u0437\u044c \u0441 Discord \u0431\u043e\u0442\u043e\u043c \u0432\u0440\u0435\u043c\u0435\u043d\u043d\u043e \u043d\u0435\u0434\u043e\u0441\u0442\u0443\u043f\u043d\u0430.</red>"));
+                    return true;
+                }
                 String authorId = this.lastDiscordDmSender.get(player.getUniqueId());
                 String author = this.lastDiscordDmAuthor.get(player.getUniqueId());
+                if (author == null || author.isEmpty()) {
+                    author = "Discord";
+                }
                 if (authorId == null || authorId.isEmpty()) {
                     sender.sendMessage(MiniMessage.miniMessage().deserialize("<red>\u274c \u0412\u0430\u043c \u0435\u0449\u0451 \u043d\u0438\u043a\u0442\u043e \u043d\u0435 \u043f\u0438\u0441\u0430\u043b \u0438\u0437 Discord!</red>"));
                     return true;
@@ -398,7 +374,7 @@ implements CommandExecutor {
                 this.bridgeClient.send(payload);
                 String safeAuthor = MiniMessage.miniMessage().escapeTags(author);
                 String safeReplyMsg = MiniMessage.miniMessage().escapeTags(replyMsg);
-                String replyFormat = "<gradient:#ff7a00:#ffae19>\u2709 Discord \u041b\u0421</gradient> <dark_gray>\u2502</dark_gray> <gray>\u0412\u044b</gray> <gradient:#FFA500:#FF7700>\u2192</gradient> <white><hover:show_text:'&7\u041f\u043e\u043b\u044c\u0437\u043e\u0432\u0430\u0442\u0435\u043b\u044c Discord: &f" + safeAuthor + "'>" + safeAuthor + "</hover></white><dark_gray>:</dark_gray> <white>" + safeReplyMsg + "</white>";
+                String replyFormat = "<gradient:#ff7a00:#ffae19>\u2709 Discord \u041b\u0421</gradient> <dark_gray>\u2502</dark_gray> <gray>\u0412\u044b</gray> <gradient:#FFA500:#FF7700>\u2192</gradient> <white><hover:show_text:'<gray>\u041f\u043e\u043b\u044c\u0437\u043e\u0432\u0430\u0442\u0435\u043b\u044c Discord: <white>" + safeAuthor + "'>" + safeAuthor + "</hover></white><dark_gray>:</dark_gray> <white>" + safeReplyMsg + "</white>";
                 sender.sendMessage(MiniMessage.miniMessage().deserialize(replyFormat));
                 return true;
             });
@@ -650,12 +626,12 @@ implements CommandExecutor {
             });
         }
         this.statsTask = UniversalScheduler.runAsyncTimer(this, this::sendServerStats, 100L, 100L);
-        UniversalScheduler.runAsyncTimer(this, () -> {
+        this.topCacheTask = UniversalScheduler.runAsyncTimer(this, () -> {
             try {
                 this.updateTopCache();
             }
             catch (Throwable throwable) {
-                // empty catch block
+                this.getLogger().warning("[VanillaBridge] Ошибка обновления кэша топа: " + throwable.getMessage());
             }
         }, 60L, 3000L);
         this.getLogger().info("VanillaBridge 1.4 успешно включен!");
@@ -694,6 +670,10 @@ implements CommandExecutor {
     public void onDisable() {
         if (this.statsTask != null) {
             this.statsTask.cancel();
+        }
+        if (this.topCacheTask != null) {
+            this.topCacheTask.cancel();
+            this.topCacheTask = null;
         }
         if (this.maintenanceCountdownTask != null) {
             this.maintenanceCountdownTask.cancel();
@@ -1393,76 +1373,24 @@ implements CommandExecutor {
             }
             return;
         }
-        if ("link_result".equalsIgnoreCase(type)) {
-            String targetPlayer = this.extractField(rawJson, "player");
-            String successStr = this.extractField(rawJson, "success");
-            String message = this.extractField(rawJson, "message");
-            String discordTag = this.extractField(rawJson, "discord_tag");
-            Player p = Bukkit.getPlayerExact((String)targetPlayer);
-            if (p != null && p.isOnline()) {
-                if ("true".equalsIgnoreCase(successStr)) {
-                    p.sendMessage(MiniMessage.miniMessage().deserialize(("\n<gradient:#ff7a00:#ffae19><bold>\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501 \u2726 \u0423\u0421\u041f\u0415\u0428\u041d\u041e \u2726 \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501</bold></gradient>\n  <green><bold>\u2714 \u0410\u043a\u043a\u0430\u0443\u043d\u0442 \u0443\u0441\u043f\u0435\u0448\u043d\u043e \u043f\u0440\u0438\u0432\u044f\u0437\u0430\u043d \u043a Discord:</bold></green> <yellow>" + discordTag + "</yellow>\n<gradient:#ff7a00:#ffae19><bold>\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501</bold></gradient>\n")));
-                    try {
-                        p.playSound(p.getLocation(), Sound.ENTITY_PLAYER_LEVELUP, 1.0f, 1.2f);
-                        p.playSound(p.getLocation(), Sound.UI_TOAST_CHALLENGE_COMPLETE, 0.8f, 1.4f);
-                    }
-                    catch (Exception ignored) {
-                    }
-                } else {
-                    p.sendMessage(MiniMessage.miniMessage().deserialize(("<red>\u274c \u041e\u0448\u0438\u0431\u043a\u0430 \u043f\u0440\u0438\u0432\u044f\u0437\u043a\u0438: " + (message.isEmpty() ? "\u041d\u0435\u0432\u0435\u0440\u043d\u044b\u0439 \u043a\u043e\u0434" : message) + "</red>")));
-                    try {
-                        p.playSound(p.getLocation(), Sound.BLOCK_NOTE_BLOCK_BASS, 1.0f, 0.6f);
-                    }
-                    catch (Exception ignored) {
-                    }
-                }
-            }
-            return;
-        }
-        if ("mc_link_code_generated".equalsIgnoreCase(type)) {
-            String targetPlayer = this.extractField(rawJson, "player");
-            String codeStr = this.extractField(rawJson, "code");
-            Player p = Bukkit.getPlayerExact((String)targetPlayer);
-            if (p != null && p.isOnline()) {
-                p.sendMessage(MiniMessage.miniMessage().deserialize(("\n<gradient:#ff7a00:#ffae19><bold>\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501 \u2726 \u041f\u0420\u0418\u0412\u042f\u0417\u041a\u0410 DISCORD \u2726 \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501</bold></gradient>\n  <gray>\u0412\u0430\u0448 6-\u0437\u043d\u0430\u0447\u043d\u044b\u0439 \u043a\u043e\u0434 \u0434\u043b\u044f \u043f\u0440\u0438\u0432\u044f\u0437\u043a\u0438:</gray> <yellow><bold>" + codeStr + "</bold></yellow>\n\n  <white>\u0412\u0432\u0435\u0434\u0438\u0442\u0435 \u0432 Discord \u043a\u043e\u043c\u0430\u043d\u0434\u0443:</white> <gradient:#ff7a00:#ffae19><bold>!link " + codeStr + "</bold></gradient>\n  <gray>\u0438\u043b\u0438 \u043d\u0430\u0436\u043c\u0438\u0442\u0435 \u043a\u043d\u043e\u043f\u043a\u0443 <white>\u00ab\u041f\u0440\u0438\u0432\u044f\u0437\u0430\u0442\u044c \u0430\u043a\u043a\u0430\u0443\u043d\u0442\u00bb</white> \u0432 Discord-\u043a\u0430\u043d\u0430\u043b\u0435.</gray>\n  <dark_gray>\u0421\u0440\u043e\u043a \u0434\u0435\u0439\u0441\u0442\u0432\u0438\u044f \u043a\u043e\u0434\u0430: 10 \u043c\u0438\u043d\u0443\u0442.</dark_gray>\n<gradient:#ff7a00:#ffae19><bold>\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501</bold></gradient>\n")));
-                try {
-                    p.playSound(p.getLocation(), Sound.BLOCK_NOTE_BLOCK_PLING, 1.0f, 1.2f);
-                }
-                catch (Exception ignored) {
-                }
-            }
-            return;
-        }
-        if ("account_unlinked".equalsIgnoreCase(type)) {
-            Player p;
-            String targetPlayer = this.extractField(rawJson, "player");
-            if ((p = Bukkit.getPlayerExact((String)targetPlayer)) != null) {
-                p.sendMessage(MiniMessage.miniMessage().deserialize("<gradient:#ff7a00:#ffae19>Vanilla Land</gradient> <dark_gray>\u2502</dark_gray> <gray>\u041f\u0440\u0438\u0432\u044f\u0437\u043a\u0430 \u0430\u043a\u043a\u0430\u0443\u043d\u0442\u0430 \u043a Discord \u0430\u043d\u043d\u0443\u043b\u0438\u0440\u043e\u0432\u0430\u043d\u0430.</gray>"));
-            }
-            return;
-        }
-        if ("scan_online_bans".equalsIgnoreCase(type)) {
-            String resp = "{\"type\":\"scan_online_bans_result\",\"total_online\":" + Bukkit.getOnlinePlayers().size() + ",\"players\":[]}";
-            if (this.bridgeClient != null && this.bridgeClient.isConnected()) {
-                this.bridgeClient.send(resp);
-            }
-            return;
-        }
-        if ("check_alts_bans".equalsIgnoreCase(type)) {
-            String loginPlayer = this.extractField(rawJson, "player");
-            String ip = this.extractField(rawJson, "ip");
-            String resp = "{\"type\":\"alts_bans_result\",\"player\":\"" + VanillaBridge.escapeJson(loginPlayer)
-                        + "\",\"ip\":\"" + VanillaBridge.escapeJson(ip)
-                        + "\",\"banned\":[],\"clean\":[]}";
-            if (this.bridgeClient != null && this.bridgeClient.isConnected()) {
-                this.bridgeClient.send(resp);
-            }
-            return;
-        }
         if ("execute_console_command".equalsIgnoreCase(type)) {
-            String cmdToRun = this.extractField(rawJson, "command");
-            if (!cmdToRun.isEmpty()) {
-                UniversalScheduler.runGlobal(this, () -> Bukkit.dispatchCommand((CommandSender)Bukkit.getConsoleSender(), (String)cmdToRun));
+            String cmdToRun = this.extractField(rawJson, "command").trim();
+            if (!cmdToRun.isEmpty() && !cmdToRun.contains("\n") && !cmdToRun.contains("\r")) {
+                String lowerCmd = cmdToRun.toLowerCase(Locale.ROOT);
+                boolean allowed = lowerCmd.equals("whitelist on")
+                        || lowerCmd.equals("whitelist off")
+                        || lowerCmd.equals("drivebackupv2 backup")
+                        || lowerCmd.startsWith("kick ")
+                        || lowerCmd.startsWith("kickall ")
+                        || lowerCmd.startsWith("ban ")
+                        || lowerCmd.startsWith("ban-ip ")
+                        || lowerCmd.startsWith("pardon ");
+                if (allowed) {
+                    this.getLogger().info("[Мост] Выполнение разрешённой команды: " + cmdToRun);
+                    UniversalScheduler.runGlobal(this, () -> Bukkit.dispatchCommand((CommandSender)Bukkit.getConsoleSender(), (String)cmdToRun));
+                } else {
+                    this.getLogger().warning("[Мост] Заблокирована неразрешённая команда через execute_console_command: " + cmdToRun);
+                }
             }
         }
     }
@@ -1753,13 +1681,15 @@ implements CommandExecutor {
         Component bottomBorder = MiniMessage.miniMessage().deserialize("\n<gradient:#FFA500:#FF7700>\u2726 \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 \u2726</gradient>\n");
         Component fullBanner = topBorder.append((Component)Component.text((String)"  ")).append(comp).append(bottomBorder);
         for (Player pl : Bukkit.getOnlinePlayers()) {
-            pl.sendMessage(fullBanner);
-            pl.sendActionBar(MiniMessage.miniMessage().deserialize("<gradient:#FFA500:#FF7700>\ud83d\udce2 <bold>\u0412\u0430\u0436\u043d\u043e\u0435 \u043e\u0431\u044a\u044f\u0432\u043b\u0435\u043d\u0438\u0435 \u0432 \u0447\u0430\u0442\u0435!</bold></gradient>"));
-            try {
-                pl.playSound(pl.getLocation(), Sound.BLOCK_NOTE_BLOCK_BELL, 1.0f, 1.0f);
-                pl.playSound(pl.getLocation(), Sound.BLOCK_NOTE_BLOCK_CHIME, 1.0f, 1.2f);
-            }
-            catch (Exception exception) {}
+            UniversalScheduler.runEntity(this, pl, () -> {
+                pl.sendMessage(fullBanner);
+                pl.sendActionBar(MiniMessage.miniMessage().deserialize("<gradient:#FFA500:#FF7700><bold>\u0412\u0430\u0436\u043d\u043e\u0435 \u043e\u0431\u044a\u044f\u0432\u043b\u0435\u043d\u0438\u0435 \u0432 \u0447\u0430\u0442\u0435!</bold></gradient>"));
+                try {
+                    pl.playSound(pl.getLocation(), Sound.BLOCK_NOTE_BLOCK_BELL, 1.0f, 1.0f);
+                    pl.playSound(pl.getLocation(), Sound.BLOCK_NOTE_BLOCK_CHIME, 1.0f, 1.2f);
+                }
+                catch (Exception exception) {}
+            });
         }
         Bukkit.getConsoleSender().sendMessage(fullBanner);
         if (sendToDiscord && this.bridgeClient != null && this.bridgeClient.isConnected()) {
@@ -1774,9 +1704,14 @@ implements CommandExecutor {
             return true;
         }
         if (args.length > 0 && args[0].equalsIgnoreCase("resettop")) {
-            int snapped = this.snapshotTopBaseline();
-            this.updateTopCache();
-            sender.sendMessage("§a[VanillaBridge] Срез статистики для /top обнулён! Зафиксировано игроков: " + snapped);
+            sender.sendMessage(MiniMessage.miniMessage().deserialize("<gray>[VanillaBridge] Пересчёт и сброс среза статистики /top в фоне...</gray>"));
+            UniversalScheduler.runAsync(this, () -> {
+                int snapped = this.snapshotTopBaseline();
+                this.updateTopCache();
+                UniversalScheduler.runGlobal(this, () ->
+                    sender.sendMessage(MiniMessage.miniMessage().deserialize("<green>[VanillaBridge] Срез статистики для /top обнулён! Зафиксировано игроков: " + snapped + "</green>"))
+                );
+            });
             return true;
         }
         if (args.length > 0 && args[0].equalsIgnoreCase("test")) {

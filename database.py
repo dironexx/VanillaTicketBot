@@ -45,11 +45,21 @@ class DatabaseManager:
     def _write_external_counter(self, val: int) -> None:
         """Атомарно сохраняет счётчик в текстовый файл, защищая от обнуления при аварийном завершении контейнера."""
         try:
+            import tempfile
             val_int = max(0, int(val))
-            tmp_path = f"{self.counter_file}.tmp"
-            with open(tmp_path, "w", encoding="utf-8") as f:
-                f.write(str(val_int))
-            os.replace(tmp_path, self.counter_file)
+            counter_dir = os.path.dirname(os.path.abspath(self.counter_file)) or "."
+            fd, tmp_path = tempfile.mkstemp(prefix=".ticket_counter_", suffix=".tmp", dir=counter_dir)
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    f.write(str(val_int))
+                os.replace(tmp_path, self.counter_file)
+            except Exception:
+                if os.path.exists(tmp_path):
+                    try:
+                        os.remove(tmp_path)
+                    except Exception:
+                        pass
+                raise
         except Exception as e:
             logger.debug("Counter file write note: %s", e)
 
@@ -112,7 +122,7 @@ class DatabaseManager:
             )
         )
 
-    def _open_connection(self) -> sqlite3.Connection:
+    def _open_connection(self, _recovering: bool = False) -> sqlite3.Connection:
         max_retries = 3
         for attempt in range(max_retries):
             conn = None
@@ -127,13 +137,17 @@ class DatabaseManager:
                         conn.close()
                     except Exception as cl_err:
                         logger.debug("Failed to close sqlite connection on error: %s", cl_err)
-                if self._is_corrupt_error(err):
+                if not _recovering and self._is_corrupt_error(err):
                     self._recover_corrupted_db(err)
                     conn = sqlite3.connect(self.db_path, timeout=30.0)
-                    conn.execute("PRAGMA journal_mode=WAL;")
-                    conn.execute("PRAGMA synchronous=NORMAL;")
-                    conn.execute("PRAGMA busy_timeout=30000;")
-                    self._create_tables(conn)
+                    try:
+                        conn.execute("PRAGMA journal_mode=WAL;")
+                        conn.execute("PRAGMA synchronous=NORMAL;")
+                        conn.execute("PRAGMA busy_timeout=30000;")
+                        self._create_tables(conn)
+                    except Exception:
+                        conn.close()
+                        raise
                     return conn
                 if attempt < max_retries - 1:
                     continue
@@ -327,34 +341,6 @@ class DatabaseManager:
             )
         """)
         conn.execute("""
-            CREATE TABLE IF NOT EXISTS linked_accounts (
-                player_name TEXT PRIMARY KEY COLLATE NOCASE,
-                player_uuid TEXT,
-                discord_user_id INTEGER NOT NULL UNIQUE,
-                two_factor_enabled INTEGER NOT NULL DEFAULT 1,
-                linked_at TEXT NOT NULL
-            )
-        """)
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_linked_player_nocase ON linked_accounts(player_name COLLATE NOCASE);")
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS trusted_ip_sessions (
-                player_name TEXT NOT NULL,
-                ip TEXT NOT NULL,
-                verified_at REAL NOT NULL,
-                expires_at REAL NOT NULL,
-                PRIMARY KEY (player_name, ip)
-            )
-        """)
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS pending_link_codes (
-                code TEXT PRIMARY KEY,
-                player_name TEXT,
-                discord_user_id INTEGER,
-                created_at REAL NOT NULL,
-                expires_at REAL NOT NULL
-            )
-        """)
-        conn.execute("""
             CREATE TABLE IF NOT EXISTS security_audit_log (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 timestamp TEXT NOT NULL,
@@ -450,22 +436,6 @@ class DatabaseManager:
         except Exception as mig_err:
             logging.getLogger('VanillaBot.DB').debug('Auto-migration active_vc_bans note: %s', mig_err)
 
-        # Автоматическая миграция linked_accounts (настройки срока доверия IP и пуш-алертов)
-        try:
-            cursor = conn.cursor()
-            cursor.execute("PRAGMA table_info(linked_accounts)")
-            la_cols = {row[1] for row in cursor.fetchall()}
-            if la_cols:
-                if "trust_duration_hours" not in la_cols:
-                    conn.execute("ALTER TABLE linked_accounts ADD COLUMN trust_duration_hours INTEGER NOT NULL DEFAULT 48")
-                if "login_alerts_enabled" not in la_cols:
-                    conn.execute("ALTER TABLE linked_accounts ADD COLUMN login_alerts_enabled INTEGER NOT NULL DEFAULT 1")
-                # Только NULL (старые строки после ALTER). Явно выключенные алерты (=0) не трогаем.
-                conn.execute("UPDATE linked_accounts SET login_alerts_enabled = 1 WHERE login_alerts_enabled IS NULL")
-            conn.commit()
-        except Exception as mig_err:
-            logging.getLogger('VanillaBot.DB').debug('Auto-migration linked_accounts note: %s', mig_err)
-
         # Автоматическая миграция active_tickets (добавление колонки ticket_num для связки с историей)
         try:
             cursor = conn.cursor()
@@ -534,6 +504,7 @@ class DatabaseManager:
     def get_next_ticket_number(self) -> int:
         with self._get_connection() as conn:
             cursor = conn.cursor()
+            cursor.execute("BEGIN IMMEDIATE")
             # 1. Авто-синхронизация счётчика: count никогда не должен быть меньше максимального номера в истории или внешнем файле
             try:
                 cursor.execute("SELECT COALESCE(MAX(ticket_num), 0) FROM ticket_history")
@@ -552,26 +523,7 @@ class DatabaseManager:
             except Exception as sync_err:
                 logger.debug("Counter sync note: %s", sync_err)
 
-            # 2. Инкремент с атомарным получением номера
-            try:
-                cursor.execute("UPDATE ticket_counter SET count = count + 1 WHERE id = 1 RETURNING count")
-                row = cursor.fetchone()
-                if row:
-                    new_count = int(row[0])
-                    conn.commit()
-                    self._write_external_counter(new_count)
-                    return new_count
-            except (sqlite3.OperationalError, Exception) as ret_err:
-                logger.debug("RETURNING clause not available, using fallback transaction: %s", ret_err)
-                try:
-                    conn.rollback()
-                except Exception:
-                    pass
-
-            try:
-                cursor.execute("BEGIN IMMEDIATE")
-            except sqlite3.OperationalError:
-                pass
+            # 2. Инкремент с получением нового номера в рамках IMMEDIATE-транзакции
             cursor.execute("UPDATE ticket_counter SET count = count + 1 WHERE id = 1")
             cursor.execute("SELECT count FROM ticket_counter WHERE id = 1")
             row = cursor.fetchone()
@@ -748,6 +700,76 @@ class DatabaseManager:
                 )
             cols = ["ticket_num", "dc_channel_id", "user_id", "user_name", "status", "created_at", "closed_at", "closed_by", "close_reason", "transcript_file"]
             return [dict(zip(cols, r)) for r in cursor.fetchall()]
+
+    def get_user_tickets(
+        self,
+        user_id: Optional[int] = None,
+        username: Optional[str] = None,
+        limit: int = 25,
+    ) -> list[dict]:
+        """Возвращает все тикеты пользователя (по Discord ID или юзернейму) из истории и активных тикетов."""
+        cols = [
+            "ticket_num", "dc_channel_id", "user_id", "user_name",
+            "status", "created_at", "closed_at", "closed_by",
+            "close_reason", "transcript_file",
+        ]
+        safe_limit = max(1, min(25, int(limit)))
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            rows = []
+            if user_id is not None:
+                cursor.execute(
+                    f"SELECT {', '.join(cols)} FROM ticket_history WHERE user_id = ? ORDER BY ticket_num DESC LIMIT ?",
+                    (int(user_id), safe_limit),
+                )
+                rows = cursor.fetchall()
+            elif username:
+                clean = username.strip()
+                cursor.execute(
+                    f"SELECT {', '.join(cols)} FROM ticket_history WHERE LOWER(user_name) = LOWER(?) ORDER BY ticket_num DESC LIMIT ?",
+                    (clean, safe_limit),
+                )
+                rows = cursor.fetchall()
+                if not rows:
+                    cursor.execute(
+                        f"SELECT {', '.join(cols)} FROM ticket_history WHERE LOWER(user_name) LIKE LOWER(?) ORDER BY ticket_num DESC LIMIT ?",
+                        (f"%{clean}%", safe_limit),
+                    )
+                    rows = cursor.fetchall()
+
+            results = [dict(zip(cols, r)) for r in rows]
+            seen_channels = {r["dc_channel_id"] for r in results if r.get("dc_channel_id")}
+
+            # Добираем активные тикеты, если их вдруг нет в ticket_history
+            if user_id is not None:
+                cursor.execute(
+                    "SELECT dc_channel_id, user_id, user_name, created_at, ticket_num FROM active_tickets WHERE user_id = ?",
+                    (int(user_id),),
+                )
+            elif username:
+                clean = username.strip()
+                cursor.execute(
+                    "SELECT dc_channel_id, user_id, user_name, created_at, ticket_num FROM active_tickets WHERE LOWER(user_name) LIKE LOWER(?)",
+                    (f"%{clean}%",),
+                )
+            else:
+                return results
+
+            for ch_id, uid, uname, c_at, t_num in cursor.fetchall():
+                if ch_id not in seen_channels:
+                    results.insert(0, {
+                        "ticket_num": t_num or 0,
+                        "dc_channel_id": ch_id,
+                        "user_id": uid,
+                        "user_name": uname,
+                        "status": "open",
+                        "created_at": c_at or "",
+                        "closed_at": None,
+                        "closed_by": None,
+                        "close_reason": None,
+                        "transcript_file": None,
+                    })
+            return results[:safe_limit]
 
     # --- ЧЕРНЫЙ СПИСОК ТИКЕТОВ ---
     def add_ticket_blacklist(self, user_id: int, reason: str, banned_by: str):
@@ -1268,6 +1290,7 @@ class DatabaseManager:
         """Добавляет или удаляет участника. Возвращает (joined_now, total_count)."""
         with self._get_connection() as conn:
             cur = conn.cursor()
+            cur.execute("BEGIN IMMEDIATE")
             cur.execute(
                 "SELECT 1 FROM giveaway_entries WHERE giveaway_id = ? AND user_id = ?",
                 (int(giveaway_id), int(user_id)),
@@ -1548,145 +1571,6 @@ class DatabaseManager:
             row = cursor.fetchone()
             return row[0] if row else None
 
-    # --- ПРИВЯЗКА АККАУНТОВ MINECRAFT <-> DISCORD ---
-    def link_account(
-        self,
-        player_name: str,
-        player_uuid: str,
-        discord_user_id: int,
-        two_factor: int = 1,
-    ) -> bool:
-        """Связывает Minecraft аккаунт с пользователем Discord. Повторная привязка запрещена!"""
-        clean_name = player_name.strip()
-        now_str = get_msk_now_str()
-        with self._get_connection() as conn:
-            cursor = conn.cursor()
-            # 1. Проверяем, не привязан ли этот ник Minecraft к кому-либо
-            cursor.execute(
-                "SELECT discord_user_id FROM linked_accounts WHERE LOWER(player_name) = LOWER(?)",
-                (clean_name,),
-            )
-            row = cursor.fetchone()
-            if row:
-                if row[0] == int(discord_user_id):
-                    return True
-                return False
-
-            # 2. Проверяем, не привязан ли уже этот Discord-пользователь к какому-либо нику
-            cursor.execute("SELECT player_name FROM linked_accounts WHERE discord_user_id = ?", (int(discord_user_id),))
-            old_row = cursor.fetchone()
-            if old_row:
-                return False
-
-            conn.execute("""
-                INSERT INTO linked_accounts (player_name, player_uuid, discord_user_id, two_factor_enabled, linked_at, login_alerts_enabled)
-                VALUES (?, ?, ?, ?, ?, 1)
-            """, (clean_name, player_uuid.strip(), int(discord_user_id), int(two_factor), now_str))
-            conn.commit()
-            return True
-
-    def unlink_account_by_discord(self, discord_user_id: int) -> Optional[str]:
-        """Отвязывает аккаунт по Discord ID, возвращает имя отвязанного игрока"""
-        with self._get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                "SELECT player_name FROM linked_accounts WHERE discord_user_id = ?",
-                (int(discord_user_id),),
-            )
-            row = cursor.fetchone()
-            if not row:
-                return None
-            player_name = row[0]
-            conn.execute("DELETE FROM linked_accounts WHERE discord_user_id = ?", (int(discord_user_id),))
-            conn.execute("DELETE FROM trusted_ip_sessions WHERE LOWER(player_name) = LOWER(?)", (player_name,))
-            conn.execute("DELETE FROM pending_link_codes WHERE discord_user_id = ? OR LOWER(player_name) = LOWER(?)", (int(discord_user_id), player_name))
-            conn.commit()
-            return player_name
-
-    def unlink_account_by_mc(self, player_name: str) -> bool:
-        """Отвязывает аккаунт по нику Minecraft"""
-        clean_name = player_name.strip()
-        with self._get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("DELETE FROM linked_accounts WHERE LOWER(player_name) = LOWER(?)", (clean_name,))
-            affected = cursor.rowcount > 0
-            conn.execute("DELETE FROM trusted_ip_sessions WHERE LOWER(player_name) = LOWER(?)", (clean_name,))
-            conn.execute("DELETE FROM pending_link_codes WHERE LOWER(player_name) = LOWER(?)", (clean_name,))
-            conn.commit()
-            return affected
-
-    def get_linked_account_by_discord(self, discord_user_id: int) -> Optional[dict]:
-        """Получает привязанный аккаунт по Discord ID"""
-        with self._get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT player_name, player_uuid, discord_user_id, two_factor_enabled, linked_at, trust_duration_hours, login_alerts_enabled
-                FROM linked_accounts
-                WHERE discord_user_id = ?
-            """, (int(discord_user_id),))
-            row = cursor.fetchone()
-            if not row:
-                return None
-            return {
-                "player_name": row[0],
-                "player_uuid": row[1],
-                "discord_user_id": row[2],
-                "two_factor_enabled": bool(row[3]),
-                "linked_at": row[4],
-                "trust_duration_hours": row[5] if len(row) > 5 and row[5] is not None else 48,
-                "login_alerts_enabled": bool(row[6]) if len(row) > 6 and row[6] is not None else True,
-            }
-
-    def get_linked_account_by_player(self, player_name: str) -> Optional[dict]:
-        """Псевдоним для get_linked_account_by_mc"""
-        return self.get_linked_account_by_mc(player_name)
-
-    def get_linked_account_by_mc(self, player_name: str) -> Optional[dict]:
-        """Получает привязанный аккаунт по нику Minecraft"""
-        with self._get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT player_name, player_uuid, discord_user_id, two_factor_enabled, linked_at, trust_duration_hours, login_alerts_enabled
-                FROM linked_accounts
-                WHERE LOWER(player_name) = LOWER(?)
-            """, (player_name.strip(),))
-            row = cursor.fetchone()
-            if not row:
-                return None
-            return {
-                "player_name": row[0],
-                "player_uuid": row[1],
-                "discord_user_id": row[2],
-                "two_factor_enabled": bool(row[3]),
-                "linked_at": row[4],
-                "trust_duration_hours": row[5] if len(row) > 5 and row[5] is not None else 48,
-                "login_alerts_enabled": bool(row[6]) if len(row) > 6 and row[6] is not None else True,
-            }
-
-    def set_trust_duration(self, discord_user_id: int, hours: int) -> bool:
-        """Устанавливает персональный срок доверия к IP (0 = каждый раз, 24ч, 48ч, 168ч)"""
-        with self._get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                UPDATE linked_accounts
-                SET trust_duration_hours = ?
-                WHERE discord_user_id = ?
-            """, (int(hours), int(discord_user_id)))
-            conn.commit()
-            return cursor.rowcount > 0
-
-    def set_login_alerts_enabled(self, discord_user_id: int, enabled: bool) -> bool:
-        """Включает или выключает пуш-уведомления о входе в ЛС Discord"""
-        with self._get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                UPDATE linked_accounts
-                SET login_alerts_enabled = ?
-                WHERE discord_user_id = ?
-            """, (1 if enabled else 0, int(discord_user_id)))
-            conn.commit()
-            return cursor.rowcount > 0
-
     def record_login(self, player_name: str, ip: str, status: Union[str, bool] = "SUCCESS"):
         """Записывает событие входа. Принимает 'SUCCESS'/'FAILED' или bool (обратная совместимость)."""
         if isinstance(status, bool):
@@ -1720,178 +1604,6 @@ class DatabaseManager:
                 }
                 for r in rows
             ]
-
-    # --- СЕССИИ ДОВЕРЕННЫХ IP (2FA ДОВЕРИЕ) ---
-    def is_ip_trusted(self, player_name: str, ip: str) -> bool:
-        """Проверяет, доверен ли IP с учётом персонального срока доверия"""
-        now_ts = datetime.now(timezone.utc).timestamp()
-        linked = self.get_linked_account_by_mc(player_name)
-        trust_hours = linked.get("trust_duration_hours", 48) if linked else 48
-
-        # Строгий режим: 0 часов — всегда запрашивать подтверждение
-        if trust_hours <= 0:
-            return False
-
-        with self._get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT expires_at
-                FROM trusted_ip_sessions
-                WHERE LOWER(player_name) = LOWER(?) AND ip = ?
-            """, (player_name.strip(), ip.strip()))
-            row = cursor.fetchone()
-            if not row:
-                return False
-            expires_at = row[0]
-            if now_ts > expires_at:
-                conn.execute("""
-                    DELETE FROM trusted_ip_sessions
-                    WHERE LOWER(player_name) = LOWER(?) AND ip = ?
-                """, (player_name.strip(), ip.strip()))
-                conn.commit()
-                return False
-
-            # Продлеваем сессию на выбранный срок доверия
-            new_expires = now_ts + (float(trust_hours) * 3600.0)
-            conn.execute("""
-                UPDATE trusted_ip_sessions
-                SET expires_at = ?
-                WHERE LOWER(player_name) = LOWER(?) AND ip = ?
-            """, (new_expires, player_name.strip(), ip.strip()))
-            conn.commit()
-            return True
-
-    def trust_ip_session(self, player_name: str, ip: str, duration_hours: Optional[float] = None):
-        """Продлевает или сохраняет доверенную сессию для IP"""
-        linked = self.get_linked_account_by_mc(player_name)
-        if duration_hours is None:
-            duration_hours = float(linked.get("trust_duration_hours", 48)) if linked else 48.0
-
-        if duration_hours <= 0:
-            return
-
-        now_ts = datetime.now(timezone.utc).timestamp()
-        expires_at = now_ts + (duration_hours * 3600.0)
-        with self._get_connection() as conn:
-            conn.execute("""
-                INSERT OR REPLACE INTO trusted_ip_sessions (player_name, ip, verified_at, expires_at)
-                VALUES (?, ?, ?, ?)
-            """, (player_name.strip(), ip.strip(), now_ts, expires_at))
-            conn.commit()
-
-    def revoke_ip_session(self, player_name: str, ip: str):
-        """Отзывает сессию для конкретного IP"""
-        with self._get_connection() as conn:
-            conn.execute("""
-                DELETE FROM trusted_ip_sessions
-                WHERE LOWER(player_name) = LOWER(?) AND ip = ?
-            """, (player_name.strip(), ip.strip()))
-            conn.commit()
-
-    def clear_ip_sessions(self, player_name: str):
-        """Сбрасывает все доверенные IP игрока (следующий вход с любого IP потребует 2FA)"""
-        with self._get_connection() as conn:
-            conn.execute("""
-                DELETE FROM trusted_ip_sessions
-                WHERE LOWER(player_name) = LOWER(?)
-            """, (player_name.strip(),))
-            conn.commit()
-
-    def get_trusted_ip_sessions(self, player_name: str) -> list[dict]:
-        """Возвращает список действующих IP-сессий игрока"""
-        now_ts = datetime.now(timezone.utc).timestamp()
-        with self._get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT ip, verified_at, expires_at
-                FROM trusted_ip_sessions
-                WHERE LOWER(player_name) = LOWER(?) AND expires_at > ?
-                ORDER BY expires_at DESC
-            """, (player_name.strip(), now_ts))
-            rows = cursor.fetchall()
-            return [
-                {
-                    "ip": r[0],
-                    "verified_at": r[1],
-                    "expires_at": r[2],
-                    "remaining_sec": max(0.0, r[2] - now_ts),
-                }
-                for r in rows
-            ]
-
-    # --- ОДНОРАЗОВЫЕ КОДЫ ПРИВЯЗКИ (6 ЦИФР) ---
-    def create_link_code(
-        self,
-        player_name: Optional[str],
-        discord_user_id: Optional[int],
-        code: str,
-        lifetime_sec: int = 600,
-    ):
-        """Создает временный 6-значный код привязки (10 минут)"""
-        now_ts = datetime.now(timezone.utc).timestamp()
-        expires_at = now_ts + lifetime_sec
-        clean_code = str(code).strip()
-        with self._get_connection() as conn:
-            # Очищаем старые коды для этого игрока/пользователя
-            if discord_user_id:
-                conn.execute("DELETE FROM pending_link_codes WHERE discord_user_id = ?", (int(discord_user_id),))
-            if player_name:
-                conn.execute("DELETE FROM pending_link_codes WHERE LOWER(player_name) = LOWER(?)", (player_name.strip(),))
-
-            conn.execute("""
-                INSERT OR REPLACE INTO pending_link_codes (code, player_name, discord_user_id, created_at, expires_at)
-                VALUES (?, ?, ?, ?, ?)
-            """, (
-                clean_code,
-                player_name.strip() if player_name else None,
-                int(discord_user_id) if discord_user_id else None,
-                now_ts,
-                expires_at,
-            ))
-            conn.commit()
-
-    def get_link_code(self, code: str) -> Optional[dict]:
-        """Получает данные по коду привязки, если он не истек"""
-        now_ts = datetime.now(timezone.utc).timestamp()
-        clean_code = str(code).strip()
-        with self._get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT code, player_name, discord_user_id, created_at, expires_at
-                FROM pending_link_codes
-                WHERE code = ? AND expires_at > ?
-            """, (clean_code, now_ts))
-            row = cursor.fetchone()
-            if not row:
-                return None
-            return {
-                "code": row[0],
-                "player_name": row[1],
-                "discord_user_id": row[2],
-                "created_at": row[3],
-                "expires_at": row[4],
-            }
-
-    def consume_link_code(self, code: str) -> Optional[dict]:
-        """Использует и удаляет одноразовый код привязки"""
-        data = self.get_link_code(code)
-        if not data:
-            return None
-        with self._get_connection() as conn:
-            conn.execute("DELETE FROM pending_link_codes WHERE code = ?", (str(code).strip(),))
-            conn.commit()
-        return data
-
-    def cleanup_expired_codes(self) -> int:
-        """Очистка устаревших кодов и сессий с возвратом количества удаленных записей"""
-        now_ts = datetime.now(timezone.utc).timestamp()
-        with self._get_connection() as conn:
-            c1 = conn.execute("DELETE FROM pending_link_codes WHERE expires_at <= ?", (now_ts,)).rowcount
-            c2 = conn.execute("DELETE FROM trusted_ip_sessions WHERE expires_at <= ?", (now_ts,)).rowcount
-            conn.commit()
-            return max(0, c1) + max(0, c2)
-
-    # --- СИСТЕМА ПРОВЕРОК НА ЧИТЫ (CHEAT CHECKS) ---
 
     # --- ДЕТЕКЦИЯ ТВИНКОВ / МУЛЬТИАККАУНТОВ ПО IP ---
 
@@ -2112,7 +1824,6 @@ class DatabaseManager:
     # --- КАРТОЧКА НАРУШИТЕЛЯ (SUSPECT SUMMARY) ---
     def get_suspect_summary(self, suspect_nick: str) -> dict:
         clean_nick = suspect_nick.strip()
-        linked = self.get_linked_account_by_mc(clean_nick)
         ips = [x["ip"] for x in self.get_player_ips(clean_nick, limit=10)]
         
         # Поиск твинков по известным IP
@@ -2138,7 +1849,6 @@ class DatabaseManager:
 
         return {
             "player_name": clean_nick,
-            "linked": linked,
             "ips": ips,
             "alts": [{"player_name": k, "last_seen": v} for k, v in alts_map.items()],
             "death_count": deaths_count,
@@ -2278,7 +1988,6 @@ class DatabaseManager:
             ("ticket_counter", "INSERT OR REPLACE INTO ticket_counter (id, count) VALUES (?, ?)"),
             ("ticket_history", "INSERT OR IGNORE INTO ticket_history (ticket_num, dc_channel_id, user_id, user_name, status, created_at, closed_at, closed_by, close_reason, transcript_file) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"),
             ("active_tickets", "INSERT OR IGNORE INTO active_tickets (dc_channel_id, user_id, user_name, last_activity, created_at, ticket_num) VALUES (?, ?, ?, ?, ?, ?)"),
-            ("linked_accounts", "INSERT OR IGNORE INTO linked_accounts (player_name, player_uuid, discord_user_id, two_factor_enabled, linked_at, trust_duration_hours, login_alerts_enabled) VALUES (?, ?, ?, ?, ?, ?, ?)"),
             ("active_mutes", "INSERT OR IGNORE INTO active_mutes (user_id, guild_id, unmute_timestamp, reason) VALUES (?, ?, ?, ?)"),
             ("ticket_blacklist", "INSERT OR IGNORE INTO ticket_blacklist (user_id, reason, banned_by, banned_at) VALUES (?, ?, ?, ?)"),
             ("bot_settings", "INSERT OR REPLACE INTO bot_settings (key, value) VALUES (?, ?)"),
@@ -2291,7 +2000,10 @@ class DatabaseManager:
             ("security_whitelist", "INSERT OR IGNORE INTO security_whitelist (target, target_type, reason, added_by, added_at) VALUES (?, ?, ?, ?, ?)"),
         ]
 
-        with self._get_connection() as target_conn:
+        target_conn = None
+        try:
+            target_conn = self._open_connection(_recovering=True)
+            self._create_tables(target_conn)
             for table_name, insert_sql in target_tables:
                 try:
                     cur = old_conn.cursor()
@@ -2310,11 +2022,16 @@ class DatabaseManager:
                         logger.info("Таблица '%s': успешно спасено строк: %d", table_name, len(rows))
                 except Exception as tbl_err:
                     logger.debug("Не удалось прочитать таблицу '%s' из %s: %s", table_name, corrupted_path, tbl_err)
-
-        try:
-            old_conn.close()
-        except Exception:
-            pass
+        finally:
+            if target_conn is not None:
+                try:
+                    target_conn.close()
+                except Exception:
+                    pass
+            try:
+                old_conn.close()
+            except Exception:
+                pass
 
         return recovered_rows
 

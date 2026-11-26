@@ -172,8 +172,6 @@ from cogs.bridge_views import (
     get_skin_avatar_url,
     get_skin_body_url,
     DmReplyView,
-    AccountLinkView,
-    PermanentLinkPanelView,
 )
 
 class BridgeCog(commands.Cog, name="Мост Minecraft"):
@@ -232,11 +230,6 @@ class BridgeCog(commands.Cog, name="Мост Minecraft"):
         # Anti-spoof: ожидаемые ответы alts_bans_result (player.lower() -> expires_at)
         self._alt_check_requests: Dict[str, float] = {}
         self._alt_check_manual: Dict[str, float] = {}
-
-        # Rate limit ввода кодов привязки: user_id -> список timestamp попыток
-        self._link_attempts: Dict[int, List[float]] = {}
-        self.link_max_attempts: int = 5
-        self.link_window_sec: float = 600.0
 
         # Кэш лидерборда и профилей игроков для надежности и нулевых задержек
         self.last_top_data: Optional[dict] = None
@@ -372,21 +365,6 @@ class BridgeCog(commands.Cog, name="Мост Minecraft"):
             return False
         if self._alt_check_manual.pop(key, 0.0) > now:
             return False
-        return True
-
-    def link_rate_ok(self, user_id: int) -> bool:
-        """Не более N попыток ввода кода привязки за окно (по умолчанию 5 за 10 минут)."""
-        try:
-            uid = int(user_id)
-        except (TypeError, ValueError):
-            return False
-        now = time.time()
-        attempts = [t for t in self._link_attempts.get(uid, []) if now - t < self.link_window_sec]
-        if len(attempts) >= self.link_max_attempts:
-            self._link_attempts[uid] = attempts[-self.link_max_attempts:]
-            return False
-        attempts.append(now)
-        self._link_attempts[uid] = attempts[-self.link_max_attempts:]
         return True
 
     async def query_minecraft(self, packet: dict, timeout: float = 3.0) -> Optional[dict]:
@@ -529,9 +507,9 @@ class BridgeCog(commands.Cog, name="Мост Minecraft"):
 
     # --- WEBSOCKET HANDLER ---
     async def websocket_handler(self, request: web.Request) -> web.WebSocketResponse:
-        token = request.query.get("token") or request.headers.get("Authorization", "").replace("Bearer ", "").strip()
-        secret = Config.BRIDGE_SECRET or ""
-        if not token or not hmac.compare_digest(token.encode("utf-8"), secret.encode("utf-8")):
+        token = request.headers.get("Authorization", "").replace("Bearer ", "").strip() or request.query.get("token", "").strip()
+        secret = (Config.BRIDGE_SECRET or "").strip()
+        if not secret or not token or not hmac.compare_digest(token.encode("utf-8"), secret.encode("utf-8")):
             logger.warning("Попытка подключения к мосту с неверным токеном от %s", request.remote)
             return web.Response(status=401, text="Unauthorized: Invalid token")
 
@@ -1076,133 +1054,6 @@ class BridgeCog(commands.Cog, name="Мост Minecraft"):
             if events_ch:
                 await events_ch.send(embed=embed)
 
-        # 11. Запрос создания кода привязки из Minecraft (/link)
-        elif p_type in ("mc_create_link_code", "mc_request_link_code"):
-            player = data.get("player", "").strip()
-            if not player:
-                return
-
-            already = self.db.get_linked_account_by_mc(player)
-            if already:
-                user_tag = "Discord"
-                try:
-                    u = self.bot.get_user(already["discord_user_id"])
-                    if u:
-                        user_tag = f"@{u.name}"
-                except Exception as suppressed_exc:
-                    logger.debug("Bridge non-fatal operation suppressed: %s", suppressed_exc)
-                await self.broadcast_packet({
-                    "type": "link_result",
-                    "player": player,
-                    "success": False,
-                    "message": f"Ваш игровой аккаунт уже привязан к {user_tag}! Повторная привязка невозможна. Сначала выполните !unlink в Discord.",
-                })
-                return
-
-            code = data.get("code")
-            if not code or p_type == "mc_request_link_code":
-                code = f"{secrets.randbelow(900000) + 100000}"
-
-            self.db.create_link_code(player_name=player, discord_user_id=None, code=code, lifetime_sec=600)
-            logger.info(f"Создан одноразовый код привязки для игрока {player} из Minecraft: {code}")
-
-            await self.broadcast_packet({
-                "type": "mc_link_code_generated",
-                "player": player,
-                "code": code,
-            })
-
-        # 12. Попытка привязки аккаунта вводом кода в Minecraft (/link <код>)
-        elif p_type == "link_attempt":
-            player = data.get("player", "").strip()
-            uuid_str = data.get("uuid", "").strip()
-            code = data.get("code", "").strip()
-            ip = data.get("ip", "127.0.0.1").strip()
-
-            if player and code:
-                # 1. Проверяем, не привязан ли уже этот Minecraft игрок
-                already_mc = self.db.get_linked_account_by_mc(player)
-                if already_mc:
-                    user_tag = "Discord"
-                    try:
-                        u = self.bot.get_user(already_mc["discord_user_id"])
-                        if u:
-                            user_tag = f"@{u.name}"
-                    except Exception as suppressed_exc:
-                        logger.debug("Bridge non-fatal operation suppressed: %s", suppressed_exc)
-                    await self.broadcast_packet({
-                        "type": "link_result",
-                        "player": player,
-                        "success": False,
-                        "message": f"Ваш игровой аккаунт уже привязан к {user_tag}! Повторная привязка невозможна.",
-                    })
-                    return
-
-                info = self.db.consume_link_code(code)
-                if info and info.get("discord_user_id"):
-                    target_discord_id = info["discord_user_id"]
-
-                    # 2. Проверяем, не привязан ли уже этот Discord аккаунт
-                    already_dc = self.db.get_linked_account_by_discord(target_discord_id)
-                    if already_dc:
-                        await self.broadcast_packet({
-                            "type": "link_result",
-                            "player": player,
-                            "success": False,
-                            "message": f"К этому Discord профилю уже привязан аккаунт {already_dc['player_name']}! Один Discord = один аккаунт.",
-                        })
-                        return
-
-                    success = self.db.link_account(player, uuid_str, target_discord_id, two_factor=0)
-                    if success:
-                        user = self.bot.get_user(target_discord_id)
-                        if not user:
-                            try:
-                                user = await self.bot.fetch_user(target_discord_id)
-                            except Exception as suppressed_exc:
-                                logger.debug("Bridge non-fatal operation suppressed: %s", suppressed_exc)
-                        tag = str(user) if user else f"ID: {target_discord_id}"
-
-                        await self.broadcast_packet({
-                            "type": "link_result",
-                            "player": player,
-                            "success": True,
-                            "discord_tag": tag,
-                            "kick_relogin": False,
-                            "message": "Аккаунт успешно привязан",
-                        })
-
-                        if user:
-                            embed = AG.embed(
-                                title="✨ Аккаунт успешно привязан • Vanilla Land",
-                                description=(
-                                    f"Ваш аккаунт Minecraft **`{player}`** успешно привязан к Discord!\n\n"
-                                    "• **Доступ к `/profile` и статистике:** `[Активен]`\n"
-                                    "• **Управление привязкой:** команда `/link` или `/unlink`."
-                                ),
-                                color=Colors.GREEN,
-                                thumbnail=get_skin_avatar_url(player, None, self.db),
-                            )
-                            view = AccountLinkView(self, target_discord_id, player)
-                            try:
-                                await user.send(embed=embed, view=view)
-                            except Exception as e:
-                                logger.error(f"Не удалось отправить подтверждение привязки пользователю {target_discord_id}: {e}")
-                    else:
-                        await self.broadcast_packet({
-                            "type": "link_result",
-                            "player": player,
-                            "success": False,
-                            "message": "Ошибка: этот ник или Discord аккаунт уже привязан!",
-                        })
-                else:
-                    await self.broadcast_packet({
-                        "type": "link_result",
-                        "player": player,
-                        "success": False,
-                        "message": "Неверный или просроченный код. Получите код через !link в Discord!",
-                    })
-
         # 15. Синхронизация таймера техработ/рестарта из Minecraft
         elif p_type == "maintenance_countdown":
             mode = data.get("mode", "lock")
@@ -1256,24 +1107,6 @@ class BridgeCog(commands.Cog, name="Мост Minecraft"):
                     "success": True,
                     "mail_id": mail_id,
                 })
-                # Отправляем уведомление в ЛС Discord, если получатель привязан
-                linked = self.db.get_linked_account_by_mc(recipient)
-                if linked and linked.get("discord_user_id"):
-                    user = self.bot.get_user(linked["discord_user_id"])
-                    if user:
-                        try:
-                            emb = AG.embed(
-                                title="✉️ Новое письмо в игре • Vanilla Land",
-                                description=(
-                                    f"Игрок **`{sender}`** отправил вам письмо на сервере:\n\n"
-                                    f"> {text}\n\n"
-                                    f"*Прочитать и ответить можно в игре: `/mail send {sender} <сообщение>`*"
-                                ),
-                                footer="Vanilla Land • Почта",
-                            )
-                            await user.send(embed=emb)
-                        except Exception:
-                            pass
 
         # 19. Внутриигровая почта: получение писем (/mail read)
         elif p_type == "get_mail":
@@ -1359,19 +1192,7 @@ class BridgeCog(commands.Cog, name="Мост Minecraft"):
             for uid in stale_streams:
                 self.last_stream_alert.pop(uid, None)
 
-        if len(self._link_attempts) > 500:
-            stale_link = [uid for uid, atts in self._link_attempts.items() if not atts or now - atts[-1] > self.link_window_sec]
-            for uid in stale_link:
-                self._link_attempts.pop(uid, None)
-
-        # 2. Очистка просроченных одноразовых кодов в SQLite раз в 5 минут
-        if int(now) % 300 < 30:
-            try:
-                await asyncio.to_thread(self.db.cleanup_expired_codes)
-            except Exception as suppressed_exc:
-                logger.debug("Bridge non-fatal operation suppressed: %s", suppressed_exc)
-
-        # 2.1. Сохранение среза онлайна и TPS каждые 10 минут для /stats_graph
+        # 2. Сохранение среза онлайна и TPS каждые 10 минут для /stats_graph
         if self.active_sockets and (now - self._last_stats_snapshot_ts) >= 600.0:
             self._last_stats_snapshot_ts = now
             try:
@@ -1812,7 +1633,7 @@ class BridgeCog(commands.Cog, name="Мост Minecraft"):
                         title="💾 Автоматический бэкап базы данных • Vanilla Land",
                         description=(
                             f"• **Файл:** `{os.path.basename(backup_path)}` (`{size_bytes / 1024:.1f} КБ`)\n"
-                            f"• **История тикетов:** `{summary.get('ticket_history', 0)}` | **Привязок:** `{summary.get('linked_accounts', 0)}`"
+                            f"• **История тикетов:** `{summary.get('ticket_history', 0)}`"
                         ),
                         color=Colors.GREEN,
                         footer="Vanilla Land • Ротация последних 7 копий",
@@ -1939,7 +1760,7 @@ class BridgeCog(commands.Cog, name="Мост Minecraft"):
         desc = (
             (f"✅ Создана новая копия: **`{created_name}`**\n\n" if created_name else "")
             + f"• **Размер текущей БД:** `{summary.get('size_bytes', 0) / 1024:.1f} КБ`\n"
-            + f"• **Записей:** тикетов `{summary.get('ticket_history', 0)}` (активных `{summary.get('active_tickets', 0)}`), привязок `{summary.get('linked_accounts', 0)}`, сезонов `{summary.get('top_seasons', 0)}`\n"
+            + f"• **Записей:** тикетов `{summary.get('ticket_history', 0)}` (активных `{summary.get('active_tickets', 0)}`), сезонов `{summary.get('top_seasons', 0)}`\n"
             + f"• **Канал авто-бэкапа:** {ch_label}\n\n"
             + "**Доступные копии (ротация 7 шт.):**\n"
             + ("\n".join(lines) if lines else "*Копий пока нет.*")
@@ -1962,7 +1783,7 @@ class BridgeCog(commands.Cog, name="Мост Minecraft"):
             return "*Не задан*"
 
         embed = discord.Embed(
-            title="⚙️ Единая настройка каналов бота • Vanilla Land",
+            title="Настройка каналов бота • Vanilla Land",
             description=(
                 "Выберите нужные каналы в выпадающих списках ниже — изменения сразу сохраняются в базе данных (`bot_settings`).\n"
                 "Для точечного изменения также можно передать параметры прямо в `/setup_channels`."
@@ -1972,13 +1793,13 @@ class BridgeCog(commands.Cog, name="Мост Minecraft"):
         )
         if guild and guild.icon:
             embed.set_thumbnail(url=guild.icon.url)
-        embed.add_field(name="📅 Канал событий", value=_fmt_ch("events_channel_id", Config.EVENTS_CHANNEL_ID), inline=True)
-        embed.add_field(name="🛡️ Админ-логи", value=_fmt_ch("admin_log_channel_id", Config.ADMIN_LOG_CHANNEL_ID), inline=True)
-        embed.add_field(name="📜 Общие логи", value=_fmt_ch("log_channel_id", Config.LOG_CHANNEL_ID), inline=True)
-        embed.add_field(name="💾 Авто-бэкапы БД", value=_fmt_ch("db_backup_channel_id", 0), inline=True)
-        embed.add_field(name="🚨 Алерты твинков", value=_fmt_ch("alts_alert_channel_id", Config.ALTS_ALERT_CHANNEL_ID), inline=True)
-        embed.add_field(name="🎫 Категория тикетов", value=_fmt_ch("tickets_category_id", Config.TICKETS_CATEGORY_ID), inline=True)
-        embed.add_field(name="📁 Архив тикетов", value=_fmt_ch("ticket_log_channel_id", Config.LOG_CHANNEL_ID), inline=True)
+        embed.add_field(name="Канал событий", value=_fmt_ch("events_channel_id", Config.EVENTS_CHANNEL_ID), inline=True)
+        embed.add_field(name="Админ-логи", value=_fmt_ch("admin_log_channel_id", Config.ADMIN_LOG_CHANNEL_ID), inline=True)
+        embed.add_field(name="Общие логи", value=_fmt_ch("log_channel_id", Config.LOG_CHANNEL_ID), inline=True)
+        embed.add_field(name="Авто-бэкапы БД", value=_fmt_ch("db_backup_channel_id", 0), inline=True)
+        embed.add_field(name="Алерты твинков", value=_fmt_ch("alts_alert_channel_id", Config.ALTS_ALERT_CHANNEL_ID), inline=True)
+        embed.add_field(name="Категория тикетов", value=_fmt_ch("tickets_category_id", Config.TICKETS_CATEGORY_ID), inline=True)
+        embed.add_field(name="Архив тикетов", value=_fmt_ch("ticket_log_channel_id", Config.LOG_CHANNEL_ID), inline=True)
         embed.set_footer(text="Vanilla Land • Конфигурация каналов")
         return embed
 
@@ -2947,7 +2768,7 @@ class BridgeCog(commands.Cog, name="Мост Minecraft"):
         aliases=["профиль", "стата", "статистика", "игрок", "player"],
         description="Карточка профиля игрока Minecraft: скин, время игры, добыча, PvP и смерти",
     )
-    @app_commands.describe(player_name="Ник игрока (если не указан — используется ваш привязанный аккаунт)")
+    @app_commands.describe(player_name="Ник игрока (если не указан — используется ваш ник в Discord)")
     async def profile_cmd(self, ctx: commands.Context, player_name: Optional[str] = None):
         if ctx.interaction:
             await ctx.defer()
@@ -2955,12 +2776,7 @@ class BridgeCog(commands.Cog, name="Мост Minecraft"):
         if player_name:
             clean_name = player_name.strip()
         else:
-            # Сначала проверяем, привязан ли аккаунт у автора команды
-            linked_author = self.db.get_linked_account_by_discord(ctx.author.id)
-            if linked_author and linked_author.get("player_name"):
-                clean_name = linked_author["player_name"]
-            else:
-                clean_name = ctx.author.display_name.strip()
+            clean_name = ctx.author.display_name.strip()
 
         data = None
         if self.active_sockets:
@@ -2986,7 +2802,6 @@ class BridgeCog(commands.Cog, name="Мост Minecraft"):
             death_count, last_death = self.db.get_player_deaths(clean_name)
             death_coords = self.db.get_death_coords(clean_name)
             avatar_url = get_skin_avatar_url(clean_name, None, self.db)
-            linked_acc = self.db.get_linked_account_by_mc(clean_name)
 
             desc = (
                 "*Игрок сейчас оффлайн. Показаны данные из базы сервера.*"
@@ -3000,8 +2815,6 @@ class BridgeCog(commands.Cog, name="Мост Minecraft"):
                 timestamp=datetime.now(timezone.utc),
             )
             embed.set_thumbnail(url=avatar_url)
-            if linked_acc:
-                embed.add_field(name="🔗 Discord", value=f"<@{linked_acc['discord_user_id']}>", inline=True)
             embed.add_field(name="Статус", value="Не на сервере", inline=True)
             embed.add_field(name="💀 Смертей в базе", value=f"`{death_count}` (Посл: {last_death})", inline=True)
             if death_coords:
@@ -3064,14 +2877,11 @@ class BridgeCog(commands.Cog, name="Мост Minecraft"):
         # Данные из базы бота
         bot_deaths, last_death_reason = self.db.get_player_deaths(actual_name)
         death_coords = self.db.get_death_coords(actual_name)
-        linked = self.db.get_linked_account_by_mc(actual_name)
 
         avatar_url = get_skin_avatar_url(actual_name, skin_hash, self.db)
         embed_color = 0x57F287 if is_online else 0x4F545C
 
         desc_parts = []
-        if linked:
-            desc_parts.append(f"• **Discord:** <@{linked['discord_user_id']}>")
         desc_parts.append(f"• **UUID:** `{uuid_str}`")
         if first_played > 0:
             desc_parts.append(f"• **Первый вход:** {first_dt}")
@@ -3588,175 +3398,6 @@ class BridgeCog(commands.Cog, name="Мост Minecraft"):
         embed.set_footer(text="Vanilla Land Staff • Диагностика оптимизации")
         await ctx.send(embed=embed)
 
-    # --- КОМАНДА /link ИЛИ !link (ПРИВЯЗКА АККАУНТА MINECRAFT) ---
-    @commands.hybrid_command(
-        name="link",
-        aliases=["привязать", "связать", "привязка", "linkaccount"],
-        description="Привязать аккаунт Minecraft к Discord для профиля и статистики",
-    )
-    @app_commands.describe(target="Ваш никнейм в игре или 6-значный код из Minecraft (/link)")
-    async def link_cmd(self, ctx: commands.Context, target: Optional[str] = None):
-        if ctx.interaction:
-            await ctx.defer(ephemeral=True)
-
-        user_id = ctx.author.id
-
-        async def send_response(content=None, embed=None, view=None):
-            if ctx.interaction:
-                return await ctx.send(content=content, embed=embed, view=view, ephemeral=True)
-            elif ctx.guild is None:
-                # Уже в личных сообщениях с ботом — отправляем напрямую без лишнего уведомления
-                return await ctx.send(content=content, embed=embed, view=view)
-            else:
-                try:
-                    await ctx.message.delete()
-                except Exception as suppressed_exc:
-                    logger.debug("Bridge non-fatal operation suppressed: %s", suppressed_exc)
-                try:
-                    await ctx.author.send(content=content, embed=embed, view=view)
-                    await ctx.send(f"{ctx.author.mention}, информация отправлена вам в личные сообщения.", delete_after=5)
-                except discord.Forbidden:
-                    await ctx.send(f"{ctx.author.mention}, у вас закрыты ЛС. Используйте слэш-команду `/link` для скрытого ответа.", delete_after=7)
-
-        # 0. Проверяем, не привязан ли уже этот Discord пользователь
-        linked = self.db.get_linked_account_by_discord(user_id)
-        if linked:
-            view = AccountLinkView(self, user_id, linked["player_name"])
-            embed = AG.embed(
-                title="Аккаунт уже привязан • Vanilla Land",
-                description=(
-                    f"К вашему Discord-профилю уже привязан игровой аккаунт **`{linked['player_name']}`**!\n\n"
-                    "• Привязать более одного аккаунта **нельзя**.\n"
-                    "• Если вы хотите сменить ник или привязать другой аккаунт, сначала отвяжите текущий командой `/unlink` или кнопкой ниже."
-                ),
-                color=Colors.YELLOW,
-                thumbnail=get_skin_avatar_url(linked["player_name"], None, self.db),
-            )
-            return await send_response(embed=embed, view=view)
-
-        # 1. Если аргумент не указан
-        if not target:
-            embed = AG.embed(
-                title="🔗 Привязка аккаунта • Vanilla Land",
-                description=(
-                    "Привяжите ваш игровой аккаунт Minecraft к Discord, чтобы открывать свой `/profile` без ввода ника и синхронизировать профиль!\n\n"
-                    "**Как привязать аккаунт:**\n"
-                    "• **Способ 1:** Напишите `/link <ВашНик>` (бот выдаст 6-значный код для ввода на сервере)\n"
-                    "• **Способ 2:** Напишите в игре `/link` и введите полученный код сюда: `/link <код>`"
-                ),
-                color=Colors.INDIGO,
-            )
-            return await send_response(embed=embed)
-
-        clean_target = target.strip()
-
-        # 2. Если введён 6-значный код (полученный из Minecraft)
-        if clean_target.isdigit() and len(clean_target) == 6:
-            if not self.link_rate_ok(user_id):
-                return await send_response(content="⏳ Слишком много попыток ввода кода. Попробуйте снова через 10 минут.")
-            code_info = self.db.get_link_code(clean_target)
-            if code_info and code_info.get("discord_user_id") and int(code_info["discord_user_id"]) != int(user_id):
-                return await send_response(content="❌ Этот код принадлежит другому Discord-пользователю. Получите код в своём аккаунте.")
-            if code_info:
-                code_info = self.db.consume_link_code(clean_target)
-            if code_info and code_info.get("player_name"):
-                player_name = code_info["player_name"]
-
-                # Проверяем, не привязан ли уже этот Minecraft аккаунт
-                already_mc = self.db.get_linked_account_by_mc(player_name)
-                if already_mc:
-                    return await send_response(content=f"Игровой аккаунт **`{player_name}`** уже привязан к Discord! Повторная привязка невозможна.")
-
-                success = self.db.link_account(player_name, "", user_id, two_factor=0)
-                if success:
-                    await self.broadcast_packet({
-                        "type": "link_result",
-                        "player": player_name,
-                        "success": True,
-                        "discord_tag": str(ctx.author),
-                        "kick_relogin": False,
-                    })
-
-                    embed = AG.embed(
-                        title="✨ Аккаунт успешно привязан • Vanilla Land",
-                        description=(
-                            f"Ваш аккаунт Minecraft **`{player_name}`** успешно синхронизирован с Discord!\n\n"
-                            "• **Профиль и статистика:** теперь `/profile` работает автоматически без указания ника.\n"
-                            "• **Отвязка:** используйте `/unlink` или кнопку ниже."
-                        ),
-                        color=Colors.GREEN,
-                        thumbnail=get_skin_avatar_url(player_name, None, self.db),
-                    )
-                    view = AccountLinkView(self, user_id, player_name)
-                    return await send_response(embed=embed, view=view)
-                else:
-                    return await send_response(content="Не удалось привязать: этот аккаунт уже привязан.")
-            else:
-                return await send_response(content="Код не найден или истёк срок его действия (10 минут). Введите `/link` в игре повторно.")
-
-        # 3. Если введён никнейм игрока
-        player_name = clean_target
-        already_linked = self.db.get_linked_account_by_mc(player_name)
-        if already_linked:
-            return await send_response(content=f"Игровой аккаунт **`{player_name}`** уже привязан к Discord! Повторная привязка невозможна.")
-
-        # Генерируем 6-значный код
-        code = f"{secrets.randbelow(900000) + 100000}"
-        self.db.create_link_code(player_name=player_name, discord_user_id=user_id, code=code, lifetime_sec=600)
-
-        embed = AG.embed(
-            title="🔗 Завершение привязки • Vanilla Land",
-            description=(
-                f"Для завершения связки аккаунта **`{player_name}`** зайдите на сервер Minecraft и введите команду:\n\n"
-                f"```fix\n/link {code}\n```\n"
-                f"• **Срок действия кода:** `10 минут`\n"
-                f"• **Одноразовый код:** `{code}`\n\n"
-                "> Во время ввода команды аккаунт будет мгновенно привязан к вашему Discord!"
-            ),
-            color=Colors.INDIGO,
-            thumbnail=get_skin_avatar_url(player_name, None, self.db),
-        )
-        await send_response(embed=embed)
-
-    # --- КОМАНДА /unlink ИЛИ !unlink (ОТВЯЗКА АККАУНТА) ---
-    @commands.hybrid_command(
-        name="unlink",
-        aliases=["отвязать", "отвязка"],
-        description="Отвязать аккаунт Minecraft от Discord",
-    )
-    async def unlink_cmd(self, ctx: commands.Context):
-        if ctx.interaction:
-            await ctx.defer(ephemeral=True)
-
-        user_id = ctx.author.id
-        linked = self.db.get_linked_account_by_discord(user_id)
-        if not linked:
-            if ctx.interaction:
-                return await ctx.send("У вас нет привязанного аккаунта Minecraft.", ephemeral=True)
-            else:
-                return await ctx.send(f"{ctx.author.mention}, у вас нет привязанного аккаунта Minecraft.", delete_after=5)
-
-        player_name = self.db.unlink_account_by_discord(user_id)
-        if player_name:
-            try:
-                await self.broadcast_packet({"type": "account_unlinked", "player": player_name})
-            except Exception as suppressed_exc:
-                logger.debug("Bridge non-fatal operation suppressed: %s", suppressed_exc)
-
-        embed = AG.embed(
-            title="Аккаунт отвязан • Vanilla Land",
-            description=f"Аккаунт Minecraft **`{player_name}`** успешно отвязан от вашего Discord.",
-            color=Colors.DARK,
-        )
-        if ctx.interaction:
-            await ctx.send(embed=embed, ephemeral=True)
-        else:
-            try:
-                await ctx.message.delete()
-            except Exception as suppressed_exc:
-                logger.debug("Bridge non-fatal operation suppressed: %s", suppressed_exc)
-            await ctx.send(f"Аккаунт `{player_name}` успешно отвязан.", delete_after=6)
-
     # --- КОМАНДА /maintenance ИЛИ !maintenance / !техработы ---
     @commands.hybrid_command(
         name="maintenance",
@@ -3970,37 +3611,6 @@ class BridgeCog(commands.Cog, name="Мост Minecraft"):
             return await ctx.send(embed=embed)
 
 
-    # --- КОМАНДА /link_panel ИЛИ !link_panel (ПАНЕЛЬ ПРИВЯЗКИ ДЛЯ АДМИНИСТРАЦИИ) ---
-    @commands.hybrid_command(
-        name="link_panel",
-        aliases=["панель_привязки", "linkpanel", "привязка_панель"],
-        description="Отправить интерактивную панель привязки аккаунтов (Администрация)",
-    )
-    @app_commands.describe(channel="Канал для отправки панели (по умолчанию текущий)")
-    @commands.has_permissions(administrator=True)
-    async def link_panel_cmd(self, ctx: commands.Context, channel: Optional[discord.TextChannel] = None):
-        target_ch = channel or ctx.channel
-        guild_icon = ctx.guild.icon.url if ctx.guild and ctx.guild.icon else None
-
-        embed = discord.Embed(
-            title="Привязка аккаунта Minecraft • Vanilla Land",
-            description=(
-                "Привяжите ваш игровой никнейм к профилю Discord для быстрого доступа к статистике и профилю.\n\n"
-                "**Возможности привязки:**\n"
-                "• **Профиль без ввода ника:** Команда `/profile` автоматически открывает вашу статистику\n"
-                "• **Быстрая синхронизация:** Простой ввод одноразового кода в игре или Discord\n\n"
-                "> Нажмите кнопку ниже для привязки или проверки статуса:"
-            ),
-            color=0xFF8C00,
-        )
-        if guild_icon:
-            embed.set_thumbnail(url=guild_icon)
-        embed.set_footer(text="Vanilla Land • Привязка аккаунта")
-        view = PermanentLinkPanelView(self)
-        await target_ch.send(embed=embed, view=view)
-        await ctx.send(f"Панель привязки аккаунтов успешно отправлена в {target_ch.mention}.", ephemeral=True)
-
-
 class ShulkerSelectView(ui.View):
     """Интерактивное меню выбора и визуального рендера шалкера"""
     def __init__(self, player_name: str, shulkers: List[dict]):
@@ -4089,6 +3699,12 @@ class SetupChannelsView(ui.View):
         super().__init__(timeout=300)
         self.bridge_cog = bridge_cog
 
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if not is_mod_or_admin(interaction):
+            await interaction.response.send_message("Недостаточно прав для настройки каналов.", ephemeral=True)
+            return False
+        return True
+
     async def _save_channel(self, interaction: discord.Interaction, key: str, selected_channels):
         if not selected_channels:
             return await interaction.response.defer()
@@ -4097,23 +3713,23 @@ class SetupChannelsView(ui.View):
         embed = self.bridge_cog._build_setup_channels_embed(interaction.guild)
         await interaction.response.edit_message(embed=embed, view=self)
 
-    @ui.select(cls=ui.ChannelSelect, placeholder="📅 Выбрать канал событий...", channel_types=[discord.ChannelType.text], min_values=1, max_values=1, row=0)
+    @ui.select(cls=ui.ChannelSelect, placeholder="Выбрать канал событий...", channel_types=[discord.ChannelType.text], min_values=1, max_values=1, row=0)
     async def sel_events(self, interaction: discord.Interaction, select: ui.ChannelSelect):
         await self._save_channel(interaction, "events_channel_id", select.values)
 
-    @ui.select(cls=ui.ChannelSelect, placeholder="🛡️ Выбрать канал админ-логов...", channel_types=[discord.ChannelType.text], min_values=1, max_values=1, row=1)
+    @ui.select(cls=ui.ChannelSelect, placeholder="Выбрать канал админ-логов...", channel_types=[discord.ChannelType.text], min_values=1, max_values=1, row=1)
     async def sel_admin_logs(self, interaction: discord.Interaction, select: ui.ChannelSelect):
         await self._save_channel(interaction, "admin_log_channel_id", select.values)
 
-    @ui.select(cls=ui.ChannelSelect, placeholder="💾 Выбрать канал авто-бэкапов БД...", channel_types=[discord.ChannelType.text], min_values=1, max_values=1, row=2)
+    @ui.select(cls=ui.ChannelSelect, placeholder="Выбрать канал авто-бэкапов БД...", channel_types=[discord.ChannelType.text], min_values=1, max_values=1, row=2)
     async def sel_db_backup(self, interaction: discord.Interaction, select: ui.ChannelSelect):
         await self._save_channel(interaction, "db_backup_channel_id", select.values)
 
-    @ui.select(cls=ui.ChannelSelect, placeholder="🚨 Выбрать канал алертов твинков...", channel_types=[discord.ChannelType.text], min_values=1, max_values=1, row=3)
+    @ui.select(cls=ui.ChannelSelect, placeholder="Выбрать канал алертов твинков...", channel_types=[discord.ChannelType.text], min_values=1, max_values=1, row=3)
     async def sel_alts(self, interaction: discord.Interaction, select: ui.ChannelSelect):
         await self._save_channel(interaction, "alts_alert_channel_id", select.values)
 
-    @ui.select(cls=ui.ChannelSelect, placeholder="🎫 Выбрать категорию тикетов...", channel_types=[discord.ChannelType.category], min_values=1, max_values=1, row=4)
+    @ui.select(cls=ui.ChannelSelect, placeholder="Выбрать категорию тикетов...", channel_types=[discord.ChannelType.category], min_values=1, max_values=1, row=4)
     async def sel_tickets_cat(self, interaction: discord.Interaction, select: ui.ChannelSelect):
         await self._save_channel(interaction, "tickets_category_id", select.values)
 
@@ -4124,7 +3740,13 @@ class BridgeStatusView(ui.View):
         super().__init__(timeout=180)
         self.bridge_cog = bridge_cog
 
-    @ui.button(label="🔄 Обновить / Пинг", style=discord.ButtonStyle.primary)
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if not is_mod_or_admin(interaction):
+            await interaction.response.send_message("Доступно только персоналу сервера.", ephemeral=True)
+            return False
+        return True
+
+    @ui.button(label="Обновить / Пинг", style=discord.ButtonStyle.primary)
     async def refresh_btn(self, interaction: discord.Interaction, button: ui.Button):
         await interaction.response.defer()
         rtts = await self.bridge_cog._probe_sockets(timeout=2.5)
@@ -4379,7 +4001,7 @@ class TopLeaderboardView(ui.View):
         self.update_buttons()
         await interaction.response.edit_message(embed=self.build_embed(), view=self)
 
-    @ui.button(label="🔄 Обновить", style=discord.ButtonStyle.primary, custom_id="top:refresh", row=1)
+    @ui.button(label="Обновить", style=discord.ButtonStyle.primary, custom_id="top:refresh", row=1)
     async def btn_refresh(self, interaction: discord.Interaction, button: ui.Button):
         await interaction.response.defer()
         if self.bridge_cog is not None:
@@ -4467,8 +4089,5 @@ async def setup(bot: commands.Bot):
     db: DatabaseManager = bot.db
     cog = BridgeCog(bot, db)
     await bot.add_cog(cog)
-    # Persistent-вью: работают после рестарта бота (данные резолвятся по interaction.user.id)
-    bot.add_view(PermanentLinkPanelView(cog))
-    bot.add_view(AccountLinkView(cog))
     bot.add_view(DmReplyView(cog))
 

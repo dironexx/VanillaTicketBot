@@ -25,14 +25,6 @@ class DatabaseTests(unittest.TestCase):
         statuses = [row["status"] for row in self.db.get_recent_logins("Steve", 5)]
         self.assertEqual(statuses, ["SUCCESS", "FAILED", "SUCCESS"])
 
-    def test_migration_keeps_alerts_disabled(self):
-        self.assertTrue(self.db.link_account("Steve", "uuid-1", 123456, two_factor=1))
-        self.db.set_login_alerts_enabled(123456, False)
-        self.db.init_db()
-        linked = self.db.get_linked_account_by_discord(123456)
-        self.assertIsNotNone(linked)
-        self.assertFalse(linked["login_alerts_enabled"])
-
     def test_security_alert_and_dm_target(self):
         self.db.save_security_alert(100, "Player", "Alt", "Ban reason", "1.2.3.4")
         alert = self.db.get_security_alert(100)
@@ -175,6 +167,27 @@ class DatabaseTests(unittest.TestCase):
         hist = self.db.get_server_stats_history(24)
         self.assertEqual(len(hist), 1)
         self.assertEqual(hist[0]["online"], 25)
+
+    def test_get_user_tickets_by_id_and_username(self):
+        n1 = self.db.get_next_ticket_number()
+        self.db.save_ticket(2001, 777001, "Dironexx", ticket_num=n1)
+        self.db.close_ticket(2001, closed_by="Mod", reason="Решено", transcript_file="transcripts/t1.txt")
+
+        n2 = self.db.get_next_ticket_number()
+        self.db.save_ticket(2002, 777001, "Dironexx", ticket_num=n2)
+
+        by_id = self.db.get_user_tickets(user_id=777001)
+        self.assertEqual(len(by_id), 2)
+        self.assertEqual(by_id[0]["ticket_num"], n2)
+        self.assertEqual(by_id[0]["status"], "open")
+        self.assertEqual(by_id[1]["status"], "closed")
+
+        by_name = self.db.get_user_tickets(username="diron")
+        self.assertEqual(len(by_name), 2)
+
+        from cogs.tickets import _paginate_transcript_text
+        pages = _paginate_transcript_text("\n".join(f"line {i}" for i in range(120)), page_size=200)
+        self.assertGreater(len(pages), 1)
 
 
 if __name__ == "__main__":

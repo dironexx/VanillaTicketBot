@@ -1,5 +1,4 @@
 import asyncio
-import html
 import logging
 import os
 import re
@@ -290,265 +289,6 @@ def can_manage_ticket(ctx: commands.Context, db: DatabaseManager) -> bool:
     return ticket_author_id is not None and ctx.author.id == ticket_author_id
 
 
-async def save_transcript_html(
-    channel: discord.TextChannel,
-    closed_by_name: str = "Персонал",
-    reason: str = "Вопрос решен"
-) -> str:
-    """Генерирует автономный HTML-файл переписки тикета в темной теме Obsidian / Linear"""
-    file_time = get_msk_now().strftime("%Y%m%d_%H%M%S")
-    filename = os.path.join(Config.TRANSCRIPTS_DIR, f"{channel.name}_{file_time}.html")
-
-    messages_html = []
-    msg_count = 0
-
-    async for msg in channel.history(limit=None, oldest_first=True):
-        msg_count += 1
-        msg_time = msg.created_at.astimezone(MSK).strftime("%d.%m.%Y %H:%M:%S")
-        author_name = html.escape(msg.author.display_name)
-        author_avatar = msg.author.display_avatar.url if hasattr(msg.author, "display_avatar") else ""
-        role_color = "#99aab5"
-        if isinstance(msg.author, discord.Member) and msg.author.color.value != 0:
-            role_color = f"#{msg.author.color.value:06x}"
-
-        # Markdown форматирование
-        raw_text = html.escape(msg.clean_content or "")
-        raw_text = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", raw_text)
-        raw_text = re.sub(r"\*(.+?)\*", r"<em>\1</em>", raw_text)
-        raw_text = re.sub(r"`(.+?)`", r"<code>\1</code>", raw_text)
-        raw_text = raw_text.replace("\n", "<br>")
-
-        attachments_html = []
-        for att in msg.attachments:
-            att_url = html.escape(att.url)
-            is_image = any(att.filename.lower().endswith(ext) for ext in (".png", ".jpg", ".jpeg", ".webp", ".gif"))
-            if is_image:
-                attachments_html.append(f'<div class="attachment"><a href="{att_url}" target="_blank"><img src="{att_url}" alt="Attachment" class="att-img" /></a></div>')
-            else:
-                att_name = html.escape(att.filename)
-                attachments_html.append(f'<div class="attachment"><a href="{att_url}" target="_blank" class="att-file">[Файл] {att_name}</a></div>')
-
-        embeds_html = []
-        for emb in msg.embeds:
-            border_color = f"#{emb.color.value:06x}" if emb.color and emb.color.value else "#5865f2"
-            emb_title = f'<div class="embed-title">{html.escape(emb.title)}</div>' if emb.title else ""
-            emb_desc = f'<div class="embed-desc">{html.escape(emb.description or "").replace(chr(10), "<br>")}</div>' if emb.description else ""
-            fields_html = []
-            for f in emb.fields:
-                f_name = html.escape(f.name)
-                f_val = html.escape(f.value).replace("\n", "<br>")
-                fields_html.append(f'<div class="embed-field"><div class="field-name">{f_name}</div><div class="field-val">{f_val}</div></div>')
-            f_block = f'<div class="embed-fields">{"".join(fields_html)}</div>' if fields_html else ""
-            embeds_html.append(f'<div class="embed" style="border-left-color: {border_color};">{emb_title}{emb_desc}{f_block}</div>')
-
-        bot_badge = '<span class="bot-badge">БОТ</span>' if msg.author.bot else ""
-        avatar_img = f'<img src="{author_avatar}" class="avatar" alt="Avatar" />' if author_avatar else '<div class="avatar-placeholder"></div>'
-
-        messages_html.append(f"""
-        <div class="message">
-            {avatar_img}
-            <div class="message-content">
-                <div class="message-header">
-                    <span class="author" style="color: {role_color};">{author_name}</span>
-                    {bot_badge}
-                    <span class="timestamp">{msg_time}</span>
-                </div>
-                <div class="message-body">{raw_text}</div>
-                {"".join(attachments_html)}
-                {"".join(embeds_html)}
-            </div>
-        </div>
-        """)
-
-    guild_name = html.escape(channel.guild.name)
-    ch_name = html.escape(channel.name)
-    closed_by_clean = html.escape(closed_by_name)
-    reason_clean = html.escape(reason)
-    now_date = get_msk_now().strftime("%d.%m.%Y %H:%M:%S")
-
-    html_page = f"""<!DOCTYPE html>
-<html lang="ru">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Транскрипт #{ch_name} • {guild_name}</title>
-    <style>
-        * {{ box-sizing: border-box; margin: 0; padding: 0; }}
-        body {{
-            background-color: #313338;
-            color: #dbdee1;
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-            font-size: 15px;
-            line-height: 1.4;
-            padding: 20px;
-        }}
-        .container {{
-            max-width: 960px;
-            margin: 0 auto;
-            background-color: #2b2d31;
-            border-radius: 8px;
-            overflow: hidden;
-            box-shadow: 0 4px 20px rgba(0,0,0,0.4);
-        }}
-        .header {{
-            background-color: #1e1f22;
-            padding: 24px;
-            border-bottom: 2px solid #232428;
-        }}
-        .header h1 {{
-            font-size: 20px;
-            color: #f2f3f5;
-            margin-bottom: 12px;
-        }}
-        .header-grid {{
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-            gap: 10px;
-            font-size: 13px;
-            color: #949ba4;
-        }}
-        .header-item strong {{ color: #f2f3f5; }}
-        .chat {{
-            padding: 20px 24px;
-            display: flex;
-            flex-direction: column;
-            gap: 14px;
-        }}
-        .message {{
-            display: flex;
-            gap: 16px;
-            padding: 6px 8px;
-            border-radius: 4px;
-            transition: background 0.1s;
-        }}
-        .message:hover {{ background-color: #2e3035; }}
-        .avatar {{
-            width: 40px;
-            height: 40px;
-            border-radius: 50%;
-            flex-shrink: 0;
-        }}
-        .avatar-placeholder {{
-            width: 40px;
-            height: 40px;
-            border-radius: 50%;
-            background-color: #5865f2;
-            flex-shrink: 0;
-        }}
-        .message-content {{ flex-grow: 1; min-width: 0; }}
-        .message-header {{
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            margin-bottom: 4px;
-        }}
-        .author {{ font-weight: 600; font-size: 15px; }}
-        .bot-badge {{
-            background-color: #5865f2;
-            color: #ffffff;
-            font-size: 10px;
-            font-weight: 700;
-            padding: 1px 4px;
-            border-radius: 3px;
-        }}
-        .timestamp {{
-            font-size: 12px;
-            color: #949ba4;
-        }}
-        .message-body {{
-            word-break: break-word;
-            color: #dbdee1;
-        }}
-        .message-body code {{
-            background: #1e1f22;
-            padding: 2px 4px;
-            border-radius: 3px;
-            font-family: monospace;
-            font-size: 13px;
-        }}
-        .attachment {{ margin-top: 8px; }}
-        .att-img {{
-            max-width: 100%;
-            max-height: 380px;
-            border-radius: 6px;
-        }}
-        .att-file {{
-            color: #00a8fc;
-            text-decoration: none;
-            font-size: 13px;
-            background: #1e1f22;
-            padding: 4px 8px;
-            border-radius: 4px;
-            display: inline-block;
-        }}
-        .att-file:hover {{ text-decoration: underline; }}
-        .embed {{
-            margin-top: 8px;
-            background-color: #1e1f22;
-            border-left: 4px solid #5865f2;
-            border-radius: 4px;
-            padding: 12px;
-            max-width: 520px;
-        }}
-        .embed-title {{
-            font-weight: 600;
-            color: #f2f3f5;
-            margin-bottom: 6px;
-        }}
-        .embed-desc {{
-            font-size: 14px;
-            color: #dbdee1;
-            margin-bottom: 8px;
-        }}
-        .embed-fields {{
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
-            gap: 8px;
-        }}
-        .field-name {{ font-size: 12px; font-weight: 600; color: #949ba4; }}
-        .field-val {{ font-size: 13px; color: #dbdee1; }}
-        .footer {{
-            padding: 16px 24px;
-            background-color: #1e1f22;
-            border-top: 1px solid #232428;
-            font-size: 12px;
-            color: #949ba4;
-            text-align: center;
-        }}
-    </style>
-</head>
-<body>
-    <div class="container">
-        <div class="header">
-            <h1>#{ch_name} • Архив обращения</h1>
-            <div class="header-grid">
-                <div class="header-item">Сервер: <strong>{guild_name}</strong></div>
-                <div class="header-item">Дата закрытия: <strong>{now_date}</strong></div>
-                <div class="header-item">Закрыл: <strong>{closed_by_clean}</strong></div>
-                <div class="header-item">Причина: <strong>{reason_clean}</strong></div>
-                <div class="header-item">Сообщений: <strong>{msg_count}</strong></div>
-            </div>
-        </div>
-        <div class="chat">
-            {"".join(messages_html)}
-        </div>
-        <div class="footer">
-            Vanilla Land Support • play.vanillaland.fun
-        </div>
-    </div>
-</body>
-</html>
-"""
-
-    def _write() -> None:
-        os.makedirs(Config.TRANSCRIPTS_DIR, exist_ok=True)
-        with open(filename, "w", encoding="utf-8") as f:
-            f.write(html_page)
-
-    await asyncio.to_thread(_write)
-    return filename
-
-
 async def save_transcript_to_file(channel: discord.TextChannel) -> str:
     file_time = get_msk_now().strftime("%Y%m%d_%H%M%S")
     filename = os.path.join(Config.TRANSCRIPTS_DIR, f"{channel.name}_{file_time}.txt")
@@ -599,7 +339,6 @@ async def save_transcript_to_file(channel: discord.TextChannel) -> str:
 def build_suspect_embed(bot: commands.Bot, db: DatabaseManager, suspect_nick: str) -> discord.Embed:
     summary = _db_call(db.get_suspect_summary, suspect_nick)
     player = summary["player_name"]
-    linked = summary.get("linked")
     alts = summary.get("alts", [])
     ips = summary.get("ips", [])
     alerts = summary.get("alerts", [])
@@ -615,10 +354,6 @@ def build_suspect_embed(bot: commands.Bot, db: DatabaseManager, suspect_nick: st
         footer="Vanilla Land • Безопасность",
     )
     embed.add_field(name="Статус", value=status_str, inline=True)
-    if linked:
-        embed.add_field(name="Discord", value=f"<@{linked['discord_user_id']}> (`{linked['discord_user_id']}`)", inline=True)
-    else:
-        embed.add_field(name="Discord", value="*Не привязан*", inline=True)
 
     if ips:
         masked_ips = [f"`{ip[:ip.rfind('.')] + '.***' if '.' in ip else ip}`" for ip in ips[:3]]
@@ -1056,6 +791,294 @@ class TicketAutoReplyModal(ui.Modal, title="Добавить автоответ 
         await _safe_send_interaction(interaction, embed=embed, ephemeral=True)
 
 
+def _paginate_transcript_text(text: str, page_size: int = 1600) -> list[str]:
+    """Разбивает текст переписки тикета на аккуратные страницы по границам строк."""
+    clean = (text or "").strip()
+    if not clean:
+        return ["В этом тикете нет сохранённых сообщений."]
+
+    pages: list[str] = []
+    current_lines: list[str] = []
+    current_len = 0
+
+    for line in clean.splitlines():
+        safe_line = line.replace("```", "'''")
+        while len(safe_line) > page_size:
+            chunk = safe_line[:page_size]
+            if current_lines:
+                pages.append("\n".join(current_lines))
+                current_lines = []
+                current_len = 0
+            pages.append(chunk)
+            safe_line = safe_line[page_size:]
+
+        line_len = len(safe_line) + 1
+        if current_lines and current_len + line_len > page_size:
+            pages.append("\n".join(current_lines))
+            current_lines = [safe_line]
+            current_len = line_len
+        else:
+            current_lines.append(safe_line)
+            current_len += line_len
+
+    if current_lines:
+        pages.append("\n".join(current_lines))
+
+    return pages or ["В этом тикете нет сохранённых сообщений."]
+
+
+async def _load_ticket_transcript_pages(
+    guild: Optional[discord.Guild],
+    ticket: dict,
+) -> tuple[list[str], Optional[str]]:
+    """Загружает содержимое тикета (из .txt файла или живого канала) и возвращает (страницы, путь_к_файлу)."""
+    t_path = ticket.get("transcript_file")
+    if t_path and await asyncio.to_thread(os.path.isfile, t_path):
+        if str(t_path).lower().endswith(".txt"):
+            def _read_txt() -> str:
+                with open(t_path, "r", encoding="utf-8", errors="replace") as f:
+                    raw_lines = f.read().splitlines()
+                # Пропускаем шапку ====...==== в начале .txt файла
+                body_start = 0
+                for idx, ln in enumerate(raw_lines[:10]):
+                    if ln.startswith("====") and idx > 0:
+                        body_start = idx + 1
+                        break
+                return "\n".join(raw_lines[body_start:]).strip()
+
+            body = await asyncio.to_thread(_read_txt)
+            return _paginate_transcript_text(body), t_path
+        return [
+            "Для этого старого обращения сохранён HTML-транскрипт.\n"
+            "Нажмите кнопку «Скачать файл» ниже, чтобы открыть полную переписку."
+        ], t_path
+
+    # Если тикет открыт в Discord — читаем последние сообщения прямо из канала
+    ch_id = ticket.get("dc_channel_id")
+    if guild and ch_id:
+        ch = guild.get_channel(int(ch_id))
+        if isinstance(ch, discord.TextChannel):
+            live_lines: list[str] = []
+            try:
+                msgs = [m async for m in ch.history(limit=30, oldest_first=False)]
+                for msg in reversed(msgs):
+                    msg_time = msg.created_at.astimezone(MSK).strftime("%d.%m %H:%M")
+                    if msg.author.bot:
+                        if msg.embeds and msg.embeds[0].title:
+                            live_lines.append(f"[{msg_time}] [БОТ] {msg.embeds[0].title}")
+                        continue
+                    content = msg.clean_content or ""
+                    if msg.attachments:
+                        att_str = " ".join(a.filename for a in msg.attachments)
+                        content = f"{content} [Файлы: {att_str}]".strip()
+                    if content:
+                        live_lines.append(f"[{msg_time}] {msg.author.name}: {content}")
+                if live_lines:
+                    return _paginate_transcript_text("\n".join(live_lines)), None
+            except Exception as err:
+                logger.debug("Не удалось прочитать сообщения канала %s: %s", ch_id, err)
+
+    return ["Транскрипт не найден на диске (возможно, тикет был удалён без сохранения лога)."], None
+
+
+class UserTicketSelect(ui.Select):
+    def __init__(self, tickets: list[dict], selected_num: Optional[int] = None):
+        options: list[discord.SelectOption] = []
+        for t in tickets[:25]:
+            t_num = int(t.get("ticket_num") or 0)
+            is_open = t.get("status") == "open"
+            status_label = "Открыт" if is_open else "Закрыт"
+            created = str(t.get("created_at") or "?")[:16]
+            reason = str(t.get("close_reason") or ("Активное обращение" if is_open else "Без причины")).strip()
+            desc = f"{created} • {reason}"
+            if len(desc) > 95:
+                desc = desc[:92] + "..."
+            options.append(
+                discord.SelectOption(
+                    label=f"Тикет #{t_num:03d} ({status_label})",
+                    description=desc,
+                    value=str(t_num) if t_num > 0 else f"ch:{t.get('dc_channel_id')}",
+                    default=(selected_num is not None and t_num == selected_num),
+                )
+            )
+        super().__init__(
+            placeholder="Выберите тикет для просмотра содержимого...",
+            min_values=1,
+            max_values=1,
+            options=options,
+            row=0,
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        view = self.view
+        if not isinstance(view, UserTicketsView):
+            return
+        val = self.values[0]
+        chosen = None
+        for t in view.tickets:
+            t_num = int(t.get("ticket_num") or 0)
+            key = str(t_num) if t_num > 0 else f"ch:{t.get('dc_channel_id')}"
+            if key == val:
+                chosen = t
+                break
+        if not chosen:
+            return await interaction.response.send_message("Тикет не найден.", ephemeral=True)
+
+        await interaction.response.defer()
+        await view.select_ticket(chosen, interaction)
+
+
+class UserTicketsView(ui.View):
+    """Интерактивный просмотр всех тикетов пользователя и их содержимого."""
+
+    def __init__(
+        self,
+        tickets: list[dict],
+        target_label: str,
+        target_id: Optional[int],
+        guild: Optional[discord.Guild],
+    ):
+        super().__init__(timeout=300)
+        self.tickets = tickets[:25]
+        self.target_label = target_label
+        self.target_id = target_id
+        self.guild = guild
+        self.selected_ticket: Optional[dict] = None
+        self.pages: list[str] = []
+        self.page_idx: int = 0
+        self.transcript_path: Optional[str] = None
+        self._rebuild_items()
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if not is_mod_or_admin(interaction):
+            await interaction.response.send_message("Эта панель доступна только персоналу сервера.", ephemeral=True)
+            return False
+        return True
+
+    def _rebuild_items(self):
+        self.clear_items()
+        sel_num = int(self.selected_ticket.get("ticket_num") or 0) if self.selected_ticket else None
+        self.add_item(UserTicketSelect(self.tickets, selected_num=sel_num))
+
+        if self.selected_ticket is not None:
+            total_pages = max(1, len(self.pages))
+            prev_btn = ui.Button(
+                label="Назад",
+                style=discord.ButtonStyle.secondary,
+                disabled=(self.page_idx <= 0),
+                row=1,
+            )
+            page_btn = ui.Button(
+                label=f"Стр. {self.page_idx + 1}/{total_pages}",
+                style=discord.ButtonStyle.secondary,
+                disabled=True,
+                row=1,
+            )
+            next_btn = ui.Button(
+                label="Вперёд",
+                style=discord.ButtonStyle.secondary,
+                disabled=(self.page_idx >= total_pages - 1),
+                row=1,
+            )
+            prev_btn.callback = self._on_prev
+            next_btn.callback = self._on_next
+            self.add_item(prev_btn)
+            self.add_item(page_btn)
+            self.add_item(next_btn)
+
+            if self.transcript_path:
+                dl_btn = ui.Button(
+                    label="Скачать файл",
+                    style=discord.ButtonStyle.primary,
+                    row=1,
+                )
+                dl_btn.callback = self._on_download
+                self.add_item(dl_btn)
+
+    async def _on_prev(self, interaction: discord.Interaction):
+        if self.page_idx > 0:
+            self.page_idx -= 1
+        self._rebuild_items()
+        await interaction.response.edit_message(embed=self.build_embed(), view=self)
+
+    async def _on_next(self, interaction: discord.Interaction):
+        if self.page_idx < len(self.pages) - 1:
+            self.page_idx += 1
+        self._rebuild_items()
+        await interaction.response.edit_message(embed=self.build_embed(), view=self)
+
+    async def _on_download(self, interaction: discord.Interaction):
+        if not self.transcript_path or not await asyncio.to_thread(os.path.isfile, self.transcript_path):
+            return await interaction.response.send_message("Файл транскрипта не найден на сервере.", ephemeral=True)
+        await interaction.response.send_message(
+            content=f"Транскрипт тикета `#{int(self.selected_ticket.get('ticket_num') or 0):03d}`:",
+            file=discord.File(self.transcript_path),
+            ephemeral=True,
+        )
+
+    async def select_ticket(self, ticket: dict, interaction: discord.Interaction):
+        self.selected_ticket = ticket
+        self.pages, self.transcript_path = await _load_ticket_transcript_pages(self.guild, ticket)
+        self.page_idx = 0
+        self._rebuild_items()
+        await interaction.edit_original_response(embed=self.build_embed(), view=self)
+
+    def build_embed(self) -> discord.Embed:
+        if self.selected_ticket is None:
+            lines = []
+            for t in self.tickets[:15]:
+                t_num = int(t.get("ticket_num") or 0)
+                is_open = t.get("status") == "open"
+                st = "Открыт" if is_open else "Закрыт"
+                created = t.get("created_at") or "?"
+                if is_open:
+                    extra = f"<#{t['dc_channel_id']}>"
+                else:
+                    closed_by = t.get("closed_by") or "—"
+                    reason = (t.get("close_reason") or "Без причины")[:60]
+                    extra = f"Закрыл: **{closed_by}** • {reason}"
+                lines.append(f"• **`#{t_num:03d}`** [`{st}`] — `{created}`\n  {extra}")
+
+            if len(self.tickets) > 15:
+                lines.append(f"\n*И ещё {len(self.tickets) - 15} тикетов доступны в списке ниже.*")
+
+            id_part = f" (`{self.target_id}`)" if self.target_id else ""
+            embed = AG.embed(
+                title=f"Тикеты пользователя • {self.target_label}",
+                description=(
+                    f"Найдено обращений: **{len(self.tickets)}**{id_part}\n"
+                    "Выберите тикет в выпадающем меню ниже, чтобы открыть его содержимое.\n\n"
+                    + "\n".join(lines)
+                ),
+                color=Colors.BLUE,
+                footer="Vanilla Land • Архив обращений",
+            )
+            return embed
+
+        t = self.selected_ticket
+        t_num = int(t.get("ticket_num") or 0)
+        is_open = t.get("status") == "open"
+        st_label = "Открыт" if is_open else "Закрыт"
+        page_text = self.pages[self.page_idx] if self.pages else "Пусто"
+
+        embed = AG.embed(
+            title=f"Тикет #{t_num:03d} • {t.get('user_name') or self.target_label}",
+            description=f"```txt\n{page_text}\n```",
+            color=Colors.GREEN if is_open else Colors.DARK,
+            footer=f"Vanilla Land • Страница {self.page_idx + 1}/{max(1, len(self.pages))}",
+        )
+        embed.add_field(name="Статус", value=f"`{st_label}`", inline=True)
+        embed.add_field(name="Автор", value=f"<@{t['user_id']}> (`{t['user_id']}`)", inline=True)
+        embed.add_field(name="Создан", value=f"`{t.get('created_at') or '—'}`", inline=True)
+        if not is_open:
+            embed.add_field(name="Закрыл", value=f"**{t.get('closed_by') or '—'}**", inline=True)
+            embed.add_field(name="Закрыт", value=f"`{t.get('closed_at') or '—'}`", inline=True)
+            embed.add_field(name="Причина", value=(t.get("close_reason") or "Не указана")[:250], inline=True)
+        else:
+            embed.add_field(name="Канал", value=f"<#{t['dc_channel_id']}>", inline=True)
+        return embed
+
+
 class TicketsCog(commands.Cog, name="Тикеты"):
     def __init__(self, bot: commands.Bot, db: DatabaseManager):
         self.bot = bot
@@ -1123,7 +1146,7 @@ class TicketsCog(commands.Cog, name="Тикеты"):
                                 self._auto_reply_cooldowns.clear()
                             pct = int(round(match["score"] * 100))
                             emb = discord.Embed(
-                                title="💡 Быстрая подсказка • Vanilla Land",
+                                title="Быстрая подсказка • Vanilla Land",
                                 description=rule["response_text"],
                                 color=Colors.INDIGO,
                             )
@@ -1608,6 +1631,74 @@ class TicketsCog(commands.Cog, name="Тикеты"):
         await ctx.send(embed=embed, ephemeral=True)
 
     @commands.hybrid_command(
+        name="user_tickets",
+        aliases=["тикеты_юзера", "тикеты_игрока", "tickets_user", "проверить_тикеты"],
+        description="[Персонал] Показать все тикеты пользователя (по юзернейму или ID) и их содержимое",
+    )
+    @app_commands.describe(user="Discord @упоминание, ID или юзернейм пользователя")
+    async def user_tickets_cmd(self, ctx: commands.Context, *, user: str):
+        if not is_mod_or_admin(ctx):
+            return await ctx.send("Эта команда доступна только персоналу сервера.", ephemeral=True)
+        if ctx.interaction:
+            await ctx.defer(ephemeral=True)
+
+        raw = (user or "").strip()
+        if not raw:
+            return await ctx.send("Укажите `@упоминание`, Discord ID или юзернейм пользователя.", ephemeral=True)
+
+        clean_id = raw.strip("<@!>").strip()
+        target_id: Optional[int] = None
+        target_label = raw
+
+        if clean_id.isdigit():
+            target_id = int(clean_id)
+            u_obj = ctx.guild.get_member(target_id) if ctx.guild else None
+            if not u_obj:
+                u_obj = self.bot.get_user(target_id)
+            if not u_obj:
+                try:
+                    u_obj = await self.bot.fetch_user(target_id)
+                except Exception:
+                    u_obj = None
+            if u_obj:
+                target_label = f"{u_obj.name}"
+        elif ctx.guild:
+            q_low = raw.lower().lstrip("@")
+            matched = discord.utils.find(
+                lambda m: m.name.lower() == q_low or m.display_name.lower() == q_low,
+                ctx.guild.members,
+            )
+            if not matched:
+                matched = discord.utils.find(
+                    lambda m: q_low in m.name.lower() or q_low in m.display_name.lower(),
+                    ctx.guild.members,
+                )
+            if matched:
+                target_id = matched.id
+                target_label = matched.name
+
+        tickets = await _async_db_call(
+            self.db.get_user_tickets,
+            user_id=target_id,
+            username=None if target_id is not None else raw.lstrip("@"),
+            limit=25,
+        )
+        if not tickets and target_id is not None:
+            # Fallback: если в старых записях user_name совпадает, но поиск шёл по ID — уже покрыто, а если не найдено:
+            tickets = []
+
+        if not tickets:
+            return await ctx.send(f"У пользователя `{raw}` не найдено ни одного обращения в базе.", ephemeral=True)
+
+        if not target_id and tickets[0].get("user_id"):
+            target_id = tickets[0]["user_id"]
+        if tickets[0].get("user_name") and target_label == raw and not clean_id.isdigit():
+            target_label = tickets[0]["user_name"]
+
+        view = UserTicketsView(tickets, target_label, target_id, ctx.guild)
+        await ctx.send(embed=view.build_embed(), view=view, ephemeral=True)
+
+    @commands.hybrid_command(
         name="ticket_set_counter",
         aliases=["тикет_счетчик", "тикет_номер"],
         description="[Админ] Установить текущий номер счетчика тикетов (например 105)",
@@ -1758,19 +1849,19 @@ class TicketsCog(commands.Cog, name="Тикеты"):
                 return await ctx.send("Укажите числовой ID правила для удаления (смотрите `/ticket_reply list`).", ephemeral=True)
             deleted = await _async_db_call(self.db.delete_ticket_auto_reply, int(str(trigger).strip()))
             if deleted:
-                return await ctx.send(f"✅ Автоответ `#{trigger.strip()}` удалён.", ephemeral=True)
-            return await ctx.send(f"❌ Автоответ `#{trigger.strip()}` не найден.", ephemeral=True)
+                return await ctx.send(f"Автоответ `#{trigger.strip()}` удалён.", ephemeral=True)
+            return await ctx.send(f"Автоответ `#{trigger.strip()}` не найден.", ephemeral=True)
 
         if act == "test":
             if not trigger:
                 return await ctx.send("Укажите фразу игрока в параметре `trigger` для проверки.", ephemeral=True)
             match = await _async_db_call(self.db.find_matching_auto_reply, trigger)
             if not match:
-                return await ctx.send(f"🔍 Для фразы `{trigger}` подходящих шаблонов не найдено.", ephemeral=True)
+                return await ctx.send(f"Для фразы `{trigger}` подходящих шаблонов не найдено.", ephemeral=True)
             rule = match["rule"]
             pct = int(round(match["score"] * 100))
             embed = AG.embed(
-                title=f"✅ Совпадение найдено • Правило #{rule['id']} ({pct}%)",
+                title=f"Совпадение найдено • Правило #{rule['id']} ({pct}%)",
                 description=(
                     f"• **Фраза:** `{trigger}`\n"
                     f"• **Сработал вариант:** `{match['matched_variant']}`\n\n"
@@ -1794,7 +1885,7 @@ class TicketsCog(commands.Cog, name="Тикеты"):
                 preview = preview[:87] + "..."
             lines.append(f"**#{r['id']}** (`{int(round(r['threshold']*100))}%`) — `{r['trigger_phrase']}`\n↳ {preview}")
         embed = AG.embed(
-            title="💡 Автоответы в тикетах • Vanilla Land",
+            title="Автоответы в тикетах • Vanilla Land",
             description="\n\n".join(lines),
             color=Colors.INDIGO,
             footer="Удалить: /ticket_reply remove <id> | Проверить: /ticket_reply test <фраза>",

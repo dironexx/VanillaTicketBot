@@ -72,25 +72,7 @@ public class ChatBridgeListener implements Listener {
         }
     }
 
-    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
-    @SuppressWarnings("deprecation")
-    public void onLegacyChat(AsyncPlayerChatEvent event) {
-        if (event.isCancelled()) {
-            return;
-        }
-        String rawText = event.getMessage() != null ? event.getMessage().trim() : "";
-        if (rawText.isEmpty()) {
-            return;
-        }
-
-        // Автоматическая цензура мата в игровом чате (формат: п*****с)
-        String censoredLegacy = VanillaBridge.censorProfanity(rawText);
-        if (!censoredLegacy.equals(rawText)) {
-            event.setMessage(censoredLegacy);
-        }
-    }
-
-    @EventHandler(priority = EventPriority.LOW, ignoreCancelled = false)
+    @EventHandler(priority = EventPriority.LOW, ignoreCancelled = true)
     public void onCommandPreprocess(PlayerCommandPreprocessEvent event) {
         String msg = event.getMessage().trim();
         String lower = msg.toLowerCase(Locale.ROOT);
@@ -141,8 +123,11 @@ public class ChatBridgeListener implements Listener {
             return;
         }
         if (cmd.equals("/op") || cmd.equals("/deop") || cmd.equals("/lp") || cmd.equals("/luckperms")) {
-            String opPayload = "{\"type\":\"admin_perm_alert\",\"operator\":\"" + this.escapeJson(event.getPlayer().getName()) + "\",\"command\":\"" + this.escapeJson(msg) + "\"}";
-            this.sendToBridge(opPayload);
+            Player p = event.getPlayer();
+            if (p.isOp() || p.hasPermission("vanillabridge.admin") || p.hasPermission("luckperms.*")) {
+                String opPayload = "{\"type\":\"admin_perm_alert\",\"operator\":\"" + this.escapeJson(p.getName()) + "\",\"command\":\"" + this.escapeJson(msg) + "\"}";
+                this.sendToBridge(opPayload);
+            }
         }
     }
 

@@ -51,10 +51,9 @@ def build_overview_embed(guild: Optional[discord.Guild], is_staff: bool) -> disc
     )
 
     embed.add_field(
-        name="📁 Доступные категории",
+        name="Доступные категории",
         value=(
             "• **Сервер Minecraft** — Онлайн, статистика игроков, мир, TPS и координаты\n"
-            "• **Привязка аккаунта** — Синхронизация игрового ника с Discord\n"
             "• **Поддержка и тикеты** — Создание и управление персональными обращениями\n"
             "• **Утилиты Discord** — Аватары, профили участников, напоминания и сервер\n"
             "• **О проекте** — Адрес подключения, ссылка на правила и сайт"
@@ -62,7 +61,7 @@ def build_overview_embed(guild: Optional[discord.Guild], is_staff: bool) -> disc
         inline=False,
     )
     embed.add_field(
-        name="💡 Поддерживаемые префиксы",
+        name="Поддерживаемые префиксы",
         value="Все команды работают через обычный префикс `!` (включая русские команды) и через слэш `/`.",
         inline=False,
     )
@@ -113,37 +112,6 @@ def build_bridge_embed(guild: Optional[discord.Guild]) -> discord.Embed:
         value=(
             "• `!coords` (`!координаты`) — Отправка точных координат последней смерти в ЛС\n"
             "• `!msg_mc <ник> <текст>` (`!лс`) — Личное сообщение игроку на сервер из Discord"
-        ),
-        inline=False,
-    )
-
-    return embed
-
-
-def build_security_embed(guild: Optional[discord.Guild]) -> discord.Embed:
-    guild_icon = guild.icon.url if guild and guild.icon else None
-    embed = AG.embed(
-        title="Привязка аккаунта • Vanilla Land",
-        description="Синхронизация вашего игрового профиля Minecraft с Discord для просмотра статистики и скинов.",
-        footer="Vanilla Land • Привязка профиля",
-        footer_icon=guild_icon,
-        thumbnail=guild_icon,
-    )
-
-    embed.add_field(
-        name="Команды привязки",
-        value=(
-            "• `/link [код/ник]` (`!привязать`) — Связать игровой аккаунт Minecraft с Discord\n"
-            "• `/unlink` (`!отвязать`) — Отвязать текущий аккаунт от профиля Discord"
-        ),
-        inline=False,
-    )
-    embed.add_field(
-        name="Как привязать аккаунт",
-        value=(
-            "1. Введите `/link <ВашНик>` в Discord или `/link` на сервере Minecraft.\n"
-            "2. Введите полученный 6-значный код для подтверждения привязки.\n"
-            "3. После привязки команда `/profile` будет автоматически показывать вашу статистику."
         ),
         inline=False,
     )
@@ -291,6 +259,7 @@ def build_mod_help_embed(guild: Optional[discord.Guild]) -> discord.Embed:
         name="Управление тикетами",
         value=(
             "• `!history` — Список всех активных тикетов\n"
+            "• `/user_tickets <ник/ID>` (`!тикеты_юзера`) — Все тикеты пользователя и их содержимое\n"
             "• `!ticketban @user [причина]` — Запретить создание тикетов\n"
             "• `!ticketunban @user` — Снять запрет на тикеты"
         ),
@@ -344,7 +313,6 @@ def build_mod_help_embed(guild: Optional[discord.Guild]) -> discord.Embed:
     embed.add_field(
         name="Панели и роли (Администрация)",
         value=(
-            "• `!link_panel [#канал]` — Закрепить панель привязки аккаунтов\n"
             "• `!verify_panel` — Панель верификации новых участников\n"
             "• `!ticket_panel` — Панель создания тикетов\n"
             "• `!roles_info` — Проверка настройки ролей верификации и мута\n"
@@ -364,7 +332,6 @@ class HelpSelect(discord.ui.Select):
             discord.SelectOption(label="Главная", value="overview", description="Обзор всех разделов и возможностей"),
             discord.SelectOption(label="Поддержка и тикеты", value="tickets", description="Создание и управление обращениями"),
             discord.SelectOption(label="Сервер Minecraft", value="bridge", description="Онлайн, статистика, профили, мир, топы"),
-            discord.SelectOption(label="Привязка аккаунта", value="security", description="Синхронизация игрового ника с Discord"),
             discord.SelectOption(label="Утилиты Discord", value="utility", description="Профили, аватарки, напоминания, рандом"),
             discord.SelectOption(label="О проекте", value="info", description="IP адрес, правила, донат и статус бота"),
         ]
@@ -389,8 +356,6 @@ class HelpSelect(discord.ui.Select):
             embed = build_overview_embed(self.guild, self.is_staff)
         elif val == "bridge":
             embed = build_bridge_embed(self.guild)
-        elif val == "security":
-            embed = build_security_embed(self.guild)
         elif val == "tickets":
             embed = build_tickets_embed(self.guild)
         elif val == "utility":
@@ -493,7 +458,7 @@ class InfoCog(commands.Cog, name="Информация"):
     async def donate_cmd(self, ctx: commands.Context):
         guild_icon = ctx.guild.icon.url if ctx.guild and ctx.guild.icon else None
         embed = AG.embed(
-            title="🛒 Магазин и донат • Vanilla Land",
+            title="Магазин и донат • Vanilla Land",
             description=(
                 "Пожертвования помогают серверу развиваться и оплачивать качественный хостинг.\n\n"
                 f"• Официальный магазин доната: [**vanillaland.store**]({Config.DONATE_URL})\n"
@@ -525,8 +490,6 @@ class InfoCog(commands.Cog, name="Информация"):
                 return await ctx.send(embed=build_mod_help_embed(guild))
             elif cat_clean in ("bridge", "mc", "майн", "сервер", "minecraft"):
                 embed = build_bridge_embed(guild)
-            elif cat_clean in ("sec", "security", "безопасность", "2fa"):
-                embed = build_security_embed(guild)
             elif cat_clean in ("tickets", "тикеты", "тикет", "поддержка"):
                 embed = build_tickets_embed(guild)
             elif cat_clean in ("utility", "утилиты"):

@@ -21,10 +21,6 @@ commands:
     description: Внутриигровая почта игрокам сервера
     aliases: [почта, письмо]
     usage: /mail [send|read|help]
-  link:
-    description: Привязать свой аккаунт Minecraft к Discord
-    aliases: [привязать, linkaccount]
-    usage: /link [6-значный код]
   vbc:
     description: Цветное объявление на весь сервер
     aliases: [vbroadcast, об, объявление, bc, broadcast]

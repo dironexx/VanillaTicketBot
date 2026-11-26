@@ -48,13 +48,14 @@ class BridgeLogicTests(unittest.TestCase):
         self.assertEqual(fake.mc_online, 0)
         self.assertEqual(fake.mc_players, [])
 
-    def test_link_rate_limit_and_views(self):
-        from cogs.bridge_views import AccountLinkView, PermanentLinkPanelView
-        fake = SimpleNamespace(_link_attempts={}, link_max_attempts=5, link_window_sec=600.0)
-        allowed = BridgeCog.link_rate_ok.__get__(fake)
-        self.assertEqual([allowed(42) for _ in range(7)], [True, True, True, True, True, False, False])
-        self.assertIsNotNone(AccountLinkView)
-        self.assertIsNotNone(PermanentLinkPanelView)
+    def test_link_and_2fa_completely_removed(self):
+        from cogs import bridge_views
+        self.assertFalse(hasattr(bridge_views, "AccountLinkView"))
+        self.assertFalse(hasattr(bridge_views, "LinkModal"))
+        self.assertFalse(hasattr(bridge_views, "PermanentLinkPanelView"))
+        self.assertFalse(hasattr(BridgeCog, "link_cmd"))
+        self.assertFalse(hasattr(BridgeCog, "unlink_cmd"))
+        self.assertFalse(hasattr(BridgeCog, "link_panel_cmd"))
 
     def test_say_command_mentions_safety_and_reset_top_deaths(self):
         import tempfile
@@ -194,21 +195,6 @@ class BridgeLogicTests(unittest.TestCase):
             self.assertEqual(n2, 2)
             self.assertEqual(n3, 3)
 
-    def test_linked_accounts_case_insensitive(self):
-        import tempfile
-        from database import DatabaseManager
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            db_file = os.path.join(tmp_dir, "test_link.db")
-            db = DatabaseManager(db_file, tmp_dir)
-            # Привязываем Steve
-            self.assertTrue(db.link_account("Steve", "uuid-1", 111111))
-            # Попытка привязать тот же ник в нижнем регистре другому пользователю должна быть отклонена
-            self.assertFalse(db.link_account("steve", "uuid-2", 222222))
-            # Поиск по любому регистру находит правильного владельца
-            acc = db.get_linked_account_by_mc("sTeVe")
-            self.assertIsNotNone(acc)
-            self.assertEqual(acc["discord_user_id"], 111111)
-
     def test_offline_mail_flow(self):
         import tempfile
         from database import DatabaseManager
@@ -329,7 +315,7 @@ class BridgeLogicTests(unittest.TestCase):
         # Проверяем /setup_channels embed
         fake.db = SimpleNamespace(get_setting=lambda k: "123456" if k == "events_channel_id" else None)
         ch_emb = BridgeCog._build_setup_channels_embed(fake, SimpleNamespace(icon=None))
-        self.assertIn("Единая настройка каналов бота", ch_emb.title)
+        self.assertIn("Настройка каналов бота", ch_emb.title)
         self.assertTrue(any("123456" in f.value for f in ch_emb.fields))
 
         # Проверяем перевод смертей и отсутствие двойного экранирования **
@@ -362,12 +348,11 @@ class BridgeLogicTests(unittest.TestCase):
         from cogs.info import (
             build_overview_embed,
             build_bridge_embed,
-            build_security_embed,
             build_tickets_embed,
             build_utility_embed,
             build_mod_help_embed,
         )
-        for builder in (build_overview_embed, build_bridge_embed, build_security_embed, build_tickets_embed, build_utility_embed, build_mod_help_embed):
+        for builder in (build_overview_embed, build_bridge_embed, build_tickets_embed, build_utility_embed, build_mod_help_embed):
             emb = builder(None, True) if builder is build_overview_embed else builder(None)
             for idx, field in enumerate(emb.fields):
                 self.assertLessEqual(len(field.value), 1024, f"{builder.__name__} field[{idx}] exceeded 1024 chars")

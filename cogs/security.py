@@ -271,7 +271,7 @@ class AltsChannelModal(ui.Modal, title="Ввод канала оповещени
                     color=Colors.GREEN,
                     timestamp=datetime.now(timezone.utc),
                 )
-                test_embed.set_footer(text="Vanilla Land • Безопасность и LiteBans")
+                test_embed.set_footer(text="Vanilla Land • Безопасность")
                 await ch.send(embed=test_embed)
             except Exception as e:
                 return await interaction.response.send_message(
@@ -333,11 +333,9 @@ class AltsQuickWhoisModal(ui.Modal, title="Быстрый поиск аккау�
         online_players = getattr(bridge_cog, "mc_players", []) if bridge_cog else []
         online_set = {p.lower() for p in online_players}
 
-        show_2fa = (self.db.get_setting("whois_show_2fa", "true").lower() == "true") if self.db else True
         show_net = (self.db.get_setting("whois_show_net", "true").lower() == "true") if self.db else True
         show_geo = (self.db.get_setting("whois_show_geo", "true").lower() == "true") if self.db else True
         show_alts = (self.db.get_setting("whois_show_alts", "true").lower() == "true") if self.db else True
-        (self.db.get_setting("whois_show_litebans", "true").lower() == "true") if self.db else True
 
         is_ip = bool(re.match(r"^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$", query))
         if is_ip:
@@ -390,17 +388,6 @@ class AltsQuickWhoisModal(ui.Modal, title="Быстрый поиск аккау�
                 timestamp=datetime.now(timezone.utc),
             )
             embed.set_thumbnail(url=f"https://mc-heads.net/avatar/{query}/128.png")
-
-            # Discord link section
-            if show_2fa:
-                linked = self.db.get_linked_account_by_mc(query) if self.db else None
-                sec_lines = []
-                if linked:
-                    dc_user = f"<@{linked['discord_user_id']}> (`{linked['discord_user_id']}`)"
-                    sec_lines.append(f"• 🔗 **Привязка Discord:** {dc_user}")
-                else:
-                    sec_lines.append("• 🔗 **Привязка Discord:** `Не привязан`")
-                embed.add_field(name="Привязка аккаунта", value="\n".join(sec_lines), inline=False)
 
             # Network & IP section
             if ips and (show_net or show_geo):
@@ -530,7 +517,7 @@ class AltsChannelConfigView(ui.View):
                 color=Colors.BLUE,
                 timestamp=datetime.now(timezone.utc),
             )
-            test_embed.set_footer(text="Vanilla Land • LiteBans Guard Test")
+            test_embed.set_footer(text="Vanilla Land • Security Guard Test")
             await target_ch.send(embed=test_embed)
             await interaction.response.send_message(
                 f"✅ Тестовый алерт успешно доставлен в {target_ch.mention}!",
@@ -723,13 +710,9 @@ class AltsDisplaySettingsView(ui.View):
         self._sync_buttons()
 
     def _sync_buttons(self):
-        s_2fa = (self.db.get_setting("whois_show_2fa", "true").lower() == "true") if self.db else True
         s_net = (self.db.get_setting("whois_show_net", "true").lower() == "true") if self.db else True
         s_geo = (self.db.get_setting("whois_show_geo", "true").lower() == "true") if self.db else True
         s_alts = (self.db.get_setting("whois_show_alts", "true").lower() == "true") if self.db else True
-
-        self.btn_toggle_2fa.label = f"2FA и Discord: {'ВКЛ' if s_2fa else 'ВЫКЛ'}"
-        self.btn_toggle_2fa.style = discord.ButtonStyle.success if s_2fa else discord.ButtonStyle.secondary
 
         self.btn_toggle_net.label = f"Тип сети: {'ВКЛ' if s_net else 'ВЫКЛ'}"
         self.btn_toggle_net.style = discord.ButtonStyle.success if s_net else discord.ButtonStyle.secondary
@@ -741,14 +724,12 @@ class AltsDisplaySettingsView(ui.View):
         self.btn_toggle_alts.style = discord.ButtonStyle.success if s_alts else discord.ButtonStyle.secondary
 
     def get_embed(self) -> discord.Embed:
-        s_2fa = (self.db.get_setting("whois_show_2fa", "true").lower() == "true") if self.db else True
         s_net = (self.db.get_setting("whois_show_net", "true").lower() == "true") if self.db else True
         s_geo = (self.db.get_setting("whois_show_geo", "true").lower() == "true") if self.db else True
         s_alts = (self.db.get_setting("whois_show_alts", "true").lower() == "true") if self.db else True
 
         desc = (
             "**Настройка отображения карточек (Whois / Досье):**\n\n"
-            f"🔐 **2FA и привязка Discord:** `{'Показывается' if s_2fa else 'Скрыто'}`\n"
             f"🌐 **Тип сети (VPN / Провайдер):** `{'Показывается' if s_net else 'Скрыто'}`\n"
             f"📍 **Геолокация (Страна, город):** `{'Показывается' if s_geo else 'Скрыто'}`\n"
             f"👥 **Связанные аккаунты (Твинки):** `{'Показывается' if s_alts else 'Скрыто'}`\n\n"
@@ -761,14 +742,6 @@ class AltsDisplaySettingsView(ui.View):
         )
         embed.set_footer(text="Vanilla Land • Display Customization")
         return embed
-
-    @ui.button(label="2FA и Discord: ВКЛ", style=discord.ButtonStyle.success, row=0)
-    async def btn_toggle_2fa(self, interaction: discord.Interaction, button: ui.Button):
-        cur = (self.db.get_setting("whois_show_2fa", "true").lower() == "true") if self.db else True
-        if self.db:
-            self.db.set_setting("whois_show_2fa", "false" if cur else "true")
-        self._sync_buttons()
-        await interaction.response.edit_message(embed=self.get_embed(), view=self)
 
     @ui.button(label="Тип сети: ВКЛ", style=discord.ButtonStyle.success, row=0)
     async def btn_toggle_net(self, interaction: discord.Interaction, button: ui.Button):
@@ -948,7 +921,7 @@ class AltsPanelControlView(ui.View):
             description=desc_ch,
             color=Colors.BLUE,
         )
-        embed.set_footer(text="Vanilla Land • Безопасность и LiteBans")
+        embed.set_footer(text="Vanilla Land • Безопасность")
         await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
     @ui.button(label="Whois (Поиск)", style=discord.ButtonStyle.secondary, emoji="🔎", custom_id="btn_alts_whois", row=1)
@@ -1048,7 +1021,7 @@ class AltsPanelControlView(ui.View):
         active_ips = getattr(sec_cog, "active_player_ips", {}) if sec_cog else {}
 
         for p in online_players:
-            alts_info = self.db.get_player_alts(p) if self.db else {}
+            alts_info = await asyncio.to_thread(self.db.get_player_alts, p) if self.db else {}
             alts = alts_info.get("alts", [])
             alt_names = [a.get("player_name", "") for a in alts if a.get("player_name", "").lower() != p.lower()]
             p_ip = active_ips.get(p.lower()) or alts_info.get("current_ip", "")
@@ -1153,7 +1126,7 @@ class AltsPanelControlView(ui.View):
                 color=Colors.GREEN,
                 timestamp=datetime.now(timezone.utc),
             )
-            test_embed.set_footer(text="Vanilla Land • LiteBans Guard Test")
+            test_embed.set_footer(text="Vanilla Land • Security Guard Test")
             await target_ch.send(embed=test_embed)
             await interaction.response.send_message(f"✅ Тестовый алерт успешно доставлен в {target_ch.mention}!", ephemeral=True)
         except Exception as e:
@@ -1161,6 +1134,8 @@ class AltsPanelControlView(ui.View):
 
     @ui.button(label="Обновить", style=discord.ButtonStyle.secondary, emoji="🔄", custom_id="btn_alts_refresh", row=2)
     async def btn_refresh(self, interaction: discord.Interaction, button: ui.Button):
+        if not isinstance(interaction.user, discord.Member) or not self._check_perms(interaction.user):
+            return await interaction.response.send_message("❌ Недостаточно прав.", ephemeral=True)
         self._sync_buttons()
         await interaction.response.edit_message(embed=self.get_embed(), view=self)
 
@@ -1888,30 +1863,6 @@ class SecurityCog(commands.Cog, name="Безопасность"):
 
             self.active_player_ips[player.lower()] = clean_ip
 
-        # 2. Проверка истории по 100% точному IP (без ложных срабатываний по подсетям)
-        alts_data = self.db.get_player_alts(player, current_ip=clean_ip)
-        exact_alts_list = alts_data.get("alts", [])
-
-        # Формируем список кандидатов для LiteBans (сам игрок + все точные твинки по IP)
-        candidate_names = set([player])
-        for a in exact_alts_list:
-            name = a.get("player_name", "").strip()
-            if name:
-                candidate_names.add(name)
-
-        bridge_cog = get_bridge_cog(self.bot)
-        if bridge_cog and hasattr(bridge_cog, "broadcast_packet"):
-            alts_str = ",".join(candidate_names)
-            logger.info("Запрос проверки LiteBans по точному IP для %s (аккаунты: %s, IP: %s)", player, alts_str, clean_ip)
-            if hasattr(bridge_cog, "register_alt_check"):
-                bridge_cog.register_alt_check(player, ttl=30.0, manual=False)
-            await bridge_cog.broadcast_packet({
-                "type": "check_alts_bans",
-                "player": player,
-                "ip": clean_ip,
-                "alts": alts_str,
-            })
-
     async def handle_alts_bans_result(self, data: dict):
         """Обрабатывает результат комплексной проверки твинков и банов LiteBans из Minecraft"""
         login_player = data.get("player", "Игрок")
@@ -2231,7 +2182,7 @@ class SecurityCog(commands.Cog, name="Безопасность"):
                     color=Colors.GREEN,
                     timestamp=datetime.now(timezone.utc),
                 )
-                test_embed.set_footer(text="Vanilla Land • Безопасность и LiteBans")
+                test_embed.set_footer(text="Vanilla Land • Безопасность")
                 await channel.send(embed=test_embed)
                 test_note = "\n✅ Тестовое сообщение успешно отправлено в канал."
             except Exception as e:
@@ -2253,7 +2204,7 @@ class SecurityCog(commands.Cog, name="Безопасность"):
             ),
             color=Colors.BLUE,
         )
-        embed.set_footer(text="Vanilla Land • Безопасность и LiteBans")
+        embed.set_footer(text="Vanilla Land • Безопасность")
         await ctx.send(embed=embed, view=view, ephemeral=True)
 
     @commands.hybrid_command(
@@ -2277,7 +2228,7 @@ class SecurityCog(commands.Cog, name="Безопасность"):
         flagged_count = 0
 
         for p in online_players:
-            alts_info = self.db.get_player_alts(p) if self.db else {}
+            alts_info = await asyncio.to_thread(self.db.get_player_alts, p) if self.db else {}
             alts = alts_info.get("alts", [])
             alt_names = [a.get("player_name", "") for a in alts if a.get("player_name", "").lower() != p.lower()]
             p_ip = alts_info.get("current_ip", "")
@@ -2309,7 +2260,7 @@ class SecurityCog(commands.Cog, name="Безопасность"):
         if not is_tech_admin_or_owner(ctx):
             return await ctx.send("❌ Эта команда доступна только технической администрации и модераторам.", ephemeral=True)
 
-        incidents = self.db.get_security_incidents(15) if self.db else []
+        incidents = await asyncio.to_thread(self.db.get_security_incidents, 15) if self.db else []
         if not incidents:
             return await ctx.send("ℹ️ Журнал инцидентов безопасности пуст.", ephemeral=True)
 
@@ -2347,7 +2298,7 @@ class SecurityCog(commands.Cog, name="Безопасность"):
 
         act = action.lower().strip()
         if act == "list" or not target:
-            wl = self.db.get_security_whitelist() if self.db else []
+            wl = await asyncio.to_thread(self.db.get_security_whitelist) if self.db else []
             if not wl:
                 return await ctx.send("ℹ️ Белый список исключений безопасности пуст.", ephemeral=True)
             wl_lines = [f"• `{w['target']}` ({w['type']}) — *{w['reason'] or 'Без причины'}* (от {w['added_by']}, `{w['added_at']}`)" for w in wl]
@@ -2392,19 +2343,11 @@ class SecurityCog(commands.Cog, name="Безопасность"):
         if ctx.interaction:
             await ctx.defer()
 
-        ips = self.db.get_player_ips(p_name, limit=10)
-        alts = self.db.find_alts_by_ip(p_name)
-        linked = self.db.get_linked_account_by_mc(p_name)
+        ips = await asyncio.to_thread(self.db.get_player_ips, p_name, 10)
+        alts = await asyncio.to_thread(self.db.find_alts_by_ip, p_name)
 
-        # Опрос LiteBans по целевому игроку и его твинкам
         bridge_cog = get_bridge_cog(self.bot)
         banned_map = {}
-
-        linked_user_str = "Не привязан к Discord"
-        if linked:
-            d_id = linked.get("discord_user_id") or linked.get("discord_id")
-            member = ctx.guild.get_member(d_id) if (ctx.guild and d_id) else None
-            linked_user_str = f"{member.mention} `(ID: {d_id})`" if member else f"`ID: {d_id}`"
 
         online_set = {p.lower() for p in getattr(bridge_cog, "mc_players", [])} if bridge_cog else set()
         alt_formatted = []
@@ -2438,10 +2381,9 @@ class SecurityCog(commands.Cog, name="Безопасность"):
             banned_alt_nicks = [banned_map[k].get("player", k) for k in banned_map if k != p_name.lower()]
             embed.description = f"**Забаненный твинк на IP:** {', '.join(banned_alt_nicks)}"
 
-        embed.add_field(name="Discord аккаунт", value=linked_user_str, inline=False)
         embed.add_field(name=f"Связанные твинки ({len(alts)})", value=alts_str, inline=False)
         embed.add_field(name="История IP-адресов", value=ip_list_str, inline=False)
-        embed.set_footer(text=f"Vanilla Land • LiteBans Guard • {get_msk_now_str()}")
+        embed.set_footer(text=f"Vanilla Land • Security Guard • {get_msk_now_str()}")
         await ctx.send(embed=embed)
 
     # --- ИДЕЯ 6: BACKUP STATUS & TRIGGER ---

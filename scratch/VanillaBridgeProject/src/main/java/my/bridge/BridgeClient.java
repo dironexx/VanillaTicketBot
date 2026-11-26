@@ -174,8 +174,13 @@ public class BridgeClient implements WebSocket.Listener {
 
         int idx = Math.abs(this.candidateIndex.get()) % candidates.size();
         String targetWsUrl = candidates.get(idx);
-        String token = this.plugin.getConfig().getString("bridge.token", "vanillaland_secret_2026");
-        String fullUrl = targetWsUrl + (targetWsUrl.contains("?") ? "&" : "?") + "token=" + token;
+        String token = this.plugin.getConfig().getString("bridge.token", "").trim();
+        if (token.isEmpty() || "CHANGE_ME_SET_YOUR_BRIDGE_SECRET".equals(token)) {
+            this.isConnecting.set(false);
+            this.plugin.getLogger().warning("[Мост] Не задан bridge.token в config.yml — подключение к мосту отменено.");
+            return;
+        }
+        String fullUrl = targetWsUrl;
 
         boolean debug = this.plugin.getConfig().getBoolean("bridge.debug", false);
         if (debug) {
@@ -193,6 +198,7 @@ public class BridgeClient implements WebSocket.Listener {
 
                 this.httpClient.newWebSocketBuilder()
                         .connectTimeout(timeout)
+                        .header("Authorization", "Bearer " + token)
                         .header("User-Agent", "Mozilla/5.0 VanillaBridge/1.4 (Minecraft Server; Anti-RKN)")
                         .header("Origin", "https://vanillaland.fun")
                         .buildAsync(URI.create(fullUrl), this)
@@ -258,13 +264,14 @@ public class BridgeClient implements WebSocket.Listener {
         }
         if (this.webSocket != null) {
             try {
-                this.webSocket.abort();
+                this.webSocket.sendClose(1000, "Plugin disabled");
             } catch (Exception ignored) {}
             try {
-                this.webSocket.sendClose(1000, "Plugin disabled");
+                this.webSocket.abort();
             } catch (Exception ignored) {}
             this.webSocket = null;
         }
+        this.messageBuffer.setLength(0);
         this.sendQueue.clear();
         this.isSending.set(false);
     }

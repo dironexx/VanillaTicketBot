@@ -74,7 +74,17 @@ def sync_env_file(path: Optional[Path] = None) -> bool:
     for key, value in missing:
         text += f"{key}={value}{newline}"
 
-    target.write_text(text, encoding="utf-8", newline="")
+    import os
+    import tempfile
+    fd, tmp_name = tempfile.mkstemp(prefix=".env_", suffix=".tmp", dir=str(target.parent))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="") as f:
+            f.write(text)
+        os.replace(tmp_name, target)
+    except Exception:
+        if os.path.exists(tmp_name):
+            os.remove(tmp_name)
+        raise
     return True
 
 
@@ -95,5 +105,15 @@ def ensure_env_keys(keys: Iterable[tuple[str, str]], path: Optional[Path] = None
         text += newline + SYNC_MARKER + newline
     for key, value in missing:
         text += f"{key}={value}{newline}"
-    target.write_text(text, encoding="utf-8", newline="")
+    import os
+    import tempfile
+    fd, tmp_name = tempfile.mkstemp(prefix=".env_", suffix=".tmp", dir=str(target.parent))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="") as f:
+            f.write(text)
+        os.replace(tmp_name, target)
+    except Exception:
+        if os.path.exists(tmp_name):
+            os.remove(tmp_name)
+        raise
     return True

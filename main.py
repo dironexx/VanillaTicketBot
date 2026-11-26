@@ -22,17 +22,23 @@ LOCK_FILE = "vanilla_bot.lock"
 _lock_fd = None
 
 
+_lock_fd = None
+_lock_owned = False
+
+
 def acquire_process_lock() -> bool:
     """Гарантирует запуск ровно одного экземпляра бота, исключая дублирование сообщений и конфликты портов."""
-    global _lock_fd
+    global _lock_fd, _lock_owned
     lock_path = os.path.abspath(LOCK_FILE)
+    fd = None
     try:
         if sys.platform == "win32":
             import msvcrt
-            _lock_fd = os.open(lock_path, os.O_CREAT | os.O_RDWR)
+            fd = os.open(lock_path, os.O_CREAT | os.O_RDWR)
             try:
-                msvcrt.locking(_lock_fd, msvcrt.LK_NBLCK, 1)
+                msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
             except OSError:
+                os.close(fd)
                 logger.critical(
                     f"\n{'='*70}\n"
                     f"КРИТИЧЕСКАЯ ОШИБКА: ДРУГОЙ ЭКЗЕМПЛЯР БОТА УЖЕ ЗАПУЩЕН!\n"
@@ -43,10 +49,11 @@ def acquire_process_lock() -> bool:
                 return False
         else:
             import fcntl
-            _lock_fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o644)
+            fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o644)
             try:
-                fcntl.flock(_lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except (BlockingIOError, OSError):
+                os.close(fd)
                 logger.critical(
                     f"\n{'='*70}\n"
                     f"КРИТИЧЕСКАЯ ОШИБКА: ДРУГОЙ ЭКЗЕМПЛЯР БОТА УЖЕ ЗАПУЩЕН!\n"
@@ -55,6 +62,8 @@ def acquire_process_lock() -> bool:
                     f"{'='*70}"
                 )
                 return False
+        _lock_fd = fd
+        _lock_owned = True
         try:
             os.ftruncate(_lock_fd, 0)
             os.write(_lock_fd, str(os.getpid()).encode())
@@ -62,12 +71,20 @@ def acquire_process_lock() -> bool:
             pass
         return True
     except Exception as e:
-        logger.debug(f"Lock acquire note: {e}")
-        return True
+        if fd is not None and _lock_fd is None:
+            try:
+                os.close(fd)
+            except Exception:
+                pass
+        logger.error(f"Ошибка захвата lock-файла: {e}")
+        return False
 
 
 def release_process_lock():
-    global _lock_fd
+    global _lock_fd, _lock_owned
+    if not _lock_owned:
+        return
+    _lock_owned = False
     if _lock_fd is not None:
         try:
             os.close(_lock_fd)
@@ -90,8 +107,11 @@ logging.basicConfig(
 )
 logger = logging.getLogger("VanillaBot")
 
+import threading
+
 _ORIG_GETADDRINFO = socket.getaddrinfo
 _DNS_CACHE: dict[str, tuple[float, list[str]]] = {}
+_DNS_CACHE_LOCK = threading.Lock()
 
 
 def _resolve_via_public_dns(host: str, dns_servers: tuple[str, ...] = ("1.1.1.1", "8.8.8.8"), timeout: float = 2.0) -> list[str]:
@@ -99,9 +119,10 @@ def _resolve_via_public_dns(host: str, dns_servers: tuple[str, ...] = ("1.1.1.1"
     if not host or any(c.isspace() for c in host):
         return []
     now = time.monotonic()
-    cached = _DNS_CACHE.get(host)
-    if cached and (now - cached[0]) < 300.0:
-        return cached[1]
+    with _DNS_CACHE_LOCK:
+        cached = _DNS_CACHE.get(host)
+        if cached and (now - cached[0]) < 300.0:
+            return cached[1]
 
     labels = [p.encode("idna") for p in host.strip(".").split(".") if p]
     if not labels:
@@ -162,7 +183,10 @@ def _resolve_via_public_dns(host: str, dns_servers: tuple[str, ...] = ("1.1.1.1"
                 offset += rdlen
 
             if ips:
-                _DNS_CACHE[host] = (now, ips)
+                with _DNS_CACHE_LOCK:
+                    if len(_DNS_CACHE) >= 256:
+                        _DNS_CACHE.clear()
+                    _DNS_CACHE[host] = (now, ips)
                 return ips
         except Exception:
             continue
@@ -206,12 +230,13 @@ class VanillaSupportBot(commands.Bot):
         )
 
         self.start_time = time.time()
+        self._guilds_synced = False
         self.db = DatabaseManager(Config.DB_PATH, Config.TRANSCRIPTS_DIR)
 
     async def setup_hook(self):
         # Гарантируем, что счётчик тикетов не обнуляется при рестарте контейнера и продолжается с 100+
         try:
-            self.db.ensure_ticket_counter_at_least(100)
+            await asyncio.to_thread(self.db.ensure_ticket_counter_at_least, 100)
         except Exception as cnt_err:
             logger.debug("Ensure counter note: %s", cnt_err)
 
@@ -254,13 +279,15 @@ class VanillaSupportBot(commands.Bot):
 
     async def on_ready(self):
         logger.info(f"Бот успешно запущен как {self.user} (ID: {self.user.id})")
-        # Очищаем локальные дубликаты с гильдий, чтобы не было задвоения с глобальными командами
-        for guild in self.guilds:
-            try:
-                self.tree.clear_commands(guild=guild)
-                await self.tree.sync(guild=guild)
-            except Exception:
-                pass
+        # Очищаем локальные дубликаты с гильдий только при первом запуске, чтобы не тратить rate limits при реконнектах
+        if not self._guilds_synced:
+            self._guilds_synced = True
+            for guild in self.guilds:
+                try:
+                    self.tree.clear_commands(guild=guild)
+                    await self.tree.sync(guild=guild)
+                except Exception:
+                    pass
 
         # Статус выставляет мост (техработы / онлайн / TPS), а не on_ready напрямую,
         # иначе после каждого реконнекта статус «Онлайн: N» затирается IP-адресом.
@@ -303,7 +330,7 @@ class VanillaSupportBot(commands.Bot):
     async def close(self):
         logger.info("Остановка бота...")
         try:
-            self.db.close()
+            await asyncio.to_thread(self.db.close)
         except Exception as e:
             logger.debug("Ошибка закрытия БД: %s", e)
         await super().close()
@@ -316,7 +343,7 @@ async def main():
 
     # 1. Автоматическая очистка остаточного мусора из папки проекта
     try:
-        cleanup_project_junk(Path(__file__).resolve().parent)
+        await asyncio.to_thread(cleanup_project_junk, Path(__file__).resolve().parent)
     except Exception as cl_err:
         logger.debug("Ошибка автоочистки мусора: %s", cl_err)
 
@@ -332,7 +359,7 @@ async def main():
 
     # 2. Повторная проверка с передачей db_manager для восстановления повреждённых баз данных
     try:
-        cleanup_project_junk(Path(__file__).resolve().parent, bot.db)
+        await asyncio.to_thread(cleanup_project_junk, Path(__file__).resolve().parent, bot.db)
     except Exception:
         pass
     try:
@@ -358,5 +385,7 @@ async def main():
 if __name__ == "__main__":
     try:
         asyncio.run(main())
-    except (KeyboardInterrupt, SystemExit):
+    except KeyboardInterrupt:
         logger.info("Бот остановлен пользователем.")
+    except SystemExit as e:
+        sys.exit(e.code)
