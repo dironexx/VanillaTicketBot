@@ -1708,6 +1708,50 @@ class SecurityCog(commands.Cog, name="Безопасность"):
         elif p_type == "admin_perm_alert":
             await self.handle_admin_perm_alert(data)
 
+    async def handle_admin_perm_alert(self, data: dict):
+        """Отправляет уведомление в админ-канал при использовании /op, /deop, /lp на сервере."""
+        operator = str(data.get("operator") or "Неизвестный").strip()
+        command = str(data.get("command") or "").strip()
+        if not command:
+            return
+
+        logger.info("Админ-команда на сервере (%s): %s", operator, command)
+
+        target_ch = None
+        if self.db:
+            saved_id = await asyncio.to_thread(self.db.get_setting, "admin_log_channel_id")
+            if saved_id and str(saved_id).isdigit():
+                target_ch = await self._resolve_channel(int(saved_id))
+
+        for fallback_id in (
+            getattr(Config, "ADMIN_LOG_CHANNEL_ID", 0),
+            LUCKPERMS_ALERT_CHANNEL_ID,
+            getattr(Config, "LOG_CHANNEL_ID", 0),
+        ):
+            if target_ch:
+                break
+            if fallback_id:
+                target_ch = await self._resolve_channel(int(fallback_id))
+
+        if not target_ch:
+            return
+
+        safe_cmd = command.replace("```", "'''")[:1000]
+        embed = discord.Embed(
+            title="Использование админ-команды на сервере",
+            description=(
+                f"• **Инициатор:** `{operator}`\n"
+                f"• **Команда:** ```{safe_cmd}```"
+            ),
+            color=Colors.YELLOW,
+            timestamp=datetime.now(timezone.utc),
+        )
+        embed.set_footer(text="Vanilla Land • Мониторинг прав")
+        try:
+            await target_ch.send(embed=embed)
+        except Exception as e:
+            logger.debug("Не удалось отправить admin_perm_alert: %s", e)
+
     def _can_send_to(self, ch: Any) -> bool:
         """Проверяет, что бот может отправлять сообщения и эмбеды в данный канал"""
         if not ch or not hasattr(ch, "send"):
