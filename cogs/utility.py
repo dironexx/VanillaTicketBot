@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import random
 import re
@@ -55,7 +56,7 @@ class UtilityCog(commands.Cog, name="Утилиты"):
     async def reminders_loop(self):
         try:
             now_ts = time.time()
-            expired = self.db.get_expired_reminders(now_ts)
+            expired = await asyncio.to_thread(self.db.get_expired_reminders, now_ts)
 
             for rem_id, user_id, channel_id, text in expired:
                 channel = self.bot.get_channel(channel_id)
@@ -87,7 +88,7 @@ class UtilityCog(commands.Cog, name="Утилиты"):
                     except Exception:
                         pass
 
-                self.db.delete_reminder(rem_id)
+                await asyncio.to_thread(self.db.delete_reminder, rem_id)
         except Exception as e:
             logger.error(f"Ошибка в цикле напоминаний: {e}")
 

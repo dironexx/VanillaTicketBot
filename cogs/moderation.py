@@ -110,12 +110,12 @@ class ModerationCog(commands.Cog, name="Модерация"):
     async def auto_unmute_loop(self):
         try:
             now_ts = time.time()
-            expired = self.db.get_expired_mutes(now_ts)
+            expired = await asyncio.to_thread(self.db.get_expired_mutes, now_ts)
 
             for user_id, guild_id, _reason in expired:
                 guild = self.bot.get_guild(guild_id)
                 if not guild:
-                    self.db.delete_mute(user_id, guild_id)
+                    await asyncio.to_thread(self.db.delete_mute, user_id, guild_id)
                     continue
 
                 member = guild.get_member(user_id)
@@ -136,7 +136,7 @@ class ModerationCog(commands.Cog, name="Модерация"):
                     except Exception as e:
                         logger.error(f"Ошибка авто-размута {user_id}: {e}")
 
-                self.db.delete_mute(user_id, guild_id)
+                await asyncio.to_thread(self.db.delete_mute, user_id, guild_id)
         except Exception as e:
             logger.error(f"Ошибка в auto_unmute_loop: {e}")
 
@@ -149,12 +149,12 @@ class ModerationCog(commands.Cog, name="Модерация"):
     async def auto_vc_unban_loop(self):
         try:
             now_ts = time.time()
-            expired = self.db.get_expired_vc_bans(now_ts)
+            expired = await asyncio.to_thread(self.db.get_expired_vc_bans, now_ts)
 
             for user_id, guild_id, _reason in expired:
                 guild = self.bot.get_guild(guild_id)
                 if not guild:
-                    self.db.delete_vc_ban(user_id, guild_id)
+                    await asyncio.to_thread(self.db.delete_vc_ban, user_id, guild_id)
                     continue
 
                 member = guild.get_member(user_id)
@@ -171,7 +171,7 @@ class ModerationCog(commands.Cog, name="Модерация"):
                                 await vc.set_permissions(member, overwrite=None, reason="Время бана в войсе истекло")
                             except Exception:
                                 pass
-                self.db.delete_vc_ban(user_id, guild_id)
+                await asyncio.to_thread(self.db.delete_vc_ban, user_id, guild_id)
         except Exception as e:
             logger.error(f"Ошибка в auto_vc_unban_loop: {e}")
 

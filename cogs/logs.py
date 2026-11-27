@@ -1,4 +1,5 @@
 import asyncio
+import io
 import logging
 import re
 import time
@@ -237,7 +238,7 @@ class LogsCog(commands.Cog, name="Логирование и Защита"):
                 dm_embed = AG.embed(
                     title="Мут на сервере • Vanilla Land",
                     description=(
-                        f"Вы были заблокированы на сервере **Vanilla Land**.\n\n"
+                        f"Вам выдан мут на 1 час на сервере **Vanilla Land**.\n\n"
                         f"• **Причина:** `АвтоМодерация - реклама`\n"
                         f"• **Канал:** #{message.channel.name}\n"
                         f"• **Детали:** {violation_type}\n\n"
@@ -269,7 +270,7 @@ class LogsCog(commands.Cog, name="Логирование и Защита"):
                 alert_embed = AG.embed(
                     title="Автомодерация • Мут за рекламу",
                     description=(
-                        f"Пользователь был автоматически **заблокирован (Бан)**.\n\n"
+                        f"Пользователю автоматически выдан **мут на 1 час** (решение о бане — кнопкой ниже).\n\n"
                         f"• **Нарушитель:** {author.mention} (`{author.name}` | ID: `{author.id}`)\n"
                         f"• **Канал:** {message.channel.mention}\n"
                         f"• **Тип нарушения:** `{violation_type}`\n"
@@ -293,7 +294,12 @@ class LogsCog(commands.Cog, name="Логирование и Защита"):
         if not log_ch or log_ch.id == message.channel.id:
             return
 
-        raw_content = message.clean_content or "*[Содержимое недоступно]*"
+        if message.clean_content:
+            raw_content = message.clean_content
+        elif message.attachments:
+            raw_content = "*[Без текста]*"
+        else:
+            raw_content = "*[Содержимое недоступно]*"
         content = raw_content[:1000] + "..." if len(raw_content) > 1000 else raw_content
 
         embed = AG.embed(
@@ -306,14 +312,57 @@ class LogsCog(commands.Cog, name="Логирование и Защита"):
             color=Colors.RED,
             footer=f"Vanilla Land • ID: {message.id}",
         )
-        if message.attachments:
-            att_urls = "\n".join([f"• [{a.filename}]({a.url})" for a in message.attachments])
-            embed.add_field(name="Вложения", value=att_urls, inline=False)
+
+        image_files: list[discord.File] = []
+        other_links: list[str] = []
+        first_image_set = False
+        image_exts = (".png", ".jpg", ".jpeg", ".webp", ".gif")
+
+        for idx, att in enumerate(message.attachments):
+            fname_low = (att.filename or "").lower().split("?")[0]
+            ctype = (att.content_type or "").lower()
+            is_image = ctype.startswith("image/") or fname_low.endswith(image_exts)
+
+            if is_image and len(image_files) < 4 and getattr(att, "size", 0) <= 8 * 1024 * 1024:
+                img_bytes = None
+                for use_cached in (True, False):
+                    try:
+                        img_bytes = await att.read(use_cached=use_cached)
+                        if img_bytes:
+                            break
+                    except Exception:
+                        continue
+
+                if img_bytes:
+                    clean_name = re.sub(r"[^a-zA-Z0-9._-]", "_", att.filename or f"image_{idx}.png")
+                    safe_name = f"{idx}_{clean_name}"
+                    image_files.append(discord.File(io.BytesIO(img_bytes), filename=safe_name))
+                    if not first_image_set:
+                        embed.set_image(url=f"attachment://{safe_name}")
+                        first_image_set = True
+                    continue
+
+                # Если Discord уже удалил файл из CDN, пробуем показать по proxy_url / url
+                if not first_image_set:
+                    embed.set_image(url=att.proxy_url or att.url)
+                    first_image_set = True
+                other_links.append(f"• [{att.filename}]({att.url})")
+            else:
+                other_links.append(f"• [{att.filename}]({att.url})")
+
+        if other_links:
+            links_val = "\n".join(other_links)
+            if len(links_val) > 1020:
+                links_val = links_val[:1017] + "..."
+            embed.add_field(name="Вложения", value=links_val, inline=False)
 
         try:
-            await log_ch.send(embed=embed)
-        except Exception:
-            pass
+            if image_files:
+                await log_ch.send(embed=embed, files=image_files)
+            else:
+                await log_ch.send(embed=embed)
+        except Exception as send_err:
+            logger.debug("Не удалось отправить лог удаления сообщения %s: %s", message.id, send_err)
 
     # --- ЛОГ РЕДАКТИРОВАНИЯ СООБЩЕНИЙ ---
     @commands.Cog.listener()
