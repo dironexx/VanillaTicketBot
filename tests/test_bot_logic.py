@@ -368,6 +368,51 @@ class BridgeLogicTests(unittest.TestCase):
         self.assertIn("report", TICKET_TOPICS)
         self.assertIn("unban", TICKET_TOPICS)
 
+    def test_ticket_timeout_transfers_to_mute_role(self):
+        import asyncio
+        import tempfile
+        import os
+        from datetime import datetime, timedelta, timezone
+        from unittest.mock import AsyncMock, MagicMock, patch
+        import discord
+        from database import DatabaseManager
+        from cogs.tickets import _ensure_member_can_write_in_ticket
+
+        fd, db_path = tempfile.mkstemp(suffix=".db")
+        os.close(fd)
+        try:
+            db = DatabaseManager(db_path)
+            mute_role = MagicMock(spec=discord.Role)
+            mute_role.id = 999
+            mute_role.__gt__ = lambda self_r, other: False
+            bot_top = MagicMock()
+            bot_top.__gt__ = lambda self_r, other: True
+            bot_top.__le__ = lambda self_r, other: False
+
+            guild = MagicMock(spec=discord.Guild)
+            guild.id = 123
+            guild.me = MagicMock()
+            guild.me.top_role = bot_top
+
+            member = MagicMock(spec=discord.Member)
+            member.id = 456
+            member.roles = []
+            member.is_timed_out.return_value = True
+            member.timed_out_until = datetime.now(timezone.utc) + timedelta(minutes=30)
+            member.add_roles = AsyncMock()
+            member.timeout = AsyncMock()
+
+            with patch("cogs.verification.get_mute_role", return_value=mute_role):
+                changed = asyncio.run(_ensure_member_can_write_in_ticket(member, guild, db))
+
+            self.assertTrue(changed)
+            member.add_roles.assert_awaited_once()
+            member.timeout.assert_awaited_once_with(None, reason="Доступ к тикету (мут сохранён через роль)")
+            self.assertTrue(db.is_user_muted(456, 123))
+        finally:
+            if os.path.exists(db_path):
+                os.remove(db_path)
+
 
 if __name__ == "__main__":
     unittest.main()

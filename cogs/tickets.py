@@ -756,6 +756,8 @@ async def create_ticket_channel(
 
             await _async_db_call(db.save_ticket, ticket_channel.id, user.id, user.name, ticket_num)
 
+        await _ensure_member_can_write_in_ticket(user, guild, db)
+
         embed = discord.Embed(
             title=f"Обращение #{ticket_num:03d} • {topic_label}",
             description=(
@@ -1346,6 +1348,7 @@ class TicketsCog(commands.Cog, name="Тикеты"):
         if isinstance(ctx.channel, discord.TextChannel):
             try:
                 await ctx.channel.set_permissions(member, view_channel=True, send_messages=True, attach_files=True, read_message_history=True)
+                await _ensure_member_can_write_in_ticket(member, ctx.guild, self.db)
                 await ctx.send(f"Пользователь {member.mention} добавлен в обращение.")
             except discord.Forbidden:
                 await ctx.send("Недостаточно прав для изменения доступа в этом канале.", ephemeral=True)
@@ -1976,6 +1979,45 @@ class TicketsCog(commands.Cog, name="Тикеты"):
             footer="Удалить: /ticket_reply remove <id> | Проверить: /ticket_reply test <фраза>",
         )
         await ctx.send(embed=embed, ephemeral=True)
+
+    @commands.Cog.listener()
+    async def on_member_update(self, before: discord.Member, after: discord.Member):
+        if after.bot or before.is_timed_out() or not after.is_timed_out():
+            return
+        tickets = await _async_db_call(self.db.get_user_tickets, user_id=after.id, limit=10)
+        has_open = any(
+            t.get("status") == "open"
+            and t.get("dc_channel_id")
+            and after.guild.get_channel(int(t["dc_channel_id"])) is not None
+            for t in tickets
+        )
+        if has_open:
+            await _ensure_member_can_write_in_ticket(after, after.guild, self.db)
+
+
+async def _ensure_member_can_write_in_ticket(member: discord.Member, guild: discord.Guild, db: DatabaseManager) -> bool:
+    """Если участник в нативном Discord-таймауте, переводит его в роль мута, чтобы он мог писать в тикете."""
+    if not isinstance(member, discord.Member) or not member.is_timed_out():
+        return False
+
+    from cogs.verification import get_mute_role
+
+    mute_role = get_mute_role(guild, db)
+    if not mute_role or not guild.me or guild.me.top_role <= mute_role:
+        return False
+
+    try:
+        if mute_role not in member.roles:
+            await member.add_roles(mute_role, reason="Доступ к тикету (сохранение мута через роль)")
+        if not await _async_db_call(db.is_user_muted, member.id, guild.id):
+            until = member.timed_out_until
+            unmute_ts = until.timestamp() if until else (time.time() + 3600)
+            await _async_db_call(db.save_mute, member.id, guild.id, unmute_ts, "Перенос таймаута в мут-роль для доступа к тикету")
+        await member.timeout(None, reason="Доступ к тикету (мут сохранён через роль)")
+        return True
+    except discord.HTTPException as err:
+        logger.warning("Не удалось перенести таймаут в роль мута для %s: %s", member.id, err)
+        return False
 
 
 async def setup(bot: commands.Bot):

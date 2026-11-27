@@ -311,10 +311,6 @@ class LogsCog(commands.Cog, name="Логирование и Защита"):
             if mute_role and guild.me.top_role > mute_role:
                 try:
                     await author.add_roles(mute_role, reason="АвтоМодерация - реклама")
-                    try:
-                        await author.timeout(timedelta(minutes=60), reason="АвтоМодерация - реклама")
-                    except Exception:
-                        pass
                     self.db.save_mute(author.id, guild.id, time.time() + 3600, "АвтоМодерация - реклама")
                 except Exception as e:
                     logger.error(f"Ошибка мута нарушителя за рекламу: {e}")

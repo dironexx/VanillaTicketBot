@@ -234,11 +234,6 @@ class ModerationCog(commands.Cog, name="Модерация"):
 
         try:
             await target.add_roles(mute_role, reason=f"Мут от {ctx.author.name}: {actual_reason} ({human_time})")
-            if sec <= 2419200:
-                try:
-                    await target.timeout(timedelta(seconds=sec), reason=f"Мут: {actual_reason}")
-                except Exception:
-                    pass
         except discord.Forbidden:
             return await ctx.send("У бота нет прав управлять этой ролью (роль бота должна быть выше).", ephemeral=True)
 
