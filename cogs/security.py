@@ -1510,7 +1510,6 @@ class HealthcheckAdminView(ui.View):
             value=(
                 f"• **Диск SSD:** {disk_str}\n"
                 f"• **База SQLite:** {db_status}\n"
-                f"• **Бэкап мира:** DriveBackupV2 (каждые 6ч)\n"
                 f"• **RAM процесса:** `{ram_mb}` ({tasks_cnt} задач)\n"
                 f"• **Размер БД:** `{db_size_str}`"
             ),
@@ -2421,50 +2420,6 @@ class SecurityCog(commands.Cog, name="Безопасность"):
         embed.set_footer(text=f"Vanilla Land • Security Guard • {get_msk_now_str()}")
         await ctx.send(embed=embed)
 
-    # --- ИДЕЯ 6: BACKUP STATUS & TRIGGER ---
-    @commands.hybrid_command(
-        name="backup_status",
-        aliases=["статус_бэкапа", "бэкапы"],
-        description="Проверить статус облачного бэкапа мира через DriveBackupV2",
-    )
-    async def backup_status_cmd(self, ctx: commands.Context):
-        if not is_tech_admin_or_owner(ctx):
-            return await ctx.send("Команда доступна только технической администрации.", ephemeral=True)
-
-        embed = discord.Embed(
-            title="💾 Облачные бэкапы мира • DriveBackupV2",
-            description=(
-                "**Статус интеграции:** `🟢 Активна`\n"
-                "**Хранилище:** `Google Drive / Локальное облако`\n"
-                "**Авто-бэкапы:** `Каждые 6 часов`\n\n"
-                "Для запуска внеочередного бэкапа используйте: `/backup_create`"
-            ),
-            color=Colors.GREEN,
-        )
-        embed.set_footer(text=f"Vanilla Land • Резервное копирование • {get_msk_now_str()}")
-        await ctx.send(embed=embed)
-
-    @commands.hybrid_command(
-        name="backup_create",
-        aliases=["сделать_бэкап", "запустить_бэкап"],
-        description="Запустить внеочередное резервное копирование мира на сервере",
-    )
-    async def backup_create_cmd(self, ctx: commands.Context):
-        if not is_tech_admin_or_owner(ctx):
-            return await ctx.send("Команда доступна только технической администрации.", ephemeral=True)
-
-        bridge_cog = get_bridge_cog(self.bot)
-        if bridge_cog and hasattr(bridge_cog, "broadcast_packet"):
-            await bridge_cog.broadcast_packet({"type": "execute_console_command", "command": "drivebackupv2 backup"})
-            embed = discord.Embed(
-                title="💾 Запуск резервного копирования",
-                description="Команда создания бэкапа отправлена на сервер Paper через `DriveBackupV2`.\nПроцесс выполняется в фоне.",
-                color=Colors.BLUE,
-            )
-            await ctx.send(embed=embed)
-        else:
-            await ctx.send("❌ Ошибка: мост с Minecraft недоступен.", ephemeral=True)
-
     # --- ИДЕЯ 8: CHAT SEARCH ---
     @commands.hybrid_command(
         name="chat_search",
@@ -2524,6 +2479,11 @@ class SecurityCog(commands.Cog, name="Безопасность"):
             safe_reason = (reason or "Экстренное техническое обслуживание").replace("\r", " ").replace("\n", " ").strip()
             kick_cmd = f"kickall {safe_reason}"
             await bridge_cog.broadcast_packet({"type": "execute_console_command", "command": kick_cmd})
+        else:
+            safe_reason = "Технические работы завершены"
+
+        if hasattr(bridge_cog, "send_whitelist_status_announcement"):
+            await bridge_cog.send_whitelist_status_announcement(is_on, safe_reason)
 
         embed = discord.Embed(
             title="⚠️ Экстренный режим белого списка",

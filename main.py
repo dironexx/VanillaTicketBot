@@ -311,16 +311,24 @@ class VanillaSupportBot(commands.Bot):
             # Игнорируем неизвестные префикс-команды, чтобы не спамить в общие чаты
             return
 
-        if isinstance(error, commands.MissingPermissions):
+        if isinstance(error, (commands.MissingPermissions, commands.CheckFailure)):
             try:
-                await ctx.send("У вас недостаточно прав для выполнения этой команды.", delete_after=5)
+                await ctx.send("У вас недостаточно прав для выполнения этой команды.", delete_after=6)
             except Exception:
                 pass
             return
 
-        if isinstance(error, commands.MissingRequiredArgument):
+        if isinstance(error, (commands.MissingRequiredArgument, commands.BadArgument)):
+            cmd_name = ctx.command.name if ctx.command else "help"
+            sig = ctx.command.signature if ctx.command else ""
+            usage = f"!{cmd_name} {sig}".strip()
+            desc = (ctx.command.description or "").strip() if ctx.command else ""
+            hint_lines = [f"Неверные аргументы команды (`{error}`).", f"Использование: `{usage}`"]
+            if desc:
+                hint_lines.append(f"Описание: {desc}")
+            hint_lines.append("Подробности: `/help`")
             try:
-                await ctx.send(f"Не указан обязательный аргумент: `{error.param.name}`. Проверьте `!help`.", delete_after=5)
+                await ctx.send("\n".join(hint_lines), delete_after=12)
             except Exception:
                 pass
             return

@@ -479,6 +479,76 @@ class BridgeCog(commands.Cog, name="Мост Minecraft"):
             except Exception:
                 pass
 
+    async def notify_maintenance_open(self) -> None:
+        """Уведомляет в ЛС всех игроков, нажавших «Уведомить об открытии»."""
+        try:
+            raw = await asyncio.to_thread(self.db.get_setting, "maintenance_notify_users", "[]")
+            user_ids = json.loads(raw or "[]")
+            if not isinstance(user_ids, list) or not user_ids:
+                return
+            await asyncio.to_thread(self.db.set_setting, "maintenance_notify_users", "[]")
+        except Exception as err:
+            logger.debug("Ошибка чтения подписчиков техработ: %s", err)
+            return
+
+        embed = AG.embed(
+            title="Сервер открыт • Vanilla Land",
+            description="Технические работы завершены, вход на сервер снова открыт. Приятной игры!",
+            color=Colors.GREEN,
+            footer="Vanilla Land • Уведомление",
+        )
+        for uid in set(int(u) for u in user_ids if str(u).isdigit()):
+            try:
+                user = self.bot.get_user(uid) or await self.bot.fetch_user(uid)
+                if user:
+                    await user.send(embed=embed)
+            except Exception:
+                pass
+
+    async def send_whitelist_status_announcement(self, enabled: bool, reason: str = "Технические работы на сервере") -> None:
+        """Отправляет красивое уведомление о включении/выключении whitelist в целевые каналы."""
+        if enabled:
+            embed = discord.Embed(
+                title="Технические работы • Включён белый список",
+                description=(
+                    "На сервере временно включён **белый список (whitelist)** и проводятся технические работы.\n"
+                    f"**Причина:** {reason}\n\n"
+                    "Вход для обычных игроков временно закрыт. Как только работы завершатся, мы сообщим об этом."
+                ),
+                color=Colors.YELLOW,
+                timestamp=datetime.now(timezone.utc),
+            )
+            embed.set_footer(text="Vanilla Land • Статус доступа")
+            view = MaintenanceNotifyView(self.db)
+        else:
+            embed = discord.Embed(
+                title="Сервер открыт • Белый список снят",
+                description="Технические работы завершены, белый список выключен. Вход на сервер снова открыт для всех игроков.",
+                color=Colors.GREEN,
+                timestamp=datetime.now(timezone.utc),
+            )
+            embed.set_footer(text="Vanilla Land • Статус доступа")
+            view = None
+
+        for cid in (1472561882887094315, 1472600303051210937):
+            ch = self.bot.get_channel(cid)
+            if not ch:
+                try:
+                    ch = await self.bot.fetch_channel(cid)
+                except Exception:
+                    ch = None
+            if ch and hasattr(ch, "send"):
+                try:
+                    if view is not None:
+                        await ch.send(embed=embed, view=view)
+                    else:
+                        await ch.send(embed=embed)
+                except Exception as err:
+                    logger.debug("Не удалось отправить статус whitelist в %s: %s", cid, err)
+
+        if not enabled:
+            await self.notify_maintenance_open()
+
     async def broadcast_packet(self, payload: dict):
         p_type = str(payload.get("type", ""))
         if p_type.startswith("maintenance") and not Config.BRIDGE_ENABLE_MAINTENANCE_SYNC:
@@ -572,6 +642,7 @@ class BridgeCog(commands.Cog, name="Мост Minecraft"):
             self.was_restarting = False
             self.maintenance_enabled = False
             self.create_tracked_task(self.update_bot_presence())
+            self.create_tracked_task(self.notify_maintenance_open())
             events_ch = self.get_events_channel()
             if events_ch:
                 embed = AG.embed(
@@ -1037,12 +1108,14 @@ class BridgeCog(commands.Cog, name="Мост Minecraft"):
             events_ch = self.get_events_channel()
             if enabled:
                 embed = discord.Embed(
-                    title="🔧 Внимание! Сервер переведён в режим технических работ",
-                    description=f"**Причина:** {reason}\n\n*Вход на сервер временно ограничен администрацией.*",
+                    title="Технические работы • Вход временно ограничен",
+                    description=f"**Причина:** {reason}\n\nНа сервере проводятся технические работы. Нажмите кнопку ниже, чтобы получить уведомление об открытии.",
                     color=Colors.YELLOW,
                     timestamp=datetime.now(timezone.utc),
                 )
                 embed.set_footer(text="Vanilla Land • Администрация")
+                if events_ch:
+                    await events_ch.send(embed=embed, view=MaintenanceNotifyView(self.db))
             else:
                 embed = discord.Embed(
                     title="Технические работы завершены",
@@ -1051,9 +1124,14 @@ class BridgeCog(commands.Cog, name="Мост Minecraft"):
                     timestamp=datetime.now(timezone.utc),
                 )
                 embed.set_footer(text="Vanilla Land")
+                if events_ch:
+                    await events_ch.send(embed=embed)
+                await self.notify_maintenance_open()
 
-            if events_ch:
-                await events_ch.send(embed=embed)
+        elif p_type == "whitelist_status":
+            wl_enabled = bool(data.get("enabled", False))
+            wl_reason = str(data.get("reason") or "Технические работы на сервере").strip()
+            await self.send_whitelist_status_announcement(wl_enabled, wl_reason)
 
         # 15. Синхронизация таймера техработ/рестарта из Minecraft
         elif p_type == "maintenance_countdown":
@@ -2948,6 +3026,63 @@ class BridgeCog(commands.Cog, name="Мост Minecraft"):
         view = ProfileView(self, actual_name, skin_hash)
         await ctx.send(embed=embed, view=view)
 
+    # --- КОМАНДА /playtime ИЛИ !время_в_игре ---
+    @commands.hybrid_command(
+        name="playtime",
+        aliases=["время_в_игре", "плейтайм", "онлайн_время"],
+        description="Детальное время игры за текущий сезон и место в рейтинге",
+    )
+    @app_commands.describe(player_name="Никнейм игрока в Minecraft (по умолчанию ваш ник в Discord)")
+    async def playtime_cmd(self, ctx: commands.Context, player_name: Optional[str] = None):
+        if ctx.interaction:
+            await ctx.defer()
+
+        clean_name = (player_name or ctx.author.display_name).strip()
+        season_data = await self.get_season_top_data(4)
+        pt_list = (season_data or {}).get("playtime", []) if isinstance(season_data, dict) else []
+
+        rank = None
+        playtime_ticks = None
+        actual_name = clean_name
+        for idx, item in enumerate(pt_list, 1):
+            if str(item.get("player", "")).lower() == clean_name.lower():
+                rank = idx
+                playtime_ticks = int(item.get("value", 0))
+                actual_name = item.get("player", clean_name)
+                break
+
+        if playtime_ticks is None and self.active_sockets:
+            pdata = await self.query_minecraft({"type": "query_player", "player": clean_name}, timeout=4.0)
+            if pdata and (pdata.get("found", True) or pdata.get("online", False)):
+                playtime_ticks = int(pdata.get("playtime", 0))
+                actual_name = pdata.get("player", clean_name)
+
+        if playtime_ticks is None:
+            return await ctx.send(f"Данные по времени игры для `{clean_name}` за текущий сезон не найдены.", ephemeral=True)
+
+        total_min = playtime_ticks // 1200
+        days, rem_min = divmod(total_min, 1440)
+        hours, mins = divmod(rem_min, 60)
+        if days > 0:
+            pt_human = f"{days} д. {hours} ч. {mins} мин."
+        elif hours > 0:
+            pt_human = f"{hours} ч. {mins} мин."
+        else:
+            pt_human = f"{mins} мин."
+
+        rank_str = f"#{rank} в рейтинге (4 сезон)" if rank else "Вне топ-10 (4 сезон)"
+        embed = AG.embed(
+            title=f"Время в игре • {actual_name}",
+            description=(
+                f"• **Наиграно (4 сезон):** `{pt_human}`\n"
+                f"• **Позиция в топе:** `{rank_str}`"
+            ),
+            color=Colors.BLUE,
+            thumbnail=get_skin_avatar_url(actual_name, None, self.db),
+            footer="Vanilla Land • Статистика времени",
+        )
+        await ctx.send(embed=embed)
+
     # --- КОМАНДА /bc ИЛИ !bc <текст> (ДЛЯ АДМИНИСТРАЦИИ) ---
     @commands.hybrid_command(
         name="bc",
@@ -4086,9 +4221,42 @@ class ProfileView(ui.View):
 
 
 
+class MaintenanceNotifyView(ui.View):
+    """Кнопка подписки на уведомление об открытии сервера после техработ."""
+
+    def __init__(self, db: DatabaseManager):
+        super().__init__(timeout=None)
+        self.db = db
+
+    @ui.button(label="Уведомить об открытии", style=discord.ButtonStyle.primary, custom_id="bridge:maint_notify_btn")
+    async def notify_btn(self, interaction: discord.Interaction, button: ui.Button):
+        uid = interaction.user.id
+        try:
+            raw = await asyncio.to_thread(self.db.get_setting, "maintenance_notify_users", "[]")
+            users = json.loads(raw or "[]")
+            if not isinstance(users, list):
+                users = []
+        except Exception:
+            users = []
+
+        if uid in users:
+            users = [u for u in users if u != uid]
+            await asyncio.to_thread(self.db.set_setting, "maintenance_notify_users", json.dumps(users))
+            return await interaction.response.send_message(
+                "Уведомление об открытии сервера отменено.", ephemeral=True
+            )
+
+        users.append(uid)
+        await asyncio.to_thread(self.db.set_setting, "maintenance_notify_users", json.dumps(users))
+        await interaction.response.send_message(
+            "Готово. Напишу вам в личные сообщения, как только сервер откроется.", ephemeral=True
+        )
+
+
 async def setup(bot: commands.Bot):
     db: DatabaseManager = bot.db
     cog = BridgeCog(bot, db)
     await bot.add_cog(cog)
     bot.add_view(DmReplyView(cog))
+    bot.add_view(MaintenanceNotifyView(db))
 

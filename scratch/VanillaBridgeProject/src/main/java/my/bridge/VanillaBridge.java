@@ -1387,7 +1387,6 @@ implements CommandExecutor {
                 String lowerCmd = cmdToRun.toLowerCase(Locale.ROOT);
                 boolean allowed = lowerCmd.equals("whitelist on")
                         || lowerCmd.equals("whitelist off")
-                        || lowerCmd.equals("drivebackupv2 backup")
                         || lowerCmd.startsWith("kick ")
                         || lowerCmd.startsWith("kickall ")
                         || lowerCmd.startsWith("ban ")

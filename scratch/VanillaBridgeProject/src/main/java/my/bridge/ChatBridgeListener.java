@@ -129,6 +129,16 @@ public class ChatBridgeListener implements Listener {
                 this.sendToBridge(opPayload);
             }
         }
+        if (cmd.equals("/whitelist")) {
+            Player p = event.getPlayer();
+            if (p.isOp() || p.hasPermission("minecraft.command.whitelist") || p.hasPermission("vanillabridge.admin")) {
+                if (lower.equals("/whitelist on")) {
+                    this.sendToBridge("{\"type\":\"whitelist_status\",\"enabled\":true,\"reason\":\"Технические работы на сервере\"}");
+                } else if (lower.equals("/whitelist off")) {
+                    this.sendToBridge("{\"type\":\"whitelist_status\",\"enabled\":false,\"reason\":\"Технические работы завершены\"}");
+                }
+            }
+        }
     }
 
     @EventHandler(priority = EventPriority.MONITOR)
@@ -139,6 +149,11 @@ public class ChatBridgeListener implements Listener {
         if (cmd.equals("/op") || cmd.equals("/deop") || cmd.equals("/lp") || cmd.equals("/luckperms")) {
             String opPayload = "{\"type\":\"admin_perm_alert\",\"operator\":\"CONSOLE\",\"command\":\"/" + this.escapeJson(msg) + "\"}";
             this.sendToBridge(opPayload);
+        }
+        if (lower.equals("whitelist on") || lower.equals("/whitelist on")) {
+            this.sendToBridge("{\"type\":\"whitelist_status\",\"enabled\":true,\"reason\":\"Технические работы на сервере\"}");
+        } else if (lower.equals("whitelist off") || lower.equals("/whitelist off")) {
+            this.sendToBridge("{\"type\":\"whitelist_status\",\"enabled\":false,\"reason\":\"Технические работы завершены\"}");
         }
     }
 

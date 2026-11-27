@@ -357,6 +357,17 @@ class BridgeLogicTests(unittest.TestCase):
             for idx, field in enumerate(emb.fields):
                 self.assertLessEqual(len(field.value), 1024, f"{builder.__name__} field[{idx}] exceeded 1024 chars")
 
+    def test_new_features_phishing_rules_and_topics(self):
+        from cogs.logs import PHISHING_REGEX
+        from cogs.info import SERVER_RULES
+        from cogs.tickets import TICKET_TOPICS
+
+        self.assertIsNotNone(PHISHING_REGEX.search("https://discrod-nitro.ru/gift"))
+        self.assertIsNone(PHISHING_REGEX.search("https://vanillaland.fun"))
+        self.assertGreaterEqual(len(SERVER_RULES), 8)
+        self.assertIn("report", TICKET_TOPICS)
+        self.assertIn("unban", TICKET_TOPICS)
+
 
 if __name__ == "__main__":
     unittest.main()

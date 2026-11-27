@@ -585,11 +585,61 @@ _CREATING_TICKETS: set[int] = set()
 _TICKET_CREATE_LOCK = asyncio.Lock()
 
 
+TICKET_TOPICS: dict[str, dict[str, Any]] = {
+    "report": {
+        "label": "Жалоба на игрока",
+        "desc": "Нарушение правил, гриферство, читы или оскорбления",
+        "hints": [
+            "Ваш никнейм и никнейм нарушителя",
+            "Краткое описание ситуации и примерное время",
+            "Скриншоты, видео или координаты (если есть)",
+        ],
+    },
+    "bug": {
+        "label": "Баг / Проблема",
+        "desc": "Техническая ошибка, пропажа вещей или сбой сервера",
+        "hints": [
+            "Ваш никнейм на сервере",
+            "Что произошло и как воспроизвести ошибку",
+            "Координаты, время и скриншоты",
+        ],
+    },
+    "donate": {
+        "label": "Донат / Магазин",
+        "desc": "Вопросы по покупкам, привилегиям и оплате",
+        "hints": [
+            "Ваш никнейм на сервере",
+            "Что именно и когда вы приобретали",
+            "Чек или номер заказа (если есть)",
+        ],
+    },
+    "unban": {
+        "label": "Заявка на разбан",
+        "desc": "Обжалование бана или мута",
+        "hints": [
+            "Ваш никнейм на сервере",
+            "Кто и за что выдал наказание",
+            "Почему считаете нужным пересмотреть решение",
+        ],
+    },
+    "other": {
+        "label": "Другое",
+        "desc": "Общий вопрос или предложение администрации",
+        "hints": [
+            "Ваш никнейм на сервере",
+            "Подробное описание вопроса или предложения",
+            "Скриншоты или ссылки (если требуются)",
+        ],
+    },
+}
+
+
 async def create_ticket_channel(
     guild: discord.Guild,
     user: discord.Member,
     db: DatabaseManager,
     fallback_channel: Optional[discord.TextChannel] = None,
+    topic_key: str = "other",
 ) -> tuple[Optional[discord.TextChannel], str]:
     if user.id in _CREATING_TICKETS:
         return None, "Ваше обращение уже создается, пожалуйста подождите пару секунд..."
@@ -683,6 +733,10 @@ async def create_ticket_channel(
         if target_category and isinstance(target_category, discord.CategoryChannel) and len(target_category.channels) >= 50:
             target_category = None
 
+        topic_meta = TICKET_TOPICS.get(topic_key, TICKET_TOPICS["other"])
+        topic_label = topic_meta["label"]
+        hints_block = "\n".join(f"• {h}" for h in topic_meta["hints"])
+
         async with _TICKET_CREATE_LOCK:
             ticket_num = await _async_db_call(db.get_next_ticket_number)
             channel_name = f"тикет-{ticket_num:03d}"
@@ -692,7 +746,7 @@ async def create_ticket_channel(
                     name=channel_name,
                     category=target_category,
                     overwrites=overwrites,
-                    topic=f"Игрок: {user.name} ({user.id}) | Создан: {get_msk_now().strftime('%d.%m.%Y %H:%M')}",
+                    topic=f"Тема: {topic_label} | Игрок: {user.name} ({user.id}) | Создан: {get_msk_now().strftime('%d.%m.%Y %H:%M')}",
                 )
             except discord.HTTPException as err:
                 logger.error("Не удалось создать канал тикета в Discord: %s (код %s)", err, getattr(err, "code", None))
@@ -703,13 +757,11 @@ async def create_ticket_channel(
             await _async_db_call(db.save_ticket, ticket_channel.id, user.id, user.name, ticket_num)
 
         embed = discord.Embed(
-            title=f"Обращение #{ticket_num:03d} • Vanilla Land",
+            title=f"Обращение #{ticket_num:03d} • {topic_label}",
             description=(
-                f"Здравствуйте, {user.mention}! Ваше обращение принято в работу.\n\n"
-                "**Чтобы мы помогли быстрее, пожалуйста, укажите:**\n"
-                "• Ваш **точный никнейм** на сервере\n"
-                "• **Подробное описание** ситуации или вопроса\n"
-                "• **Скриншоты, видео или координаты** (если относятся к делу)"
+                f"Здравствуйте, {user.mention}. Ваше обращение принято в работу.\n\n"
+                "Чтобы мы помогли быстрее, укажите:\n"
+                f"{hints_block}"
             ),
             color=Colors.INDIGO,
             timestamp=datetime.now(timezone.utc),
@@ -717,8 +769,8 @@ async def create_ticket_channel(
         embed.set_author(name="Vanilla Land • Служба поддержки", icon_url=guild.icon.url if guild.icon else None)
         embed.set_thumbnail(url=user.display_avatar.url)
         embed.add_field(name="Номер", value=f"`#{ticket_num:03d}`", inline=True)
+        embed.add_field(name="Тема", value=topic_label, inline=True)
         embed.add_field(name="Автор", value=user.mention, inline=True)
-        embed.add_field(name="Статус", value="`Открыт`", inline=True)
         embed.set_footer(text="Vanilla Land • Поддержка | Управление: !add, !remove, !rename, !close")
 
         try:
@@ -729,6 +781,37 @@ async def create_ticket_channel(
         return ticket_channel, f"Обращение создано: {ticket_channel.mention}"
     finally:
         _CREATING_TICKETS.discard(user.id)
+
+
+class TicketTopicSelect(ui.Select):
+    def __init__(self, db: DatabaseManager, fallback_channel: Optional[discord.TextChannel]):
+        options = [
+            discord.SelectOption(label=meta["label"], value=key, description=meta["desc"])
+            for key, meta in TICKET_TOPICS.items()
+        ]
+        super().__init__(placeholder="Выберите тему обращения...", min_values=1, max_values=1, options=options)
+        self.db = db
+        self.fallback_channel = fallback_channel
+
+    async def callback(self, interaction: discord.Interaction):
+        guild = interaction.guild
+        user = interaction.user
+        if not guild or not isinstance(user, discord.Member):
+            return await _safe_send_interaction(interaction, "Команда доступна только на сервере.", ephemeral=True)
+        if not await _safe_defer(interaction, ephemeral=True):
+            return
+        topic_key = self.values[0]
+        _ch, msg = await create_ticket_channel(guild, user, self.db, self.fallback_channel, topic_key=topic_key)
+        try:
+            await interaction.edit_original_response(content=msg, embed=None, view=None)
+        except Exception:
+            await _safe_send_interaction(interaction, msg, ephemeral=True)
+
+
+class TicketTopicView(ui.View):
+    def __init__(self, db: DatabaseManager, fallback_channel: Optional[discord.TextChannel]):
+        super().__init__(timeout=120)
+        self.add_item(TicketTopicSelect(db, fallback_channel))
 
 
 class TicketPanel(ui.View):
@@ -745,12 +828,14 @@ class TicketPanel(ui.View):
             await _safe_send_interaction(interaction, "Команда доступна только на сервере.", ephemeral=True)
             return
 
-        if not await _safe_defer(interaction, ephemeral=True):
-            return
-
         fallback = interaction.channel if isinstance(interaction.channel, discord.TextChannel) else None
-        _ticket_channel, msg = await create_ticket_channel(guild, user, self.db, fallback)
-        await _safe_send_interaction(interaction, msg, ephemeral=True)
+        view = TicketTopicView(self.db, fallback)
+        await _safe_send_interaction(
+            interaction,
+            "Выберите тему обращения из списка ниже:",
+            view=view,
+            ephemeral=True,
+        )
 
     async def on_error(self, interaction: discord.Interaction, error: Exception, item: ui.Item[Any]) -> None:
         logger.error("Ошибка в TicketPanel (%s): %s", getattr(item, "custom_id", item), error, exc_info=error)

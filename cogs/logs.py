@@ -3,6 +3,7 @@ import io
 import logging
 import re
 import time
+from collections import deque
 from datetime import datetime, timedelta
 from typing import Optional
 
@@ -19,6 +20,15 @@ logger = logging.getLogger("VanillaBot.Logs")
 
 INVITE_REGEX = re.compile(
     r"(?:https?://)?(?:www\.)?(?:discord\.(?:gg|io|me|li)|discord(?:app)?\.com/invite)/[a-zA-Z0-9\-]+",
+    re.IGNORECASE,
+)
+
+PHISHING_REGEX = re.compile(
+    r"(?:https?://)?(?:[a-z0-9-]+\.)*(?:"
+    r"discrod|dlscord|discorcl|discord-?nitro|discordgift|discord-?airdrop|"
+    r"free-?nitro|nitro-?gift|stean|steamcommunitty|steamcommunnity|"
+    r"minecrafft|optifine-?free"
+    r")[a-z0-9.-]*\.[a-z]{2,}",
     re.IGNORECASE,
 )
 
@@ -107,6 +117,43 @@ class LogsCog(commands.Cog, name="Логирование и Защита"):
         self.db = db
         self._event_lock = asyncio.Lock()
         self._mem_events: dict[str, float] = {}
+        self._msg_cache: dict[int, dict] = {}
+        self._msg_order: deque[int] = deque()
+
+    async def _cache_message(self, message: discord.Message) -> None:
+        """Кэширует текст и медиа последних 800 сообщений в памяти на случай очистки кэша Discord."""
+        if len(self._msg_order) >= 800:
+            oldest_id = self._msg_order.popleft()
+            self._msg_cache.pop(oldest_id, None)
+
+        att_cache: list[dict] = []
+        image_exts = (".png", ".jpg", ".jpeg", ".webp", ".gif")
+        for idx, att in enumerate(message.attachments):
+            fname_low = (att.filename or "").lower().split("?")[0]
+            ctype = (att.content_type or "").lower()
+            is_img = ctype.startswith("image/") or fname_low.endswith(image_exts)
+            raw_bytes = None
+            if is_img and len(att_cache) < 2 and getattr(att, "size", 0) <= 2 * 1024 * 1024:
+                try:
+                    raw_bytes = await att.read()
+                except Exception:
+                    raw_bytes = None
+            att_cache.append({
+                "filename": att.filename or f"file_{idx}",
+                "url": att.url,
+                "proxy_url": att.proxy_url,
+                "is_image": is_img,
+                "bytes": raw_bytes,
+            })
+
+        self._msg_order.append(message.id)
+        self._msg_cache[message.id] = {
+            "author_id": message.author.id,
+            "author_mention": message.author.mention,
+            "channel_id": message.channel.id,
+            "content": message.clean_content or "",
+            "attachments": att_cache,
+        }
 
     def get_log_channel(self, guild: discord.Guild) -> Optional[discord.TextChannel]:
         # 1. Из базы данных
@@ -176,6 +223,8 @@ class LogsCog(commands.Cog, name="Логирование и Защита"):
         if message.author.bot or not message.guild or not isinstance(message.author, discord.Member):
             return
 
+        await self._cache_message(message)
+
         # Игнорируем администрацию и модераторов
         if is_mod_or_admin(message.author):
             return
@@ -188,13 +237,19 @@ class LogsCog(commands.Cog, name="Логирование и Защита"):
         is_violation = False
         violation_type = ""
 
+        # 0. Фишинг и скам-ссылки
+        if PHISHING_REGEX.search(message.content):
+            is_violation = True
+            violation_type = "Фишинг / скам-ссылка"
+
         # 1. Сторонние Discord-инвайты
-        match_inv = INVITE_REGEX.search(message.content)
-        if match_inv:
-            invite_url = match_inv.group(0).lower()
-            if "ba5cmk7f6a" not in invite_url:
-                is_violation = True
-                violation_type = "Ссылка-инвайт на Discord"
+        if not is_violation:
+            match_inv = INVITE_REGEX.search(message.content)
+            if match_inv:
+                invite_url = match_inv.group(0).lower()
+                if "ba5cmk7f6a" not in invite_url:
+                    is_violation = True
+                    violation_type = "Ссылка-инвайт на Discord"
 
         # 2. Сторонние Telegram-каналы
         if not is_violation:
@@ -318,6 +373,9 @@ class LogsCog(commands.Cog, name="Логирование и Защита"):
         first_image_set = False
         image_exts = (".png", ".jpg", ".jpeg", ".webp", ".gif")
 
+        cached_entry = self._msg_cache.pop(message.id, None)
+        cached_atts = (cached_entry or {}).get("attachments", [])
+
         for idx, att in enumerate(message.attachments):
             fname_low = (att.filename or "").lower().split("?")[0]
             ctype = (att.content_type or "").lower()
@@ -325,13 +383,16 @@ class LogsCog(commands.Cog, name="Логирование и Защита"):
 
             if is_image and len(image_files) < 4 and getattr(att, "size", 0) <= 8 * 1024 * 1024:
                 img_bytes = None
-                for use_cached in (True, False):
-                    try:
-                        img_bytes = await att.read(use_cached=use_cached)
-                        if img_bytes:
-                            break
-                    except Exception:
-                        continue
+                if idx < len(cached_atts) and cached_atts[idx].get("bytes"):
+                    img_bytes = cached_atts[idx]["bytes"]
+                else:
+                    for use_cached in (True, False):
+                        try:
+                            img_bytes = await att.read(use_cached=use_cached)
+                            if img_bytes:
+                                break
+                        except Exception:
+                            continue
 
                 if img_bytes:
                     clean_name = re.sub(r"[^a-zA-Z0-9._-]", "_", att.filename or f"image_{idx}.png")
@@ -363,6 +424,71 @@ class LogsCog(commands.Cog, name="Логирование и Защита"):
                 await log_ch.send(embed=embed)
         except Exception as send_err:
             logger.debug("Не удалось отправить лог удаления сообщения %s: %s", message.id, send_err)
+
+    async def _send_cached_delete_log(self, guild: discord.Guild, channel_id: int, msg_id: int, cached: dict) -> None:
+        log_ch = self.get_log_channel(guild)
+        if not log_ch or log_ch.id == channel_id:
+            return
+        raw_content = cached.get("content") or ("*[Без текста]*" if cached.get("attachments") else "*[Содержимое недоступно]*")
+        content = raw_content[:1000] + "..." if len(raw_content) > 1000 else raw_content
+        embed = AG.embed(
+            title="Сообщение удалено",
+            description=(
+                f"• **Автор:** {cached.get('author_mention', 'Неизвестен')} (`{cached.get('author_id', '?')}`)\n"
+                f"• **Канал:** <#{channel_id}>\n\n"
+                f"**Текст сообщения:**\n{content}"
+            ),
+            color=Colors.RED,
+            footer=f"Vanilla Land • ID: {msg_id}",
+        )
+        image_files: list[discord.File] = []
+        other_links: list[str] = []
+        first_image_set = False
+        for idx, att in enumerate(cached.get("attachments", [])):
+            if att.get("is_image") and att.get("bytes") and len(image_files) < 4:
+                clean_name = re.sub(r"[^a-zA-Z0-9._-]", "_", att.get("filename") or f"image_{idx}.png")
+                safe_name = f"{idx}_{clean_name}"
+                image_files.append(discord.File(io.BytesIO(att["bytes"]), filename=safe_name))
+                if not first_image_set:
+                    embed.set_image(url=f"attachment://{safe_name}")
+                    first_image_set = True
+            else:
+                other_links.append(f"• [{att.get('filename', 'file')}]({att.get('url', '')})")
+        if other_links:
+            embed.add_field(name="Вложения", value="\n".join(other_links)[:1020], inline=False)
+        try:
+            if image_files:
+                await log_ch.send(embed=embed, files=image_files)
+            else:
+                await log_ch.send(embed=embed)
+        except Exception as err:
+            logger.debug("Ошибка отправки raw-лога удаления %s: %s", msg_id, err)
+
+    @commands.Cog.listener()
+    async def on_raw_message_delete(self, payload: discord.RawMessageDeleteEvent):
+        if payload.cached_message is not None or not payload.guild_id:
+            return
+        cached = self._msg_cache.pop(payload.message_id, None)
+        if not cached:
+            return
+        guild = self.bot.get_guild(payload.guild_id)
+        if guild:
+            await self._send_cached_delete_log(guild, payload.channel_id, payload.message_id, cached)
+
+    @commands.Cog.listener()
+    async def on_raw_bulk_message_delete(self, payload: discord.RawBulkMessageDeleteEvent):
+        if not payload.guild_id:
+            return
+        guild = self.bot.get_guild(payload.guild_id)
+        if not guild:
+            return
+        cached_ids = {m.id for m in payload.cached_messages}
+        for mid in payload.message_ids:
+            if mid in cached_ids:
+                continue
+            cached = self._msg_cache.pop(mid, None)
+            if cached:
+                await self._send_cached_delete_log(guild, payload.channel_id, mid, cached)
 
     # --- ЛОГ РЕДАКТИРОВАНИЯ СООБЩЕНИЙ ---
     @commands.Cog.listener()

@@ -3,6 +3,7 @@ import time
 from typing import Optional
 
 import discord
+from discord import app_commands
 from discord.ext import commands
 
 from config import Config
@@ -93,6 +94,7 @@ def build_bridge_embed(guild: Optional[discord.Guild]) -> discord.Embed:
             "• `!online` (`!онлайн`) — Список игроков в сети и текущий TPS\n"
             "• `!top [категория] [сезон]` (`!топ`, `!лидеры`, `/top_archive`) — Таблица лидеров (`3 сезон` и `4 сезон`)\n"
             "• `!profile [ник]` (`!профиль`, `!стата`) — Карточка игрока (скин, руды, K/D, дата первого входа)\n"
+            "• `/playtime [ник]` (`!время_в_игре`) — Время в игре за текущий сезон и место в топе\n"
             "• `!skin <ник>` (`!скин`) — Рендер скина и ссылка на исходный файл скина\n"
             "• `!deaths` (`!смерти`) — Таблица смертей («Премия Дарвина»)"
         ),
@@ -209,6 +211,7 @@ def build_info_embed(guild: Optional[discord.Guild]) -> discord.Embed:
         value=(
             "• `!ip` (`!айпи`) — Адрес сервера и ссылка на Telegram\n"
             "• `!rules` (`!правила`) — Официальные правила проекта\n"
+            "• `/rule <пункт/слово>` (`!правило`) — Быстрый поиск по пунктам правил\n"
             "• `!donate` (`!донат`) — Поддержка проекта и ссылка на магазин\n"
             "• `!ping` (`!пинг`) — Задержка отклика и время непрерывной работы бота"
         ),
@@ -301,7 +304,6 @@ def build_mod_help_embed(guild: Optional[discord.Guild]) -> discord.Embed:
         value=(
             "• `/setup_channels` — Единая настройка всех каналов бота и категории тикетов\n"
             "• `/db_backup [now|list|send|channel]` — Бэкап и ротация базы данных `tickets.db`\n"
-            "• `/backup_status` / `/backup_create` — Статус и создание бэкапа мира (DriveBackupV2)\n"
             "• `/ticket_reply [add|list|remove|test]` — Автоответы в тикетах (точные и похожие фразы)\n"
             "• `/ticket_roles` — Просмотр всех ролей доступа и пинга в тикетах\n"
             "• `/giveaway` — GUI-конструктор создания и запуска розыгрышей\n"
@@ -375,10 +377,102 @@ class HelpSelect(discord.ui.Select):
         await interaction.response.edit_message(embed=embed, view=self.view)
 
 
+class HelpSearchModal(discord.ui.Modal, title="Поиск команды"):
+    query_input = discord.ui.TextInput(
+        label="Название команды или ключевое слово",
+        placeholder="Например: top, мут, тикет, playtime, rule",
+        max_length=50,
+        required=True,
+    )
+
+    def __init__(self, bot: commands.Bot, is_staff: bool):
+        super().__init__()
+        self.bot = bot
+        self.is_staff = is_staff
+
+    async def on_submit(self, interaction: discord.Interaction):
+        q = self.query_input.value.strip().lower().lstrip("!/")
+        matches = []
+        seen = set()
+        for cmd in self.bot.commands:
+            if cmd.hidden or cmd.name in seen:
+                continue
+            desc = (cmd.description or "").strip()
+            aliases = [a.lower() for a in getattr(cmd, "aliases", [])]
+            haystack = " ".join([cmd.name.lower(), desc.lower(), *aliases])
+            if q in haystack:
+                seen.add(cmd.name)
+                sig = f" {cmd.signature}" if cmd.signature else ""
+                matches.append(f"• `/{cmd.name}{sig}` — {desc or 'без описания'}")
+                if len(matches) >= 12:
+                    break
+
+        if not matches:
+            return await interaction.response.send_message(
+                f"По запросу `{q}` команды не найдены.", ephemeral=True
+            )
+        embed = AG.embed(
+            title=f"Поиск команд • «{q}»",
+            description="\n".join(matches),
+            color=Colors.BLUE,
+            footer="Vanilla Land • Навигация",
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
 class HelpSelectView(discord.ui.View):
-    def __init__(self, is_staff: bool, guild: Optional[discord.Guild], author_id: int):
+    def __init__(self, is_staff: bool, guild: Optional[discord.Guild], author_id: int, bot: Optional[commands.Bot] = None):
         super().__init__(timeout=180)
+        self.is_staff = is_staff
+        self.guild = guild
+        self.author_id = author_id
+        self.bot = bot
         self.add_item(HelpSelect(is_staff, guild, author_id))
+
+    async def _check_owner(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.author_id:
+            await interaction.response.send_message(
+                "Эта панель открыта другим пользователем. Используйте `!help`.", ephemeral=True
+            )
+            return False
+        return True
+
+    @discord.ui.button(label="Minecraft", style=discord.ButtonStyle.secondary, row=1)
+    async def btn_mc(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not await self._check_owner(interaction):
+            return
+        await interaction.response.edit_message(embed=build_bridge_embed(self.guild), view=self)
+
+    @discord.ui.button(label="Тикеты", style=discord.ButtonStyle.secondary, row=1)
+    async def btn_tickets(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not await self._check_owner(interaction):
+            return
+        await interaction.response.edit_message(embed=build_tickets_embed(self.guild), view=self)
+
+    @discord.ui.button(label="Утилиты", style=discord.ButtonStyle.secondary, row=1)
+    async def btn_utils(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not await self._check_owner(interaction):
+            return
+        await interaction.response.edit_message(embed=build_utility_embed(self.guild), view=self)
+
+    @discord.ui.button(label="Поиск команды", style=discord.ButtonStyle.primary, row=1)
+    async def btn_search(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not await self._check_owner(interaction):
+            return
+        bot_ref = self.bot or interaction.client
+        await interaction.response.send_modal(HelpSearchModal(bot_ref, self.is_staff))
+
+
+SERVER_RULES: list[dict[str, str]] = [
+    {"id": "1.1", "title": "Запрещённое ПО", "text": "Запрещено использование чит-клиентов, X-Ray, автокликеров и модов, дающих преимущество.", "punishment": "Бан от 14 дней до перманентного"},
+    {"id": "1.2", "title": "Обход наказаний", "text": "Запрещён обход блокировок и создание твинков для обхода выданных наказаний.", "punishment": "Перманентный бан твинка + продление основного бана"},
+    {"id": "1.3", "title": "Краши и дюпы", "text": "Запрещены попытки краша, намеренного забивания тиков (лаг-машины) и дюпа предметов.", "punishment": "Перманентный бан"},
+    {"id": "2.1", "title": "Реклама и скам", "text": "Запрещена реклама сторонних серверов, Discord-инвайтов, фишинговых и вредоносных ссылок.", "punishment": "Мут / Бан"},
+    {"id": "2.2", "title": "Угрозы и доксинг", "text": "Запрещены угрозы расправой в реальной жизни, доксинг и публикация личных данных.", "punishment": "Перманентный бан"},
+    {"id": "2.3", "title": "Уважение в общении", "text": "Относитесь с уважением к игрокам и администрации, избегайте травли и провокаций.", "punishment": "Мут от 30 минут"},
+    {"id": "3.1", "title": "Гриферство и вандализм", "text": "Запрещён намеренный гриферский вандализм чужих построек и спавна.", "punishment": "Бан от 7 дней + откат постройки"},
+    {"id": "3.2", "title": "Торговля и поселения", "text": "Разрешена честная ванильная торговля и создание поселений по договорённости с игроками.", "punishment": "Разрешено"},
+]
 
 
 class InfoCog(commands.Cog, name="Информация"):
@@ -449,6 +543,42 @@ class InfoCog(commands.Cog, name="Информация"):
         )
         await ctx.send(embed=embed, view=RulesLinkView())
 
+    # --- RULE (ПОИСК ПО ПРАВИЛАМ) ---
+    @commands.hybrid_command(
+        name="rule",
+        aliases=["правило", "пункт"],
+        description="Поиск по правилам сервера (например: /rule 2.1 или /rule гриф)",
+    )
+    @app_commands.describe(query="Номер пункта (1.1, 2.1, 3.1) или ключевое слово")
+    async def rule_cmd(self, ctx: commands.Context, *, query: str):
+        q = (query or "").strip().lower()
+        if not q:
+            return await ctx.send("Укажите номер пункта или слово для поиска, например `/rule 2.1`.", ephemeral=True)
+
+        found = []
+        for r in SERVER_RULES:
+            if q == r["id"].lower() or q in r["title"].lower() or q in r["text"].lower():
+                found.append(r)
+
+        if not found:
+            return await ctx.send(
+                f"По запросу `{query}` пункты правил не найдены. Полный регламент: {Config.RULES_URL}",
+                ephemeral=True,
+            )
+
+        embed = AG.embed(
+            title=f"Правила проекта • Поиск «{query}»",
+            color=Colors.DARK,
+            footer="Vanilla Land • Регламент",
+        )
+        for r in found[:5]:
+            embed.add_field(
+                name=f"Пункт {r['id']} — {r['title']}",
+                value=f"{r['text']}\nНаказание: `{r['punishment']}`",
+                inline=False,
+            )
+        await ctx.send(embed=embed, view=RulesLinkView())
+
     # --- DONATE ---
     @commands.hybrid_command(
         name="donate",
@@ -501,7 +631,7 @@ class InfoCog(commands.Cog, name="Информация"):
         else:
             embed = build_overview_embed(guild, is_staff)
 
-        view = HelpSelectView(is_staff, guild, ctx.author.id)
+        view = HelpSelectView(is_staff, guild, ctx.author.id, bot=self.bot)
         await ctx.send(embed=embed, view=view)
 
     # --- HELP MOD ---
