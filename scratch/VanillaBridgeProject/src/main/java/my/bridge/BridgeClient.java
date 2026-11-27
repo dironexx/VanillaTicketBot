@@ -334,8 +334,8 @@ public class BridgeClient implements WebSocket.Listener {
                 return;
             }
             long now = System.currentTimeMillis();
-            if (now - this.lastHeartbeatTime > 45000L) {
-                this.plugin.getLogger().warning("Обрыв связи с Discord ботом: нет ответа более 45 сек. Принудительный реконнект...");
+            if (now - this.lastHeartbeatTime > 75000L) {
+                this.plugin.getLogger().warning("Обрыв связи с Discord ботом: нет ответа более 75 сек. Принудительный реконнект...");
                 this.candidateIndex.incrementAndGet();
                 this.handleDisconnect("Heartbeat timeout", true);
                 return;

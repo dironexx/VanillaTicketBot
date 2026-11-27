@@ -1469,17 +1469,17 @@ class HealthcheckAdminView(ui.View):
 
         # Определение статуса сервера
         if maint_enabled:
-            status_title = "🟡 ТЕХНИЧЕСКИЕ РАБОТЫ"
+            status_title = "ТЕХНИЧЕСКИЕ РАБОТЫ"
             color = Colors.YELLOW
         elif bridge_connected:
-            status_title = "🟢 СЕРВЕР В СЕТИ"
+            status_title = "СЕРВЕР В СЕТИ"
             color = Colors.GREEN
         else:
-            status_title = "🔴 СЕРВЕР ОФФЛАЙН"
+            status_title = "СЕРВЕР ОФФЛАЙН"
             color = Colors.RED
 
         embed = discord.Embed(
-            title="🎮 Vanilla Land • Системный мониторинг & Диагностика",
+            title="Системный мониторинг и диагностика • Vanilla Land",
             color=color,
             timestamp=datetime.now(timezone.utc),
         )
@@ -1491,12 +1491,12 @@ class HealthcheckAdminView(ui.View):
         )
 
         # Модуль 1: Сеть и веб-сервисы (inline=True)
-        bridge_status_str = f"🟢 Активен ({Config.BRIDGE_PORT})" if bridge_connected else "🔴 Разорван"
+        bridge_status_str = f"Активен ({Config.BRIDGE_PORT})" if bridge_connected else "Разорван"
         embed.add_field(
-            name="🌐 Сеть & Веб-сервисы",
+            name="Сеть и веб-сервисы",
             value=(
                 f"• **Игровой порт:** {tcp_res}\n"
-                f"• **WebSocket мост:** {bridge_status_str}\n"
+                f"• **WebSocket мост:** `{bridge_status_str}`\n"
                 f"• **Discord Gateway:** `{discord_ping} ms`\n"
                 f"• **Сайт проекта:** {site_res}\n"
                 f"• **Магазин:** {store_res}"
@@ -1506,11 +1506,11 @@ class HealthcheckAdminView(ui.View):
 
         # Модуль 2: Хостинг и база данных (inline=True)
         embed.add_field(
-            name="💾 Хостинг & База данных",
+            name="Хостинг и база данных",
             value=(
                 f"• **Диск SSD:** {disk_str}\n"
                 f"• **База SQLite:** {db_status}\n"
-                f"• **Бэкап мира:** 🟢 DriveBackupV2 (каждые 6ч)\n"
+                f"• **Бэкап мира:** DriveBackupV2 (каждые 6ч)\n"
                 f"• **RAM процесса:** `{ram_mb}` ({tasks_cnt} задач)\n"
                 f"• **Размер БД:** `{db_size_str}`"
             ),
@@ -1518,30 +1518,26 @@ class HealthcheckAdminView(ui.View):
         )
 
         # Модуль 3: Безопасность и доступ (inline=False)
-        db_stats.get("active_tickets", 0)
-        linked_cnt = db_stats.get("linked_accounts", 0)
-        sessions_cnt = db_stats.get("active_sessions", 0)
+        active_tickets_cnt = db_stats.get("active_tickets", 0)
         embed.add_field(
-            name="🛡️ Безопасность и Доступ",
+            name="Безопасность и доступ",
             value=(
-                f"• **2FA IP-сессии:** **{sessions_cnt}** активная • Привязано аккаунтов: **{linked_cnt}**\n"
+                f"• **Активных тикетов:** `{active_tickets_cnt}`\n"
                 f"• **Рейд-фильтр:** {lockdown_str}\n"
                 f"• **Discord права:** {perms_status}"
             ),
             inline=False,
         )
 
-        embed.set_footer(text=f"Vanilla Land Diagnostics • Порт моста: {Config.BRIDGE_PORT}")
+        embed.set_footer(text=f"Vanilla Land • Порт моста: {Config.BRIDGE_PORT}")
         return embed
 
-    @ui.button(label="Обновить", style=discord.ButtonStyle.secondary, emoji="🔄", custom_id="hc:refresh", row=0)
+    @ui.button(label="Обновить", style=discord.ButtonStyle.secondary, custom_id="hc:refresh", row=0)
     async def refresh_btn(self, interaction: discord.Interaction, button: ui.Button):
         embed = await self.build_embed()
         await interaction.response.edit_message(embed=embed, view=self)
 
-
-
-    @ui.button(label="Тест сети", style=discord.ButtonStyle.secondary, emoji="⚡", custom_id="hc:net", row=0)
+    @ui.button(label="Тест сети", style=discord.ButtonStyle.secondary, custom_id="hc:net", row=0)
     async def net_test_btn(self, interaction: discord.Interaction, button: ui.Button):
         bot = self.security_cog.bot
         try:
@@ -1564,7 +1560,7 @@ class HealthcheckAdminView(ui.View):
         sockets_cnt = len(getattr(bridge_cog, "active_sockets", set())) if bridge_cog else 0
 
         embed = discord.Embed(
-            title="⚡ Диагностика сетевых задержек • Vanilla Land",
+            title="Диагностика сетевых задержек • Vanilla Land",
             description=(
                 f"```fix\n"
                 f"Discord Gateway:     {gw_ping} ms\n"
@@ -1578,16 +1574,11 @@ class HealthcheckAdminView(ui.View):
         )
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
-    @ui.button(label="Очистить кэш (GC)", style=discord.ButtonStyle.secondary, emoji="🧹", custom_id="hc:gc", row=0)
+    @ui.button(label="Очистить кэш (GC)", style=discord.ButtonStyle.secondary, custom_id="hc:gc", row=0)
     async def gc_btn(self, interaction: discord.Interaction, button: ui.Button):
         t0 = time.perf_counter()
         collected = gc.collect()
         cleaned_codes = 0
-        if self.security_cog.db:
-            try:
-                cleaned_codes = self.security_cog.db.cleanup_expired_codes()
-            except Exception:
-                pass
         deleted_junk = 0
         try:
             for jf in os.listdir("."):

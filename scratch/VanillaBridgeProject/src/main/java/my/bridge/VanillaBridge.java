@@ -251,8 +251,10 @@ implements CommandExecutor {
             return;
         }
         String trimmed = newUrl.trim();
-        this.getConfig().set("bridge.ws-url", (Object)trimmed);
-        this.saveConfig();
+        UniversalScheduler.runGlobal(this, () -> {
+            this.getConfig().set("bridge.ws-url", (Object)trimmed);
+            this.saveConfig();
+        });
         try {
             File configFile = new File(this.getDataFolder(), "config.yml");
             if (configFile.exists()) {
@@ -625,7 +627,7 @@ implements CommandExecutor {
                 return true;
             });
         }
-        this.statsTask = UniversalScheduler.runAsyncTimer(this, this::sendServerStats, 100L, 100L);
+        this.statsTask = UniversalScheduler.runGlobalTimer(this, this::sendServerStats, 100L, 100L);
         this.topCacheTask = UniversalScheduler.runAsyncTimer(this, () -> {
             try {
                 this.updateTopCache();
@@ -984,78 +986,84 @@ implements CommandExecutor {
                     }
                 }
                 if (p != null && this.bridgeClient != null && this.bridgeClient.isConnected()) {
-                    String world = p.getWorld().getName();
-                    int x = p.getLocation().getBlockX();
-                    int y = p.getLocation().getBlockY();
-                    int z = p.getLocation().getBlockZ();
-                    double hp = p.getHealth();
-                    double maxHp = p.getMaxHealth();
-                    int food = p.getFoodLevel();
-                    int level = p.getLevel();
-                    int ping = p.getPing();
-                    String ip = p.getAddress() != null && p.getAddress().getAddress() != null ? p.getAddress().getAddress().getHostAddress() : "N/A";
-                    String gamemode = p.getGameMode().name();
-                    String helmet = p.getInventory().getHelmet() != null ? p.getInventory().getHelmet().getType().name() : "AIR";
-                    String chestplate = p.getInventory().getChestplate() != null ? p.getInventory().getChestplate().getType().name() : "AIR";
-                    String leggings = p.getInventory().getLeggings() != null ? p.getInventory().getLeggings().getType().name() : "AIR";
-                    String boots = p.getInventory().getBoots() != null ? p.getInventory().getBoots().getType().name() : "AIR";
-                    String mainHand = p.getInventory().getItemInMainHand().getType().name();
-                    String offHand = p.getInventory().getItemInOffHand().getType().name();
-                    String skinHash = VanillaBridge.extractSkinHash(p.getPlayerProfile());
-                    if (skinHash.isEmpty()) {
-                        skinHash = this.getCachedPlayerSkin(p.getName());
-                    } else {
-                        this.cachePlayerSkin(p.getName(), skinHash);
-                    }
-                    int playtime = this.applyBaseline(p.getName(), "pt", p.getStatistic(Statistic.PLAY_ONE_MINUTE));
-                    int diamonds = this.applyBaseline(p.getName(), "dia", VanillaBridge.getSafeMineStat((OfflinePlayer)p, Material.DIAMOND_ORE) + VanillaBridge.getSafeMineStat((OfflinePlayer)p, Material.DEEPSLATE_DIAMOND_ORE));
-                    int debris = this.applyBaseline(p.getName(), "deb", VanillaBridge.getSafeMineStat((OfflinePlayer)p, Material.ANCIENT_DEBRIS));
-                    int emeralds = VanillaBridge.getSafeMineStat((OfflinePlayer)p, Material.EMERALD_ORE) + VanillaBridge.getSafeMineStat((OfflinePlayer)p, Material.DEEPSLATE_EMERALD_ORE);
-                    int gold = VanillaBridge.getSafeMineStat((OfflinePlayer)p, Material.GOLD_ORE) + VanillaBridge.getSafeMineStat((OfflinePlayer)p, Material.DEEPSLATE_GOLD_ORE) + VanillaBridge.getSafeMineStat((OfflinePlayer)p, Material.NETHER_GOLD_ORE);
-                    int iron = VanillaBridge.getSafeMineStat((OfflinePlayer)p, Material.IRON_ORE) + VanillaBridge.getSafeMineStat((OfflinePlayer)p, Material.DEEPSLATE_IRON_ORE);
-                    int kills = this.applyBaseline(p.getName(), "kills", p.getStatistic(Statistic.PLAYER_KILLS));
-                    int deaths = this.applyBaseline(p.getName(), "deaths", p.getStatistic(Statistic.DEATHS));
-                    int mobKills = p.getStatistic(Statistic.MOB_KILLS);
-                    long firstPlayed = p.getFirstPlayed();
-                    long lastPlayed = p.getLastPlayed();
-                    StringBuilder invSb = new StringBuilder("[");
-                    boolean first = true;
-                    for (int slot = 0; slot < 36; ++slot) {
-                        ItemStack item = p.getInventory().getItem(slot);
-                        String serialized = this.serializeItemStack(item, slot);
-                        if (serialized == null) continue;
-                        if (!first) {
-                            invSb.append(",");
+                    final Player onlineTarget = p;
+                    UniversalScheduler.runEntity(this, onlineTarget, () -> {
+                        if (!onlineTarget.isOnline() || this.bridgeClient == null || !this.bridgeClient.isConnected()) {
+                            return;
                         }
-                        invSb.append(serialized);
-                        first = false;
-                    }
-                    invSb.append("]");
-                    StringBuilder enderSb = new StringBuilder("[");
-                    first = true;
-                    for (int slot = 0; slot < 27; ++slot) {
-                        ItemStack item = p.getEnderChest().getItem(slot);
-                        String serialized = this.serializeItemStack(item, slot);
-                        if (serialized == null) continue;
-                        if (!first) {
-                            enderSb.append(",");
+                        String world = onlineTarget.getWorld().getName();
+                        int x = onlineTarget.getLocation().getBlockX();
+                        int y = onlineTarget.getLocation().getBlockY();
+                        int z = onlineTarget.getLocation().getBlockZ();
+                        double hp = onlineTarget.getHealth();
+                        double maxHp = onlineTarget.getMaxHealth();
+                        int food = onlineTarget.getFoodLevel();
+                        int level = onlineTarget.getLevel();
+                        int ping = onlineTarget.getPing();
+                        String ip = onlineTarget.getAddress() != null && onlineTarget.getAddress().getAddress() != null ? onlineTarget.getAddress().getAddress().getHostAddress() : "N/A";
+                        String gamemode = onlineTarget.getGameMode().name();
+                        String helmet = onlineTarget.getInventory().getHelmet() != null ? onlineTarget.getInventory().getHelmet().getType().name() : "AIR";
+                        String chestplate = onlineTarget.getInventory().getChestplate() != null ? onlineTarget.getInventory().getChestplate().getType().name() : "AIR";
+                        String leggings = onlineTarget.getInventory().getLeggings() != null ? onlineTarget.getInventory().getLeggings().getType().name() : "AIR";
+                        String boots = onlineTarget.getInventory().getBoots() != null ? onlineTarget.getInventory().getBoots().getType().name() : "AIR";
+                        String mainHand = onlineTarget.getInventory().getItemInMainHand().getType().name();
+                        String offHand = onlineTarget.getInventory().getItemInOffHand().getType().name();
+                        String skinHash = VanillaBridge.extractSkinHash(onlineTarget.getPlayerProfile());
+                        if (skinHash.isEmpty()) {
+                            skinHash = this.getCachedPlayerSkin(onlineTarget.getName());
+                        } else {
+                            this.cachePlayerSkin(onlineTarget.getName(), skinHash);
                         }
-                        enderSb.append(serialized);
-                        first = false;
-                    }
-                    enderSb.append("]");
-                    StringBuilder effSb = new StringBuilder("[");
-                    first = true;
-                    for (PotionEffect eff : p.getActivePotionEffects()) {
-                        if (!first) {
-                            effSb.append(",");
+                        int playtime = this.applyBaseline(onlineTarget.getName(), "pt", onlineTarget.getStatistic(Statistic.PLAY_ONE_MINUTE));
+                        int diamonds = this.applyBaseline(onlineTarget.getName(), "dia", VanillaBridge.getSafeMineStat((OfflinePlayer)onlineTarget, Material.DIAMOND_ORE) + VanillaBridge.getSafeMineStat((OfflinePlayer)onlineTarget, Material.DEEPSLATE_DIAMOND_ORE));
+                        int debris = this.applyBaseline(onlineTarget.getName(), "deb", VanillaBridge.getSafeMineStat((OfflinePlayer)onlineTarget, Material.ANCIENT_DEBRIS));
+                        int emeralds = VanillaBridge.getSafeMineStat((OfflinePlayer)onlineTarget, Material.EMERALD_ORE) + VanillaBridge.getSafeMineStat((OfflinePlayer)onlineTarget, Material.DEEPSLATE_EMERALD_ORE);
+                        int gold = VanillaBridge.getSafeMineStat((OfflinePlayer)onlineTarget, Material.GOLD_ORE) + VanillaBridge.getSafeMineStat((OfflinePlayer)onlineTarget, Material.DEEPSLATE_GOLD_ORE) + VanillaBridge.getSafeMineStat((OfflinePlayer)onlineTarget, Material.NETHER_GOLD_ORE);
+                        int iron = VanillaBridge.getSafeMineStat((OfflinePlayer)onlineTarget, Material.IRON_ORE) + VanillaBridge.getSafeMineStat((OfflinePlayer)onlineTarget, Material.DEEPSLATE_IRON_ORE);
+                        int kills = this.applyBaseline(onlineTarget.getName(), "kills", onlineTarget.getStatistic(Statistic.PLAYER_KILLS));
+                        int deaths = this.applyBaseline(onlineTarget.getName(), "deaths", onlineTarget.getStatistic(Statistic.DEATHS));
+                        int mobKills = onlineTarget.getStatistic(Statistic.MOB_KILLS);
+                        long firstPlayed = onlineTarget.getFirstPlayed();
+                        long lastPlayed = onlineTarget.getLastPlayed();
+                        StringBuilder invSb = new StringBuilder("[");
+                        boolean first = true;
+                        for (int slot = 0; slot < 36; ++slot) {
+                            ItemStack item = onlineTarget.getInventory().getItem(slot);
+                            String serialized = this.serializeItemStack(item, slot);
+                            if (serialized == null) continue;
+                            if (!first) {
+                                invSb.append(",");
+                            }
+                            invSb.append(serialized);
+                            first = false;
                         }
-                        effSb.append(String.format(Locale.US, "\"%s %d (%ds)\"", eff.getType().getName(), eff.getAmplifier() + 1, eff.getDuration() / 20));
-                        first = false;
-                    }
-                    effSb.append("]");
-                    String resp = String.format(Locale.US, "{\"type\":\"player_data\",\"query_id\":\"%s\",\"player\":\"%s\",\"uuid\":\"%s\",\"online\":true,\"skin\":\"%s\",\"first_played\":%d,\"last_played\":%d,\"playtime\":%d,\"diamonds\":%d,\"debris\":%d,\"emeralds\":%d,\"gold\":%d,\"iron\":%d,\"kills\":%d,\"deaths\":%d,\"mob_kills\":%d,\"world\":\"%s\",\"x\":%d,\"y\":%d,\"z\":%d,\"hp\":%.1f,\"max_hp\":%.1f,\"food\":%d,\"level\":%d,\"ping\":%d,\"ip\":\"%s\",\"gamemode\":\"%s\",\"helmet\":\"%s\",\"chestplate\":\"%s\",\"leggings\":\"%s\",\"boots\":\"%s\",\"main_hand\":\"%s\",\"off_hand\":\"%s\",\"inventory\":%s,\"ender\":%s,\"effects\":%s}", VanillaBridge.escapeJson(queryId), VanillaBridge.escapeJson(p.getName()), p.getUniqueId().toString(), VanillaBridge.escapeJson(skinHash), firstPlayed, lastPlayed, playtime, diamonds, debris, emeralds, gold, iron, kills, deaths, mobKills, VanillaBridge.escapeJson(world), x, y, z, hp, maxHp, food, level, ping, VanillaBridge.escapeJson(ip), gamemode, helmet, chestplate, leggings, boots, mainHand, offHand, invSb.toString(), enderSb.toString(), effSb.toString());
-                    this.bridgeClient.send(resp);
+                        invSb.append("]");
+                        StringBuilder enderSb = new StringBuilder("[");
+                        first = true;
+                        for (int slot = 0; slot < 27; ++slot) {
+                            ItemStack item = onlineTarget.getEnderChest().getItem(slot);
+                            String serialized = this.serializeItemStack(item, slot);
+                            if (serialized == null) continue;
+                            if (!first) {
+                                enderSb.append(",");
+                            }
+                            enderSb.append(serialized);
+                            first = false;
+                        }
+                        enderSb.append("]");
+                        StringBuilder effSb = new StringBuilder("[");
+                        first = true;
+                        for (PotionEffect eff : onlineTarget.getActivePotionEffects()) {
+                            if (!first) {
+                                effSb.append(",");
+                            }
+                            effSb.append(String.format(Locale.US, "\"%s %d (%ds)\"", eff.getType().getName(), eff.getAmplifier() + 1, eff.getDuration() / 20));
+                            first = false;
+                        }
+                        effSb.append("]");
+                        String resp = String.format(Locale.US, "{\"type\":\"player_data\",\"query_id\":\"%s\",\"player\":\"%s\",\"uuid\":\"%s\",\"online\":true,\"skin\":\"%s\",\"first_played\":%d,\"last_played\":%d,\"playtime\":%d,\"diamonds\":%d,\"debris\":%d,\"emeralds\":%d,\"gold\":%d,\"iron\":%d,\"kills\":%d,\"deaths\":%d,\"mob_kills\":%d,\"world\":\"%s\",\"x\":%d,\"y\":%d,\"z\":%d,\"hp\":%.1f,\"max_hp\":%.1f,\"food\":%d,\"level\":%d,\"ping\":%d,\"ip\":\"%s\",\"gamemode\":\"%s\",\"helmet\":\"%s\",\"chestplate\":\"%s\",\"leggings\":\"%s\",\"boots\":\"%s\",\"main_hand\":\"%s\",\"off_hand\":\"%s\",\"inventory\":%s,\"ender\":%s,\"effects\":%s}", VanillaBridge.escapeJson(queryId), VanillaBridge.escapeJson(onlineTarget.getName()), onlineTarget.getUniqueId().toString(), VanillaBridge.escapeJson(skinHash), firstPlayed, lastPlayed, playtime, diamonds, debris, emeralds, gold, iron, kills, deaths, mobKills, VanillaBridge.escapeJson(world), x, y, z, hp, maxHp, food, level, ping, VanillaBridge.escapeJson(ip), gamemode, helmet, chestplate, leggings, boots, mainHand, offHand, invSb.toString(), enderSb.toString(), effSb.toString());
+                        this.bridgeClient.send(resp);
+                    });
                 } else if (this.bridgeClient != null && this.bridgeClient.isConnected()) {
                     UniversalScheduler.runAsync(this, () -> {
                         try {

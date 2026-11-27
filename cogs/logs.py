@@ -86,16 +86,16 @@ class AntiInviteActionView(ui.View):
             item.disabled = True
 
         await interaction.response.edit_message(
-            content=f"🔊 **Решение принято:** Мут снят администратором {interaction.user.mention}.",
+            content=f"**Решение принято:** Мут снят администратором {interaction.user.mention}.",
             view=self,
         )
 
-    @ui.button(label="Оставить мут (1 ч)", style=discord.ButtonStyle.secondary, emoji="⏳")
+    @ui.button(label="Оставить мут (1 ч)", style=discord.ButtonStyle.secondary)
     async def keep_mute_button(self, interaction: discord.Interaction, button: ui.Button):
         for item in self.children:
             item.disabled = True
         await interaction.response.edit_message(
-            content=f"⏳ **Решение принято:** Мут оставлен в силе (подтвердил {interaction.user.mention}).",
+            content=f"**Решение принято:** Мут оставлен в силе (подтвердил {interaction.user.mention}).",
             view=self,
         )
 

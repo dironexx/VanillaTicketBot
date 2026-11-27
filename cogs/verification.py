@@ -303,7 +303,7 @@ class VerificationView(ui.View):
                 reason = "Рейд ботов. Вход временно закрыт до стабилизации ситуации."
 
             embed = discord.Embed(
-                title="🛑 Верификация временно приостановлена",
+                title="Верификация временно приостановлена",
                 description=(
                     f"**Причина:** {reason}\n\n"
                     "*На сервере действует защитный режим. Пожалуйста, подождите, пока администрация возобновит приём новых участников.*"
@@ -318,7 +318,7 @@ class VerificationView(ui.View):
                 if mod_log_ch_id:
                     ch = guild.get_channel(mod_log_ch_id)
                     if ch and isinstance(ch, discord.TextChannel):
-                        await ch.send(f"⚠️ **Локдаун:** {member.mention} (`{member.id}`) пытался верифицироваться во время блокировки.")
+                        await ch.send(f"**Локдаун:** {member.mention} (`{member.id}`) пытался верифицироваться во время блокировки.")
             except Exception:
                 pass
             return

@@ -525,10 +525,10 @@ class BridgeCog(commands.Cog, name="Мост Minecraft"):
             except Exception:
                 pass
 
-        # heartbeat=25.0 поддерживает постоянную активность в NAT/фаерволе хостинга
+        # heartbeat=60.0 (pong_timeout=30с) переживает краткие фризы сервера и NAT без ложных обрывов
         # receive_timeout=None предотвращает обрыв при временном молчании сервера
         ws = web.WebSocketResponse(
-            heartbeat=25.0,
+            heartbeat=60.0,
             receive_timeout=None,
             max_msg_size=16 * 1024 * 1024,
         )
@@ -2032,11 +2032,11 @@ class BridgeCog(commands.Cog, name="Мост Minecraft"):
 
         if self.mc_online == 0:
             embed = discord.Embed(
-                title=f"👥 Игроки онлайн: 0 / {self.mc_max}",
-                description="Сейчас на сервере никого нет. Будьте первыми!",
-                color=Colors.BLUE,
+                title=f"Онлайн сервера • 0 / {self.mc_max}",
+                description="Сейчас на сервере никого нет.",
+                color=Colors.DARK,
             )
-            embed.add_field(name="TPS", value=f"{self.mc_tps:.2f}", inline=True)
+            embed.add_field(name="TPS", value=f"`{self.mc_tps:.2f}`", inline=True)
             embed.add_field(name="IP", value=f"`{Config.SERVER_IP}`", inline=True)
             embed.set_footer(text="Vanilla Land")
             return embed
@@ -2045,8 +2045,8 @@ class BridgeCog(commands.Cog, name="Мост Minecraft"):
         players_text = "\n".join(players_formatted) if players_formatted else "Игроки загружаются..."
 
         embed = discord.Embed(
-            title=f"👥 Игроки онлайн: {self.mc_online} / {self.mc_max}",
-            description=f"**Список игроков на сервере:**\n{players_text}",
+            title=f"Онлайн сервера • {self.mc_online} / {self.mc_max}",
+            description=f"**Игроки на сервере:**\n{players_text}",
             color=Colors.GREEN,
         )
         embed.add_field(name="TPS", value=f"`{self.mc_tps:.2f}`", inline=True)
@@ -2071,9 +2071,9 @@ class BridgeCog(commands.Cog, name="Мост Minecraft"):
         top_list = self.db.get_top_deaths(10)
         if not top_list:
             embed = discord.Embed(
-                title="🏆 Премия Дарвина • Vanilla Land",
-                description="После вайпа от 22 ноября на сервере пока никто не умирал! Все аккуратны и бдительны.",
-                color=Colors.BLUE,
+                title="Премия Дарвина • Vanilla Land",
+                description="После вайпа от 22 ноября на сервере пока никто не умирал.",
+                color=Colors.DARK,
             )
             embed.set_footer(text="Vanilla Land • Вайп от 22 ноября 2026")
             return await ctx.send(embed=embed)
@@ -2085,7 +2085,7 @@ class BridgeCog(commands.Cog, name="Мост Minecraft"):
             lines.append(f"{m} **{name}** — `{count}` смертей *(посл: {last_reason})*")
 
         embed = discord.Embed(
-            title="🏆 Премия Дарвина • Топ смертей Vanilla Land",
+            title="Премия Дарвина • Топ смертей",
             description=f"**Сезон:** Вайп от 22 ноября\n\n" + "\n".join(lines),
             color=0xFEE75C,
             timestamp=datetime.now(timezone.utc),
